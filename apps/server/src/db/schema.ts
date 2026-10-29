@@ -213,11 +213,11 @@ export const apps = sqliteTable('apps', {
   category: text('category').notNull().default('未分类'),
   /** 'public' 公开 | 'login' 需登录 | 'restricted' 指定分组与账号 | 'private' 仅归属者 */
   visibility: text('visibility').notNull().default('login'),
-  /** 应用形态：upstream 反代上游 | html 门户托管的静态页（简单 HTML / .neon-aap html 包） */
+  /** 应用形态：upstream 反代上游 | html 门户托管的静态页（简单 HTML / .asp-app html 包） */
   kind: text('kind').notNull().default('upstream'),
   /** 归属者（用户自建应用默认私有可见的依据；管理员创建 = 该管理员 id） */
   ownerUserId: integer('owner_user_id'),
-  // ---- G：.neon-aap 包元数据（kind=package 时生效） ----
+  // ---- G：.asp-app 包元数据（kind=package 时生效） ----
   manifestJson: text('manifest_json'),
   runtimeMode: text('runtime_mode'),
   reviewStatus: text('review_status').notNull().default('none'),

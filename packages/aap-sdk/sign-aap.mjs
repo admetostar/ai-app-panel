@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * .neon-aap 包签名工具（Ed25519 信任链，设计参照 fnos-dashboard 的 ndash.py）。
+ * .asp-app 包签名工具（Ed25519 信任链，设计参照 fnos-dashboard 的 ndash.py）。
  *
  *   node sign-aap.mjs keygen -o mykey.secret            # 生成密钥对（私钥 0600）
- *   node sign-aap.mjs sign pkg.neon-aap --key mykey.secret --signer your-name
- *   node sign-aap.mjs verify pkg.neon-aap               # 发行前自检（不查信任列表）
+ *   node sign-aap.mjs sign pkg.asp-app --key mykey.secret --signer your-name
+ *   node sign-aap.mjs verify pkg.asp-app               # 发行前自检（不查信任列表）
  *
  * 签名格式（包内 signature.json，可选文件）：
  *   { alg: "ed25519", payload_sha256, signature(b64), signer: { id, key_id, public_key(b64) } }
@@ -135,7 +135,7 @@ async function cmdSign(argv) {
   const signerIdx = argv.indexOf('--signer');
   const signerId = signerIdx >= 0 ? argv[signerIdx + 1] ?? '' : '';
   if (!file || !keyFile) {
-    console.error('用法: sign-aap.mjs sign <pkg.neon-aap> --key <secret 文件> [--signer 署名]');
+    console.error('用法: sign-aap.mjs sign <pkg.asp-app> --key <secret 文件> [--signer 署名]');
     process.exit(1);
   }
   const secret = b64d(fs.readFileSync(keyFile, 'utf8').trim());
@@ -152,7 +152,7 @@ async function cmdSign(argv) {
 async function cmdVerify(argv) {
   const file = argv[0];
   if (!file) {
-    console.error('用法: sign-aap.mjs verify <pkg.neon-aap>');
+    console.error('用法: sign-aap.mjs verify <pkg.asp-app>');
     process.exit(1);
   }
   const { entries, signature } = await loadZipEntries(file);

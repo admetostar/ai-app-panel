@@ -1,6 +1,6 @@
 /**
  * 门户托管静态应用（P4）与应用统一页面元素（P3）。
- *  - kind='html'：门户直接托管 data/appsites/<id>/（简单 HTML 页 / .neon-aap html 包）
+ *  - kind='html'：门户直接托管 data/appsites/<id>/（简单 HTML 页 / .asp-app html 包）
  *  - kind='package'：python 包等待运行时（M4），占位页
  *  - 统一页面元素：HTML 响应注入 /portal-chrome.js（应用门户 / 个人中心 / 退出登录），
  *    失败静默不阻断（W0 契约：包作者不得遮挡右上角）。
@@ -58,7 +58,7 @@ function relaxDirForSandbox(dir: string): void {
   }
 }
 
-/** 解压 .neon-aap（html 包）到托管目录，返回解出的文件数与签名材料。
+/** 解压 .asp-app（html 包）到托管目录，返回解出的文件数与签名材料。
  *  entries 不含 signature.json（供规范化摘要计算）；signature 为包内自带签名（可能为 null）。 */
 export function storePackageFiles(
   appId: string,
@@ -255,7 +255,7 @@ export function parseEnvSpec(value: unknown): Record<string, ManifestEnvVar> {
   return out;
 }
 
-/** 校验 .neon-aap manifest（app-develop.skill v0.2 契约），返回规范化字段 */
+/** 校验 .asp-app manifest（app-develop.skill v0.2 契约），返回规范化字段 */
 export function validateManifest(m: Record<string, unknown>): {
   name: string;
   displayName: string;

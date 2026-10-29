@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 服务入口：装配 DB → 种子配置 → Express 应用 → HTTP server →
  * WebSocket upgrade 挂载 → 监听。
  * HTTPS（W6）在证书启用后于同一 upgrade 通道上复用 handleUpgrade。
@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   const tcpListenOpts: { port: number; host?: string } = { port: config.port };
   if (config.host) tcpListenOpts.host = config.host;
   server.listen(tcpListenOpts, () => {
-    console.log(`[aap] AI应用门户 listening on http://${config.host ?? '0.0.0.0'}:${config.port}`);
+    console.log(`[aap] AI超级面板 listening on http://${config.host ?? '0.0.0.0'}:${config.port}`);
     console.log(`[aap] data dir: ${config.dataDir}`);
   });
 
@@ -100,3 +100,4 @@ async function main(): Promise<void> {
 }
 
 void main();
+

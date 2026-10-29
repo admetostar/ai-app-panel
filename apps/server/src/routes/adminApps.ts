@@ -325,7 +325,7 @@ adminAppsRouter.post(
   }),
 );
 
-// ---------- .neon-aap 包上传（校验完整性 + manifest 提取；python 运行时 M4） ----------
+// ---------- .asp-app 包上传（校验完整性 + manifest 提取；python 运行时 M4） ----------
 
 /** 上传前预解析：仅校验与提取 manifest/签名信息，不落正式目录、不建应用。
  *  供管理端选包后即时展示解析结果（临时目录用后即删）。 */
@@ -388,8 +388,8 @@ adminAppsRouter.post(
     } catch {
       throw new HttpError(400, 'INVALID_PACKAGE', '包内容不是合法的 base64');
     }
-    if (!body.filename?.toLowerCase().endsWith('.zip') && !body.filename?.toLowerCase().endsWith('.neon-aap')) {
-      throw new HttpError(400, 'INVALID_PACKAGE_EXT', '包文件必须是 .zip / .neon-aap');
+    if (!body.filename?.toLowerCase().endsWith('.zip') && !body.filename?.toLowerCase().endsWith('.asp-app')) {
+      throw new HttpError(400, 'INVALID_PACKAGE_EXT', '包文件必须是 .zip / .asp-app');
     }
 
     // 临时目录按请求唯一（并发上传互踩防御）；正式目录的覆盖必须等到

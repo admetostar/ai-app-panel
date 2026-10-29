@@ -142,7 +142,7 @@ describe.skipIf(!pythonOk)('环境变量配置与沙箱注入', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
       body: JSON.stringify({
-        filename: 'envtool.neon-aap',
+        filename: 'envtool.asp-app',
         dataBase64: zipPkg({ 'manifest.json': JSON.stringify(ENV_MANIFEST), 'mod.py': ENV_MOD }),
       }),
     });
@@ -293,7 +293,7 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
       body: JSON.stringify({
-        filename: 'persistenv.neon-aap',
+        filename: 'persistenv.asp-app',
         dataBase64: zipPkg({
           'manifest.json': JSON.stringify({
             name: 'persistenv', display_name: 'PersistEnv', version: '1.0.0',
@@ -351,7 +351,7 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
         method: 'POST',
         headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
         body: JSON.stringify({
-          filename: 'egresstool.neon-aap',
+          filename: 'egresstool.asp-app',
           dataBase64: zipPkg({
             'manifest.json': JSON.stringify({
               name: 'egresstool', display_name: 'EgressTool', version: '1.0.0',

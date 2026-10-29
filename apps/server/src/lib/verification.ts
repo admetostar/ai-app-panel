@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 验证码通道抽象（A2）：SMTP / SMS adapter 选一首发，M1 首发 SMTP；
  * 未配置 SMTP 时用「日志通道」兜底（内网可离线：验证码打到服务端日志）。
  * 限发硬要求：同通道 60s 限 1 条 + 24h 上限（防短信轰炸刷穿话费的同源问题）。
@@ -47,8 +47,8 @@ class ResendEmailChannel implements CodeChannel {
   readonly id = 'email' as const;
   async send(target: string, code: string, purpose: CodePurpose): Promise<void> {
     const key = getSetting('RESEND_API_KEY') ?? '';
-    const from = getSetting('RESEND_FROM') || 'AI应用门户 <onboarding@resend.dev>';
-    const site = getSetting('SITE_NAME') || 'AI应用门户';
+    const from = getSetting('RESEND_FROM') || 'AI超级面板 <onboarding@resend.dev>';
+    const site = getSetting('SITE_NAME') || 'AI超级面板';
     const purposeText: Record<CodePurpose, string> = {
       register: '注册账号',
       reset: '重置密码',
@@ -85,7 +85,7 @@ class SmtpEmailChannel implements CodeChannel {
       },
     });
     const from = getSetting('SMTP_FROM') || getSetting('SMTP_USER') || '';
-    const site = getSetting('SITE_NAME') || 'AI应用门户';
+    const site = getSetting('SITE_NAME') || 'AI超级面板';
     const purposeText: Record<CodePurpose, string> = {
       register: '注册账号',
       reset: '重置密码',
@@ -264,3 +264,4 @@ function purgeExpiredCodes(now = Date.now()): void {
 }
 
 registerPurgeTask(purgeExpiredCodes);
+

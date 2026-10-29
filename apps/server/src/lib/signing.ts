@@ -1,5 +1,5 @@
 /**
- * .neon-aap 包签名验证（G4，Ed25519 信任链）——设计参照 fnos-dashboard 的
+ * .asp-app 包签名验证（G4，Ed25519 信任链）——设计参照 fnos-dashboard 的
  * ndash 方案：签名放包内 signature.json，摘要与 zip 时间戳/压缩参数/条目顺序
  * 无关；四态判定 verified / untrusted / unsigned / invalid（invalid 硬拒上传）。
  * 算法用 Node 内置 crypto（RFC 8032 Ed25519）；签名工具见

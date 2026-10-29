@@ -1,4 +1,4 @@
-"""aap_runtime — 平台注入给 .neon-aap python 包的运行时（aap 对象 + runner）。
+"""aap_runtime — 平台注入给 .asp-app python 包的运行时（aap 对象 + runner）。
 
 平台通过 runner.py 启动包进程并注入全局 ``aap``（包内无需 import）：
   - invoked:   stdin 收 JSON 入参 → mod.handle(input, aap) → stdout 回 JSON

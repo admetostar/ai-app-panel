@@ -1,4 +1,4 @@
-# FPK 打包（飞牛 fnOS 原生形态）
+﻿# FPK 打包（飞牛 fnOS 原生形态）
 
 > **形态定稿（2026-09，对照 fnnas-docs 官方文档校准）**：原生 FPK，
 > 统一网关入口；Docker 形态不再出 FPK（`deploy/docker` 继续服务非飞牛用户）。
@@ -25,7 +25,7 @@
 ## 包结构（fnpack 必检项全过）
 
 ```
-ai-app-portal/
+AI-SuperPanel/
 ├── app/
 │   ├── server/          ← deploy/native 自包含包（bin/node, dist, public, aap-sdk, assets=开发指南三件…）
 │   └── ui/
@@ -33,7 +33,7 @@ ai-app-portal/
 │       └── images/icon_{64,256}.png
 ├── cmd/                 ← main（start/stop/status）+ 8 个生命周期脚本（config_callback 提交向导后重启生效）
 ├── config/
-│   ├── privilege        ← run-as=package 专用用户 ai-app-portal
+│   ├── privilege        ← run-as=package 专用用户 AI-SuperPanel
 │   └── resource         ← {}（数据只落 TRIM_PKGVAR，不开放文件管理器共享）
 ├── wizard/
 │   ├── install          ← 服务端口 wizard_port（默认 8080）+ 可选初始管理员密码 wizard_admin_password
@@ -51,7 +51,7 @@ ai-app-portal/
 
 # 打包：版本 + 平台（x86|arm|all）
 ./deploy/fpk/build-fpk.sh 0.1.0 all
-# → dist/ai-app-portal_0.1.0_x86.fpk / _arm.fpk（各约 52MB）
+# → dist/AI-SuperPanel_0.1.0_x86.fpk / _arm.fpk（各约 52MB）
 
 **.fpk 真实格式**（官方 fnpack 1.2.3 产物逆向 + `fnos-dashboard/fpk-sandbox`
 已验证实现；**不是 zip**——zip 打包真机报「不是有效的fpk文件」）：
@@ -85,7 +85,7 @@ ai-app-portal/
 | `install_dep_apps=nodejs_v22` | ❌ 不用 | better-sqlite3 按自带 Node 22 ABI 编译，绑定系统运行时版本有失配风险 |
 | `data-share` 共享目录 | ❌ 不用 | 数据目录含 SQLite/主密钥/上传件，不应暴露给文件管理器 |
 | wizard 安装向导 | ✅ 最小使用 | 收集服务端口 `wizard_port`（install + config，config 提交自动重启生效）+ 可选初始管理员密码 `wizard_admin_password`（password 型，留空随机生成写 admin-credentials.txt；无论哪种首次登录均强制改密 + 绑 MFA——密码会留在飞牛向导值存储中，强制改密后即作废）；首配仍走门户自身 checklist |
-| 打包签名 | —— | 官方文档（截至 2026-07-31）无 FPK 签名要求；上架走开发者先锋交流群提交。仓库内 ed25519 体系是 **.neon-aap 应用包**的签名（fnos-dashboard 方法论），与 FPK 无关 |
+| 打包签名 | —— | 官方文档（截至 2026-07-31）无 FPK 签名要求；上架走开发者先锋交流群提交。仓库内 ed25519 体系是 **.asp-app 应用包**的签名（fnos-dashboard 方法论），与 FPK 无关 |
 
 ## 真机待验证
 
@@ -95,3 +95,4 @@ ai-app-portal/
 4. `config/resource` 为空对象 `{}` 时安装器行为（文档未给空资源示例）。
 5. python312 运行时包在目标 fnOS 版本的实际可用性（`cmd/main` 已回落系统 python3）。
 6. 沙箱 runner 在包用户（非 root）身份下的 persistent 进程行为。
+

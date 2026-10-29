@@ -5,6 +5,22 @@ import type { SessionInfo } from '@aap/shared';
 import { api } from '../api/client';
 import { useNavigate } from 'react-router-dom';
 
+export const GUIDE_MODAL_DISMISS_KEY = 'aap-guide-modal-dismissed';
+
+export function shouldShowGuideOnLogin(): boolean {
+  if (typeof window === 'undefined') return true;
+  return window.localStorage.getItem(GUIDE_MODAL_DISMISS_KEY) !== '1';
+}
+
+export function setGuideModalDismissed(dismissed: boolean): void {
+  if (typeof window === 'undefined') return;
+  if (dismissed) {
+    window.localStorage.setItem(GUIDE_MODAL_DISMISS_KEY, '1');
+    return;
+  }
+  window.localStorage.removeItem(GUIDE_MODAL_DISMISS_KEY);
+}
+
 export function useSession() {
   const q = useQuery({
     queryKey: ['me'],
@@ -29,11 +45,17 @@ export function usePostAuthRedirect(): (r: { mustChangePassword?: boolean; mustE
     void qc.invalidateQueries({ queryKey: ['me'] });
     if (r.mustChangePassword) {
       navigate('/initialize', { replace: true });
-    } else if (r.mustEnrollMfa) {
-      navigate('/mfa-setup', { replace: true });
-    } else {
-      navigate('/', { replace: true });
+      return;
     }
+    if (r.mustEnrollMfa) {
+      navigate('/mfa-setup', { replace: true });
+      return;
+    }
+
+    if (typeof window !== 'undefined' && shouldShowGuideOnLogin()) {
+      window.dispatchEvent(new CustomEvent('aap:show-guide-modal', { detail: { showDontAskAgain: true } }));
+    }
+    navigate('/', { replace: true });
   };
 }
 

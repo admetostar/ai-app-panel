@@ -1,4 +1,4 @@
-name: Docker Publish + FPK Release
+﻿name: Docker Publish + FPK Release
 
 on:
   push:
@@ -17,7 +17,7 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  APP_NAME: ai-app-portal
+  APP_NAME: AI-SuperPanel
 
 jobs:
   # 审计建议（2026-09-16 §8）：CI 固定 Node 版本跑全量测试；测试本身即
@@ -170,8 +170,8 @@ jobs:
           VER="$(node -p "require('./package.json').version")"
           bash deploy/fpk/build-fpk.sh "$VER" ${{ matrix.platform }}
           mkdir -p dist
-          cp "deploy/fpk/dist/ai-app-portal_${VER}_${{ matrix.platform }}.fpk" dist/
-          (cd dist && sha256sum "ai-app-portal_${VER}_${{ matrix.platform }}.fpk" > "SHA256SUMS_${{ matrix.platform }}.txt")
+          cp "deploy/fpk/dist/AI-SuperPanel_${VER}_${{ matrix.platform }}.fpk" dist/
+          (cd dist && sha256sum "AI-SuperPanel_${VER}_${{ matrix.platform }}.fpk" > "SHA256SUMS_${{ matrix.platform }}.txt")
           ls -l dist/
 
       - name: 上传构建产物
@@ -202,15 +202,16 @@ jobs:
             dist/*.fpk
             dist/SHA256SUMS_*.txt
           body: |
-            ## AI应用门户
+            ## AI超级面板
 
-            解决 agent 写完代码之后的「下一站」：agent 生成的网页 / 小工具 / Python 应用按 .neon-aap 规范一键上架，他人点开即用，无需装环境。自托管 AI 应用网关 + 门户：统一入口 / 自动 HTTPS / 登录鉴权 / 主题品牌 / LLM 网关 / 计费。
+            解决 agent 写完代码之后的「下一站」：agent 生成的网页 / 小工具 / Python 应用按 .asp-app 规范一键上架，他人点开即用，无需装环境。自托管 AI 应用网关 + 门户：统一入口 / 自动 HTTPS / 登录鉴权 / 主题品牌 / LLM 网关 / 计费。
 
             ## 部署方式
 
-            - **飞牛 fnOS（原生 FPK）**：按设备架构下载 `ai-app-portal_<版本>_x86.fpk`（x86 设备）或 `ai-app-portal_<版本>_arm.fpk`（ARM 设备），应用中心手动安装；校验和见 `SHA256SUMS_*.txt`。桌面图标经统一网关进入，业务鉴权由门户自带账号体系完成；管理员初始密码在应用数据目录 `app.log`（TRIM_PKGVAR），登录后请立即改密并绑定 MFA。
+            - **飞牛 fnOS（原生 FPK）**：按设备架构下载 `AI-SuperPanel_<版本>_x86.fpk`（x86 设备）或 `AI-SuperPanel_<版本>_arm.fpk`（ARM 设备），应用中心手动安装；校验和见 `SHA256SUMS_*.txt`。桌面图标经统一网关进入，业务鉴权由门户自带账号体系完成；管理员初始密码在应用数据目录 `app.log`（TRIM_PKGVAR），登录后请立即改密并绑定 MFA。
             - **Docker 多架构镜像**（amd64/arm64，非飞牛环境）：
               ```
               docker pull ghcr.io/${{ github.repository }}:${{ github.ref_name }}
               ```
               管理员初始密码打印在容器日志（`docker logs`）。
+

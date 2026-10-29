@@ -1,8 +1,8 @@
 /**
- * .neon-aap 运行与审核（M4，G3/G4/G5）：
+ * .asp-app 运行与审核（M4，G3/G4/G5）：
  *  - POST /api/apps/:id/run            invoked 执行（requireAuth + 可见性门禁；运行记录入 app_runs + 审计）
  *  - GET  /api/apps/:id/meta           执行页元数据（入参 schema 等；匿名按可见性门禁可读公开应用）
- *  - POST /api/apps/submit             用户上传 .neon-aap（requireAuth；默认私有可见，归属=上传者；
+ *  - POST /api/apps/submit             用户上传 .asp-app（requireAuth；默认私有可见，归属=上传者；
  *                                      正式目录写入一律在归属校验之后，防止同名包清空他人应用）
  *  - POST /api/apps/:id/submit-review  提交审核（requireAuth；版本更新=重新审核）
  *  - GET  /api/apps/mine               我的应用（requireAuth，含审核状态）
@@ -175,7 +175,7 @@ appsRunRouter.get(
     const app = loadApp(String(req.params.id));
     if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
     if (!canManageEnv(app, req.user!)) throw new HttpError(403, 'FORBIDDEN', '只有归属者或管理员可以查看环境变量');
-    if (app.kind !== 'package') throw new HttpError(400, 'NOT_PACKAGE', '环境变量仅对 .neon-aap 包生效');
+    if (app.kind !== 'package') throw new HttpError(400, 'NOT_PACKAGE', '环境变量仅对 .asp-app 包生效');
 
     const spec = envSpecOfStored(app.id);
     const rows = getDb()
@@ -229,7 +229,7 @@ appsRunRouter.put(
     const app = loadApp(String(req.params.id));
     if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
     if (!canManageEnv(app, req.user!)) throw new HttpError(403, 'FORBIDDEN', '只有归属者或管理员可以修改环境变量');
-    if (app.kind !== 'package') throw new HttpError(400, 'NOT_PACKAGE', '环境变量仅对 .neon-aap 包生效');
+    if (app.kind !== 'package') throw new HttpError(400, 'NOT_PACKAGE', '环境变量仅对 .asp-app 包生效');
 
     const spec = envSpecOfStored(app.id);
     const body = (req.body ?? {}) as { values?: Record<string, unknown> };
@@ -287,7 +287,7 @@ appsRunRouter.put(
   }),
 );
 
-// ---------- 用户提交 .neon-aap（默认私有；版本更新=重新审核） ----------
+// ---------- 用户提交 .asp-app（默认私有；版本更新=重新审核） ----------
 
 appsRunRouter.post(
   '/apps/submit',
@@ -470,7 +470,7 @@ appsRunRouter.post(
     if (app.ownerUserId !== req.user!.id && req.user!.role !== 'admin') {
       throw new HttpError(403, 'FORBIDDEN', '只有归属者可以提交审核');
     }
-    if (app.kind !== 'package') throw new HttpError(400, 'NOT_PACKAGE', '仅 .neon-aap 包需要审核');
+    if (app.kind !== 'package') throw new HttpError(400, 'NOT_PACKAGE', '仅 .asp-app 包需要审核');
     // 官方签名（信任公钥命中）→ 免审：直接 approved（G4）
     const auto = app.signatureStatus === 'verified';
     getDb()

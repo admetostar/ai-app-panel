@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 应用注册表（B4）：DB 为唯一事实源，SQLite 本地读足够快（无网络），
  * 每次读取即拿到最新数据 → 管理 CRUD「保存即生效」天然成立。
  * urlSecret AES-256-GCM 加密落盘，转发时才解密拼入，绝不下发浏览器。
@@ -62,8 +62,8 @@ export function isSlug(id: string): boolean {
 }
 
 /**
- * FPK 统一网关形态下，应用 ID 不得与网关前缀末段相同（GATEWAY_PREFIX=/app/ai-app-portal
- * 时即禁止 id=ai-app-portal）：入口层会把 /app/<末段>/... 整体剥前缀进门户路由，
+ * FPK 统一网关形态下，应用 ID 不得与网关前缀末段相同（GATEWAY_PREFIX=/app/AI-SuperPanel
+ * 时即禁止 id=AI-SuperPanel）：入口层会把 /app/<末段>/... 整体剥前缀进门户路由，
  * 同名应用的反代路径将永远不可达。端口/容器形态（未配置前缀）不受限。
  */
 export function idConflictsWithGatewayPrefix(id: string, prefix = config.gatewayPrefix): boolean {
@@ -150,3 +150,4 @@ export function isVisibleInPortal(app: AppRow, user: { id: number; role: string 
   if (app.visibility !== 'private') return true;
   return Boolean(user && app.ownerUserId === user.id);
 }
+

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # ============================================================================
 # 快速部署：本地构建 + docker cp 灌入（轻量测试机首选，零服务器下载）
 #
@@ -25,8 +25,8 @@ set -euo pipefail
 HOST="${AAP_DEPLOY_HOST:?'必须通过环境变量指定部署目标：AAP_DEPLOY_HOST=user@host ./deploy/fast-deploy.sh'}"
 KEY="${AAP_DEPLOY_KEY:-$HOME/.ssh/aap_portal_test}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REMOTE_DIR="/opt/ai-app-portal"
-CONTAINER="ai-app-portal"
+REMOTE_DIR="/opt/AI-SuperPanel"
+CONTAINER="AI-SuperPanel"
 
 echo "==> [1/3] 本地构建 shared -> server -> web"
 pnpm --filter @aap/shared build
@@ -56,8 +56,9 @@ docker cp "$REMOTE_DIR/apps/server/dist/."           "$CONTAINER:/out/dist/"
 docker cp "$REMOTE_DIR/apps/web/dist/."              "$CONTAINER:/out/public/"
 docker cp "$REMOTE_DIR/packages/aap-sdk/."           "$CONTAINER:/out/aap-sdk/"
 docker cp "$REMOTE_DIR/apps/server/drizzle/."        "$CONTAINER:/out/drizzle/"
-docker cp "$REMOTE_DIR/ai-app-portal-docs/app-develop.skill-v0.2.md"     "$CONTAINER:/out/assets/app-develop.skill-v0.2.md"
-docker cp "$REMOTE_DIR/ai-app-portal-docs/app-develop-internal.skill.md" "$CONTAINER:/out/assets/app-develop-internal.skill.md"
+docker cp "$REMOTE_DIR/docs/app-develop.skill-v0.2.md"     "$CONTAINER:/out/assets/app-develop.skill-v0.2.md"
+docker cp "$REMOTE_DIR/docs/asp-app-develop.skill"         "$CONTAINER:/out/assets/asp-app-develop.skill"
+docker cp "$REMOTE_DIR/docs/app-develop-internal.skill.md" "$CONTAINER:/out/assets/app-develop-internal.skill.md"
 docker cp "$REMOTE_DIR/README.md"                    "$CONTAINER:/out/assets/README.md"
 docker restart "$CONTAINER" >/dev/null
 sleep 6
@@ -68,3 +69,4 @@ echo
 REMOTE_SCRIPT
 
 echo "==> 部署完成"
+

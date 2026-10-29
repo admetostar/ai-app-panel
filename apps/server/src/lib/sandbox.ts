@@ -1,5 +1,5 @@
 /**
- * .neon-aap Python 沙箱运行管理器（M4，G2）：
+ * .asp-app Python 沙箱运行管理器（M4，G2）：
  *  - invoked：每次执行拉起子进程（python3 runner.py），stdin JSON / stdout JSON，超时强杀
  *  - persistent：首次访问拉起长驻进程（注入 PORT），空闲回收、崩溃重启一次
  * 隔离现状：SDK 出网的受控通道 = 平台 egress 代理（白名单/IP 黑名单逐跳校验，

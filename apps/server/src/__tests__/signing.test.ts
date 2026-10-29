@@ -60,7 +60,7 @@ function keygen(): { secretFile: string; pubB64: string } {
 
 function signWithCli(zipBuf: Buffer, secretFile: string, signer: string): Buffer {
   const d = tmpdir();
-  const pkg = path.join(d, 'pkg.neon-aap');
+  const pkg = path.join(d, 'pkg.asp-app');
   fs.writeFileSync(pkg, zipBuf);
   execSync(
     `node ${JSON.stringify(CLI)} sign ${JSON.stringify(pkg)} --key ${JSON.stringify(secretFile)} --signer ${JSON.stringify(signer)}`,
@@ -77,7 +77,7 @@ function submit(dataBase64: string): Promise<{ status: number; body: { review?: 
   return fetch(`${base}/api/apps/submit`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-    body: JSON.stringify({ filename: 'pkg.neon-aap', dataBase64 }),
+    body: JSON.stringify({ filename: 'pkg.asp-app', dataBase64 }),
   }).then(async (r) => ({ status: r.status, body: (await r.json()) as { review?: string; error?: { code?: string } } }));
 }
 

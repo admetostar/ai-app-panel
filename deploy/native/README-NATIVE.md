@@ -1,4 +1,4 @@
-# AI应用门户 — 原生运行包（无 Docker）
+﻿# AI超级面板 — 原生运行包（无 Docker）
 
 自包含部署包：自带 glibc 版 Node 22 二进制与全部依赖（含按目标平台编译的
 better-sqlite3），解压即跑，**不需要 Docker、不需要安装 Node**。
@@ -9,7 +9,7 @@ better-sqlite3），解压即跑，**不需要 Docker、不需要安装 Node**�
 > 仍不行请 `apt install python3-pip`；需要宿主可访问 pip 源，可用环境变量
 > `PIP_INDEX_URL` 指定国内镜像；补装失败不阻断启动，flask 类 persistent 包会
 > 503 并在日志留线索）。
-> .neon-aap 包自身的第三方依赖走 manifest `requirements` 声明制，上传时自动
+> .asp-app 包自身的第三方依赖走 manifest `requirements` 声明制，上传时自动
 > 安装（同样经宿主 pip，装到应用数据目录，平台升级不丢）。
 
 ## 快速开始
@@ -29,40 +29,40 @@ ADMIN_INITIAL_PASSWORD='你的初始密码' ./start.sh     # 前台启动，Ctrl
 
 ```bash
 sudo useradd -r -u 10001 -s /usr/sbin/nologin aap || true
-sudo mkdir -p /opt/ai-app-portal /var/lib/ai-app-portal
-sudo tar -xzf ai-app-portal-native_<版本>_linux_<arch>.tar.gz -C /opt/ai-app-portal --strip-components=1
-sudo chown -R aap:aap /opt/ai-app-portal /var/lib/ai-app-portal
+sudo mkdir -p /opt/AI-SuperPanel /var/lib/AI-SuperPanel
+sudo tar -xzf ai-app-portal-native_<版本>_linux_<arch>.tar.gz -C /opt/AI-SuperPanel --strip-components=1
+sudo chown -R aap:aap /opt/AI-SuperPanel /var/lib/AI-SuperPanel
 ```
 
-`/etc/systemd/system/ai-app-portal.service`：
+`/etc/systemd/system/AI-SuperPanel.service`：
 
 ```ini
 [Unit]
-Description=AI应用门户（ai-app-portal）
+Description=AI超级面板（AI-SuperPanel）
 After=network.target
 
 [Service]
 User=aap
 Group=aap
-WorkingDirectory=/opt/ai-app-portal
-Environment=DATA_DIR=/var/lib/ai-app-portal
+WorkingDirectory=/opt/AI-SuperPanel
+Environment=DATA_DIR=/var/lib/AI-SuperPanel
 Environment=ADMIN_INITIAL_PASSWORD=CHANGE_ME_FIRST_BOOT
-ExecStart=/opt/ai-app-portal/start.sh
+ExecStart=/opt/AI-SuperPanel/start.sh
 Restart=on-failure
 RestartSec=3
 
 # 可选加固（沙箱包代码在宿主进程外运行，按需启用）
 NoNewPrivileges=true
 ProtectSystem=full
-ReadWritePaths=/var/lib/ai-app-portal
+ReadWritePaths=/var/lib/AI-SuperPanel
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl daemon-reload && sudo systemctl enable --now ai-app-portal
-journalctl -u ai-app-portal -f        # 首次启动日志里有管理员凭据
+sudo systemctl daemon-reload && sudo systemctl enable --now AI-SuperPanel
+journalctl -u AI-SuperPanel -f        # 首次启动日志里有管理员凭据
 ```
 
 ## 安全基线（与 Docker 形态同一条红线）
@@ -79,3 +79,4 @@ Docker 形态的 `SANDBOX_UID/GID=10001` 在原生形态下由 systemd `User=` �
 - 升级 = 解压新版本包替换程序文件（数据目录勿动）；无镜像版本管理
 - fnOS 应用中心对「非 Docker 类」包的支持待与官方文档核实（fpk README
   待确认清单）；当前以 systemd / 手动方式运行，不改用统一网关桌面入口
+

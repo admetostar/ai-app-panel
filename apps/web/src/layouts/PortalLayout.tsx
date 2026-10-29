@@ -1,12 +1,13 @@
-import { Space, Button, theme as antdTheme } from 'antd';
+﻿import { Space, Button, theme as antdTheme } from 'antd';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Outlet, useNavigate } from 'react-router-dom';
 import { UserOutlined, LogoutOutlined } from '@ant-design/icons';
 import type { PortalBootstrap } from '@aap/shared';
 import { api } from '../api/client';
-import { useTheme } from '../theme/themes';
 import { BeianFooter } from '../components/BeianFooter';
 import { useSession, useLogout } from '../state/session';
+import { GuideModal } from '../pages/Guide';
 
 /**
  * 门户 shell：品牌头（logo/站名/标语）+ 主题切换（W1 演示位，W7 收进用户菜单）
@@ -22,6 +23,21 @@ export function PortalLayout() {
   const { me } = useSession();
   const logout = useLogout();
   const { token } = antdTheme.useToken();
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [guideShowDontAskAgain, setGuideShowDontAskAgain] = useState(true);
+
+  useEffect(() => {
+    const handleShowGuide = (event: Event) => {
+      const detail = (event as CustomEvent<{ showDontAskAgain?: boolean }>).detail;
+      setGuideShowDontAskAgain(detail?.showDontAskAgain ?? true);
+      setGuideOpen(true);
+    };
+
+    window.addEventListener('aap:show-guide-modal', handleShowGuide as EventListener);
+    return () => {
+      window.removeEventListener('aap:show-guide-modal', handleShowGuide as EventListener);
+    };
+  }, []);
 
   const branding = data?.branding;
 
@@ -49,14 +65,14 @@ export function PortalLayout() {
                 {branding?.siteName?.[0] ?? 'A'}
               </span>
             )}
-            <span className="aap-site-name">{branding?.siteName ?? 'AI应用门户'}</span>
+            <span className="aap-site-name">{branding?.siteName ?? 'AI超级面板'}</span>
           </div>
         </Link>
         {branding?.tagline ? <span className="aap-tagline">{branding.tagline}</span> : null}
         <div style={{ flex: 1 }} />
         <Space size="small" wrap={false}>
           <Link to="/guide" style={{ fontSize: 13 }}>
-            开发指南
+            操作指南
           </Link>
           {me ? (
             <>
@@ -95,7 +111,13 @@ export function PortalLayout() {
       <main className="aap-main">
         <Outlet />
       </main>
+      <GuideModal
+        open={guideOpen}
+        showDontAskAgain={guideShowDontAskAgain}
+        onClose={() => setGuideOpen(false)}
+      />
       {branding ? <BeianFooter branding={branding} /> : null}
     </div>
   );
 }
+

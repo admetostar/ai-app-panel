@@ -1,4 +1,4 @@
-# .neon-aap 包签名机制（Ed25519 信任链）
+# .asp-app 包签名机制（Ed25519 信任链）
 
 > 设计参照 fnos-dashboard 的 ndash 签名方案；算法 Ed25519（RFC 8032），
 > 服务端验证用 Node 内置 crypto（`apps/server/src/lib/signing.ts`），
@@ -13,7 +13,7 @@
 ## 二、包结构
 
 ```
-pkg.neon-aap（ZIP）
+pkg.asp-app（ZIP）
 ├── manifest.json      必需
 ├── index.html / mod.py …
 └── signature.json     可选（sign 子命令生成/覆盖）
@@ -46,10 +46,10 @@ UTF-8 字节序」排序，逐项计算 `name_utf8 + 0x00 + sha256(content)` 并
 node packages/aap-sdk/sign-aap.mjs keygen -o mykey.secret
 
 # 打包后签名（会覆盖包内 signature.json）
-node packages/aap-sdk/sign-aap.mjs sign dist/demo.neon-aap --key mykey.secret --signer your-name
+node packages/aap-sdk/sign-aap.mjs sign dist/demo.asp-app --key mykey.secret --signer your-name
 
 # 发行前自检（只验完整性；「可信」由平台信任列表判定）
-node packages/aap-sdk/sign-aap.mjs verify dist/demo.neon-aap
+node packages/aap-sdk/sign-aap.mjs verify dist/demo.asp-app
 ```
 
 ⚠️ 修改包内容后必须**重新签名**，否则平台判定 `invalid` 拒绝上传。

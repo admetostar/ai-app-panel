@@ -101,7 +101,7 @@ def handle(input, aap):
     const submit = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ filename: 'hellotool.neon-aap', dataBase64 }),
+      body: JSON.stringify({ filename: 'hellotool.asp-app', dataBase64 }),
     });
     expect(submit.status).toBe(200);
 
@@ -151,7 +151,7 @@ def handle(input, aap):
     const submit = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ filename: 'nosytool.neon-aap', dataBase64 }),
+      body: JSON.stringify({ filename: 'nosytool.asp-app', dataBase64 }),
     });
     expect(submit.status).toBe(200);
 
@@ -219,7 +219,7 @@ def handle(input, aap):
     const submit = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ filename: 'sneakytool.neon-aap', dataBase64 }),
+      body: JSON.stringify({ filename: 'sneakytool.asp-app', dataBase64 }),
     });
     expect(submit.status).toBe(200);
 
@@ -298,7 +298,7 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
     const submit = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ filename: 'persistapp.neon-aap', dataBase64 }),
+      body: JSON.stringify({ filename: 'persistapp.asp-app', dataBase64 }),
     });
     expect(submit.status).toBe(200);
 
@@ -405,7 +405,7 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
     const submit = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ filename: 'persistpath.neon-aap', dataBase64 }),
+      body: JSON.stringify({ filename: 'persistpath.asp-app', dataBase64 }),
     });
     expect(submit.status).toBe(200);
 
@@ -504,7 +504,7 @@ describe('M4 安全回归（鉴权与归属校验）', () => {
     const submit = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({ filename: 'x.neon-aap', dataBase64: 'AAAA' }),
+      body: JSON.stringify({ filename: 'x.asp-app', dataBase64: 'AAAA' }),
     });
     expect(submit.status).toBe(401);
     const mine = await fetch(`${base}/api/apps/mine`);
@@ -527,7 +527,7 @@ describe('M4 安全回归（鉴权与归属校验）', () => {
     const up = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ filename: 'victimapp.neon-aap', dataBase64: victimPkg }),
+      body: JSON.stringify({ filename: 'victimapp.asp-app', dataBase64: victimPkg }),
     });
     expect(up.status).toBe(200);
 
@@ -553,7 +553,7 @@ describe('M4 安全回归（鉴权与归属校验）', () => {
     const evil = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: malloryCookie },
-      body: JSON.stringify({ filename: 'evil.neon-aap', dataBase64: evilPkg }),
+      body: JSON.stringify({ filename: 'evil.asp-app', dataBase64: evilPkg }),
     });
     expect(evil.status).toBe(409);
     expect(((await evil.json()) as { error: { code: string } }).error.code).toBe('APP_EXISTS');

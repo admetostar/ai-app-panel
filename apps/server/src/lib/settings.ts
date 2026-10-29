@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 运行时配置（settings 表）——移植自参考实现 lib/settings.js 模式：
  * env 只作首次种子的初值；后台改值即时生效（getSetting 运行时读）。
  * 管理端展示用 SETTING_DEFS 的 desc（E2：一句话说明）与 advanced（高级项折叠）。
@@ -51,13 +51,13 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   // ---- 品牌（A1，数据化品牌，默认纯净） ----
   SITE_NAME: {
     label: '站点名称',
-    group: '站点与品牌', type: 'string', desc: '站点名称', initial: () => 'AI应用门户', defaultsWork: true },
+    group: '站点与品牌', type: 'string', desc: '站点名称', initial: () => 'AI超级面板', defaultsWork: true },
   SITE_TAGLINE: {
     label: '站点标语',
     group: '站点与品牌',
     type: 'string',
     desc: '站点标语（门户副标题）',
-    initial: () => '统一入口 · 安全发布 · 模型托底',
+    initial: () => '轻量AI应用的统一托管平台',
     defaultsWork: true,
   },
   LOGO: {
@@ -253,10 +253,10 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     group: '应用网关', type: 'int', desc: '应用网关上游超时（秒，仅覆盖首字节/HTML 拉取，不断流式连接）', initial: () => String(config.proxyTimeoutSec), defaultsWork: true, advanced: true },
   SANDBOX_MAX_CONCURRENT_RUNS: {
     label: '沙箱并发执行上限',
-    group: '应用网关', type: 'int', desc: '.neon-aap invoked 执行的全局并发进程数上限（超出排队，防进程炸弹）', initial: () => '8', defaultsWork: true, advanced: true },
+    group: '应用网关', type: 'int', desc: '.asp-app invoked 执行的全局并发进程数上限（超出排队，防进程炸弹）', initial: () => '8', defaultsWork: true, advanced: true },
   UPLOAD_PER_USER_PER_DAY: {
     label: '单用户每日上传上限',
-    group: '应用网关', type: 'int', desc: '每用户 24 小时内最多提交的 .neon-aap 包次数（含版本更新）；0 = 不限。防脚本化刷包写满数据卷（内存计数，重启归零）', initial: () => '20', defaultsWork: true, advanced: true },
+    group: '应用网关', type: 'int', desc: '每用户 24 小时内最多提交的 .asp-app 包次数（含版本更新）；0 = 不限。防脚本化刷包写满数据卷（内存计数，重启归零）', initial: () => '20', defaultsWork: true, advanced: true },
   UPLOAD_MIN_FREE_MB: {
     label: '上传磁盘水位（MB）',
     group: '应用网关', type: 'int', desc: '数据卷剩余空间低于该值（MB）时拒绝新包上传，防解压写满盘拖垮整站；0 = 不检查', initial: () => '512', defaultsWork: true, advanced: true },
@@ -322,7 +322,7 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     group: '通知通道（验证码发信）', type: 'string', desc: 'SMTP 密码/授权码', initial: () => '', secret: true, defaultsWork: false },
   SMTP_FROM: {
     label: 'SMTP 发件人',
-    group: '通知通道（验证码发信）', type: 'string', desc: '发件人（如 "AI应用门户 <no-reply@example.com>"）', initial: () => '', defaultsWork: false },
+    group: '通知通道（验证码发信）', type: 'string', desc: '发件人（如 "AI超级面板 <no-reply@example.com>"）', initial: () => '', defaultsWork: false },
   MAIL_PROVIDER: {
     label: '发信方式',
     group: '通知通道（验证码发信）', type: 'string', options: ['smtp', 'resend'],
@@ -335,7 +335,7 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   RESEND_FROM: {
     label: 'Resend 发件人',
     group: '通知通道（验证码发信）', type: 'string',
-    desc: 'Resend 发件人（留空：默认用沙箱发件人 onboarding@resend.dev，仅能发给本 Resend 账号注册邮箱；绑定自有域名后填 "AI应用门户 <no-reply@mail.example.com>" 即可发给任意用户）',
+    desc: 'Resend 发件人（留空：默认用沙箱发件人 onboarding@resend.dev，仅能发给本 Resend 账号注册邮箱；绑定自有域名后填 "AI超级面板 <no-reply@mail.example.com>" 即可发给任意用户）',
     initial: () => '', defaultsWork: true },
 };
 
@@ -402,3 +402,4 @@ export function updateSettingFromAdmin(key: string, value: string): void {
   if (def.secret && (value === '' || value === '********')) return;
   setSetting(key, value);
 }
+

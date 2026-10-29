@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+﻿import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -48,7 +48,7 @@ describe('W1 冒烟', () => {
     const res = await fetch(`${baseUrl}/api/portal/bootstrap`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as PortalBootstrap;
-    expect(body.branding.siteName).toBe('AI应用门户');
+    expect(body.branding.siteName).toBe('AI超级面板');
     expect(body.registration.mode).toBe('closed');
     expect(body.needsInit).toBe(true);
   });
@@ -60,3 +60,4 @@ describe('W1 冒烟', () => {
     expect(body.error.code).toBe('NOT_FOUND');
   });
 });
+

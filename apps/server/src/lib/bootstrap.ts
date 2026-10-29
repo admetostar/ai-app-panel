@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 首次初始化（F3，Docker 形态的种子逻辑）：users 为空时创建初始管理员——
  * 随机密码（或 ADMIN_INITIAL_PASSWORD）打印容器日志 + 写 data/ 一次性凭据
  * 文件（0600）；管理员首次登录（强制改密流程）时删除该文件。
@@ -56,7 +56,7 @@ export async function ensureInitialAdmin(): Promise<void> {
 
   // 凭据落盘（0600）+ 打印日志
   const content = [
-    '=== AI应用门户 初始管理员凭据（一次性，首次登录后本文件自动删除） ===',
+    '=== AI超级面板 初始管理员凭据（一次性，首次登录后本文件自动删除） ===',
     `地址: http://localhost:${config.port}`,
     `用户名: ${username}`,
     `密码: ${password}`,
@@ -136,3 +136,4 @@ export function getLocalPasswordHash(userId: number): string | null {
       .get()?.h ?? null
   );
 }
+

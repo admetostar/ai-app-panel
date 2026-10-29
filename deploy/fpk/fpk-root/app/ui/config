@@ -1,7 +1,7 @@
-{
+﻿{
   ".url": {
-    "ai-app-portal.main": {
-      "title": "AI应用门户",
+    "AI-SuperPanel.main": {
+      "title": "AI超级面板",
       "icon": "images/icon_{0}.png",
       "type": "url",
       "protocol": "http",
@@ -11,3 +11,4 @@
     }
   }
 }
+

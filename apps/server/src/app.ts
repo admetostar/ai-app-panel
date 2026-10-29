@@ -57,7 +57,7 @@ export function createApp(cfg: AapConfig = config): Express {
   app.use(sessionMiddleware);
 
   // /api 下的 JSON body 与 CSRF Origin 校验；/app 代理路径不经过这里（W5 起独立挂载）。
-  // 大包体路径（.neon-aap 上传）不在全局解析：由路由内在鉴权之后用 15mb 解析器处理，
+  // 大包体路径（.asp-app 上传）不在全局解析：由路由内在鉴权之后用 15mb 解析器处理，
   // 避免匿名 15MB JSON 解析 DoS 面（渗透测试排除项之一）
   const LARGE_BODY_PATHS = new Set(['/api/admin/apps/package', '/api/admin/apps/package/preview', '/api/apps/submit']);
   app.use('/api', (req, res, next) => {

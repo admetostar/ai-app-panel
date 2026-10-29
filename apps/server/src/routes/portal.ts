@@ -1,4 +1,4 @@
-import { Router } from 'express';
+﻿import { Router } from 'express';
 import { sql } from 'drizzle-orm';
 import type { PortalBootstrap, RegistrationMode } from '@aap/shared';
 import { getDb } from '../db/index.js';
@@ -18,7 +18,7 @@ portalRouter.get('/portal/bootstrap', (_req, res) => {
   const mode = (getSetting('REGISTRATION_MODE') ?? 'closed') as RegistrationMode;
   const bootstrap: PortalBootstrap = {
     branding: {
-      siteName: getSetting('SITE_NAME') || 'AI应用门户',
+      siteName: getSetting('SITE_NAME') || 'AI超级面板',
       tagline: getSetting('SITE_TAGLINE') || '',
       logo: getSetting('LOGO') || null,
       themeId: getSetting('THEME_ID') || 'ocean',
@@ -36,3 +36,4 @@ portalRouter.get('/portal/bootstrap', (_req, res) => {
   };
   res.json(bootstrap);
 });
+

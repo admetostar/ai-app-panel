@@ -569,7 +569,7 @@ function AppsTab(): ReactNode {
 
   async function uploadPackage(): Promise<void> {
     if (!pkgFile) {
-      message.warning('请先选择 .neon-aap 包文件');
+      message.warning('请先选择 .asp-app 包文件');
       return;
     }
     try {
@@ -655,7 +655,7 @@ function AppsTab(): ReactNode {
           <Space size="small">
             <Button type="primary" onClick={() => { form.resetFields(); setVisMode('login'); setPkgFile(null); setPkgPreview(null); setEditing(null); setCreating('upstream'); }}>接入上游应用</Button>
             <Button onClick={() => { form.resetFields(); setVisMode('restricted'); setEditing(null); setCreating('html'); }}>接入 HTML 页</Button>
-            <Button onClick={() => { form.resetFields(); setVisMode('private'); setPkgFile(null); setPkgPreview(null); setEditing(null); setCreating('package'); }}>上传 .neon-aap</Button>
+            <Button onClick={() => { form.resetFields(); setVisMode('private'); setPkgFile(null); setPkgPreview(null); setEditing(null); setCreating('package'); }}>上传 .asp-app</Button>
           </Space>
         }
       >
@@ -736,7 +736,7 @@ function AppsTab(): ReactNode {
 
       {/* 接入 / 编辑 弹窗 */}
       <Modal
-        title={editing ? `编辑应用：${editing.name}` : creating === 'html' ? '接入 HTML 页' : creating === 'package' ? '上传 .neon-aap 包' : '接入上游应用'}
+        title={editing ? `编辑应用：${editing.name}` : creating === 'html' ? '接入 HTML 页' : creating === 'package' ? '上传 .asp-app 包' : '接入上游应用'}
         open={Boolean(creating) || Boolean(editing)}
         onCancel={() => { setCreating(null); setEditing(null); }}
         footer={null}
@@ -764,10 +764,10 @@ function AppsTab(): ReactNode {
           </Form.Item>
 
           {creating === 'package' ? (
-            <Form.Item label="包文件（.zip / .neon-aap）" required extra="自动校验完整性与 manifest；python 包需等待 M4 运行时">
+            <Form.Item label="包文件（.zip / .asp-app）" required extra="自动校验完整性与 manifest；python 包需等待 M4 运行时">
               <input
                 type="file"
-                accept=".zip,.neon-aap"
+                accept=".zip,.asp-app"
                 onChange={(e) => {
                   const f = e.target.files?.[0];
                   if (!f) return;

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Passkey（WebAuthn，A3）：@simplewebauthn/server 封装。
  * 双角色：已登录时的二次因子绑定；无密码主登录（discoverable credentials）。
  * 挑战存进程内（TTL 5 分钟）——单机部署语义；重启后需重新发起（可接受）。
@@ -48,7 +48,7 @@ export function rpInfo(req: Request): { rpID: string; rpName: string; origin: st
   const rpID = req.hostname;
   const hostHeader = (req.headers.host ?? req.hostname) as string;
   const proto = req.protocol;
-  return { rpID, rpName: getSetting('SITE_NAME') || 'AI应用门户', origin: `${proto}://${hostHeader}` };
+  return { rpID, rpName: getSetting('SITE_NAME') || 'AI超级面板', origin: `${proto}://${hostHeader}` };
 }
 
 export interface PasskeyView {
@@ -246,3 +246,4 @@ export function deletePasskey(userId: number, credentialId: string, isAdmin: boo
   }
   audit(`user:${userId}`, null, 'mfa.passkey.deleted', { id: credentialId });
 }
+

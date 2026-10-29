@@ -1,12 +1,12 @@
-# 开发者文档（DEVELOPMENT）
+﻿# 开发者文档（DEVELOPMENT）
 
-> 面向本仓库的开发者。产品需求见 `ai-app-portal-docs/ai-app-portal-PRD-v0.3.1.md`，
-> 应用（.neon-aap）开发规范见 `ai-app-portal-docs/app-develop.skill-v0.2.md`。
+> 面向本仓库的开发者。产品需求见 `./ai-app-portal-PRD-v0.3.1.md`，
+> 应用（.asp-app）开发规范见 `./app-develop.skill-v0.2.md`。
 
 ## 1. 架构总览
 
 ```
-用户 ──HTTPS──▶ ai-app-portal（Express 4 + TS，端口 8080/8443）
+用户 ──HTTPS──▶ AI-SuperPanel（Express 4 + TS，端口 8080/8443）
                   ├─ 门户 SPA（React 18 + Vite，生产由 server 托管 / 开发走 Vite 5173 代理）
                   ├─ 应用网关 /app/<id>/  ──▶ 反代上游（Dify/Streamlit…）或 托管 HTML 应用
                   │        └─ WS upgrade / SSE 零缓冲 / passUser 身份注入（X-AAP-Identity）
@@ -51,8 +51,8 @@ pnpm db:generate    # drizzle-kit 生成迁移（schema 变更后必跑）
 
 - 应用注册在 `apps` 表（管理后台 → 应用管理），三种形态 `kind`：
   - `upstream`：反代到内网上游（HTML 改写 + `<base>` + fetch/XHR/script 猴补丁 + 路径穿越双查 + `duplex:'half'` + SSE 零缓冲）
-  - `html`：门户托管静态页（`DATA_DIR/appsites/<id>/`），支持简单 HTML 粘贴接入与 .neon-aap html 包
-  - `package`：.neon-aap Python 包。`invoked` 经「统一执行入口」`POST /api/apps/:id/run` 拉起一次性进程运行；`persistent` 首次访问 `/app/<id>/` 时由平台拉起长驻进程并反代（HTTP 与 WebSocket 同通道，同一套门禁/限流；空闲回收 `SANDBOX_IDLE_RECYCLE_SECONDS` 默认 300s 可调、崩溃自动重启上限 3 次、并发执行上限 `SANDBOX_MAX_CONCURRENT_RUNS`、全局进程数上限 `SANDBOX_MAX_PERSISTENT`（默认 12，超限回收最久未用进程腾位））。反代转发前剥 `/app/<id>` 前缀（包路由挂根），前缀经 `x-forwarded-prefix` 下发、站内相对 `Location` 镜像回写；门户卡片直跳 `/app/<id>/`（`/open/<id>` 保留为兼容重定向页）
+  - `html`：门户托管静态页（`DATA_DIR/appsites/<id>/`），支持简单 HTML 粘贴接入与 .asp-app html 包
+  - `package`：.asp-app Python 包。`invoked` 经「统一执行入口」`POST /api/apps/:id/run` 拉起一次性进程运行；`persistent` 首次访问 `/app/<id>/` 时由平台拉起长驻进程并反代（HTTP 与 WebSocket 同通道，同一套门禁/限流；空闲回收 `SANDBOX_IDLE_RECYCLE_SECONDS` 默认 300s 可调、崩溃自动重启上限 3 次、并发执行上限 `SANDBOX_MAX_CONCURRENT_RUNS`、全局进程数上限 `SANDBOX_MAX_PERSISTENT`（默认 12，超限回收最久未用进程腾位））。反代转发前剥 `/app/<id>` 前缀（包路由挂根），前缀经 `x-forwarded-prefix` 下发、站内相对 `Location` 镜像回写；门户卡片直跳 `/app/<id>/`（`/open/<id>` 保留为兼容重定向页）
 - **用户包 iframe 沙箱（PRD G1 落地）**：归属者非管理员的 html/package 应用，入口渲染为门户外壳页 + `<iframe sandbox="allow-scripts …">`（**无 allow-same-origin**）加载 `/app/<id>/raw/…`；包内容运行在 opaque origin——读 `/api` 受 CORS 拦、写 `/api` 受 CSRF（Origin: null）拦，无同源 cookie 面；统一页面元素挂在外壳层（包代码不可触碰）；管理员自建应用保持既往直出行为。**raw 通道响应强制覆盖 `Content-Security-Policy: sandbox allow-scripts …; object-src 'none'; base-uri 'none'`（RAW_SANDBOX_CSP，HTTP 托管与 persistent 反代两路同一份）**——顶层导航直达 raw URL 同样被关进 opaque origin，iframe 不再是唯一隔离点（2026-09-19 审计 P0）；raw 判定锚定段边界 `^raw(?:/|$)`，`rawfoo` 类路径不再误判直出。
 - **审核门禁（G3 落地）**：`canAccess` 对 `reviewStatus` 为 pending/rejected 的应用仅放行归属者与管理员；非私有应用推未审新版先置 `enabled=false` 下线，审核通过恢复（「已公开应用推新版即时生效」的绕过路径已封堵）
 - WebSocket：HTTP 与 HTTPS server 均挂 `upgrade` → 路径匹配 → 会话鉴权 → 三态门禁 → TCP 管道；`persistent` 沙箱应用的 WS 经同一门禁透传到沙箱端口（与 HTTP 反代同路径语义：**转发前剥 `/app/<id>` 前缀并下发 `x-forwarded-prefix`**，raw 通道剥除 raw 段——2026-09-19 审计修复前 WS 未剥前缀，persistent 应用 WS 不可用）。
@@ -115,10 +115,10 @@ client = OpenAI(base_url="http://<host>:8080/v1", api_key="aapk_…")
 
 - 迁移：schema 改动后 `pnpm db:generate`，禁手改已发布迁移。
 - 单位指纹零进入：`X-Office-*`、校名/校色不进本仓库。
-- 契约变更：`packages/shared` 为单一来源；`.neon-aap` 接口面变更必须升版 `app-develop.skill` 并同步 internal skill。
+- 契约变更：`packages/shared` 为单一来源；`.asp-app` 接口面变更必须升版 `app-develop.skill` 并同步 internal skill。
 - 审计：账号/应用/网关/计费的关键动作全部落 `audit_logs`（保留期可配，分批清理）。
-- **沙箱隔离现状**：`.neon-aap` Python 进程的受控出网通道是平台 egress 代理（manifest 白名单 + IP 黑名单**逐跳**校验，`routes/aap.ts`）；runner 内置 **Python 层出站守卫**（`connect` 仅放行 `AAP_PLATFORM`，直连其余地址/Unix socket 报错，`AAP_NET_GUARD=0` 关闭）；子进程环境变量走白名单（`lib/sandbox.ts` 的 `SANDBOX_ENV_KEYS`）；invoked 执行有全局并发上限（`SANDBOX_MAX_CONCURRENT_RUNS`，默认 8，超出排队防进程炸弹）；persistent 有全局进程数上限（`SANDBOX_MAX_PERSISTENT`，默认 12，超限回收最久未用进程——任务状态应落 aap.db，重拉无损）；**persistent 空闲回收时长可配**（`SANDBOX_IDLE_RECYCLE_SECONDS`，默认 300s，最小 30s，管理端改完即时生效）；沙箱以预建的 aap 用户（10001）**默认降权运行**（compose `SANDBOX_UID`/`SANDBOX_GID` 已默认启用；存量部署升级时需一次性迁移数据卷属主 `chown -R 10001:10001 <data>/appsites`，新上传包目录由平台自动放宽权限）。**开放注册 + 允许用户上传包的部署必须保持降权**，否则任意注册用户可读全站凭据哈希与 master.key（二轮渗透实测）。配套收紧：平台库 `app.db/-wal/-shm` 由 initDb 即时收紧为 0600 并挂周期兜底（checkpoint 重建后仍保持），`master.key` 0600——沙箱 uid 对两者均不可读。**进程级禁网、CPU/内存限额与 ns/cgroups 硬隔离仍未实装**（Python 层守卫属纵深防御，非硬保证），第三方包必须先经审核流（G3）再放开可见性。
-- **应用环境变量 / 机密（G6）**：包在 manifest `env` 声明变量（required/secret/pattern/default，保留名黑名单防劫持 `AAP_*`/`PORT`/代理变量等平台注入面，`parseEnvSpec`），归属者/管理员经 `GET/PUT /api/apps/:id/env` 填值（`app_env_vars` 表 AES-256-GCM 加密落盘，secret 只写不读仅回尾 4 位 hint，审计只记名不记值）。除机密外，env 亦是**应用级默认配置**的承载（如 llm-proofread 的 `PROOFREAD_PROMPT`/`COHERENCE_PROMPT`：归属者配置对所有用户生效，用户个人设置可覆盖）；`baseEnv()` 在 invoked/persistent 沙箱启动时注入（未配置非机密变量回退声明 default）；必填缺配在执行（400 ENV_MISSING）/拉起（503 错误页）时明确拦截；persistent 配置变更后自动重启进程。入口：管理后台·应用管理与用户中心·我的应用的「环境变量」弹窗。规范见 `ai-app-portal-docs/app-develop.skill-v0.2.md` §1.1。
+- **沙箱隔离现状**：`.asp-app` Python 进程的受控出网通道是平台 egress 代理（manifest 白名单 + IP 黑名单**逐跳**校验，`routes/aap.ts`）；runner 内置 **Python 层出站守卫**（`connect` 仅放行 `AAP_PLATFORM`，直连其余地址/Unix socket 报错，`AAP_NET_GUARD=0` 关闭）；子进程环境变量走白名单（`lib/sandbox.ts` 的 `SANDBOX_ENV_KEYS`）；invoked 执行有全局并发上限（`SANDBOX_MAX_CONCURRENT_RUNS`，默认 8，超出排队防进程炸弹）；persistent 有全局进程数上限（`SANDBOX_MAX_PERSISTENT`，默认 12，超限回收最久未用进程——任务状态应落 aap.db，重拉无损）；**persistent 空闲回收时长可配**（`SANDBOX_IDLE_RECYCLE_SECONDS`，默认 300s，最小 30s，管理端改完即时生效）；沙箱以预建的 aap 用户（10001）**默认降权运行**（compose `SANDBOX_UID`/`SANDBOX_GID` 已默认启用；存量部署升级时需一次性迁移数据卷属主 `chown -R 10001:10001 <data>/appsites`，新上传包目录由平台自动放宽权限）。**开放注册 + 允许用户上传包的部署必须保持降权**，否则任意注册用户可读全站凭据哈希与 master.key（二轮渗透实测）。配套收紧：平台库 `app.db/-wal/-shm` 由 initDb 即时收紧为 0600 并挂周期兜底（checkpoint 重建后仍保持），`master.key` 0600——沙箱 uid 对两者均不可读。**进程级禁网、CPU/内存限额与 ns/cgroups 硬隔离仍未实装**（Python 层守卫属纵深防御，非硬保证），第三方包必须先经审核流（G3）再放开可见性。
+- **应用环境变量 / 机密（G6）**：包在 manifest `env` 声明变量（required/secret/pattern/default，保留名黑名单防劫持 `AAP_*`/`PORT`/代理变量等平台注入面，`parseEnvSpec`），归属者/管理员经 `GET/PUT /api/apps/:id/env` 填值（`app_env_vars` 表 AES-256-GCM 加密落盘，secret 只写不读仅回尾 4 位 hint，审计只记名不记值）。除机密外，env 亦是**应用级默认配置**的承载（如 llm-proofread 的 `PROOFREAD_PROMPT`/`COHERENCE_PROMPT`：归属者配置对所有用户生效，用户个人设置可覆盖）；`baseEnv()` 在 invoked/persistent 沙箱启动时注入（未配置非机密变量回退声明 default）；必填缺配在执行（400 ENV_MISSING）/拉起（503 错误页）时明确拦截；persistent 配置变更后自动重启进程。入口：管理后台·应用管理与用户中心·我的应用的「环境变量」弹窗。规范见 `./app-develop.skill-v0.2.md` §1.1。
 - 包上传安全语义：用户提交（`POST /api/apps/submit`）与执行（`/api/apps/:id/run`）均要求登录；正式目录的写入/删除一律在归属校验与同名查重之后（admin 上传 409 不触碰既有站点目录）；临时目录按请求唯一命名；15MB 包体 JSON 在鉴权之后解析（匿名大包 DoS 面收敛）。
 - **python 包第三方依赖（skill v0.2.6 声明制）**：manifest `requirements` 声明（`parseRequirements` 仅收「名称[extras]+版本约束」，拒 URL/本地路径/-r，上限 32 条），**上传/更新时服务端 `pip install --only-binary=:all: --target <appsites>/<id>/.deps`**（`lib/pydeps.ts`，超时 300s；失败=上传被拒并清理正式目录，不带病上线）；沙箱 `baseEnv` 注入 `PYTHONPATH=.deps`（native/FPK `start.sh` 自检补装的预置框架目录经 `AAP_PREINSTALLED_PYTHONPATH` 前置——docker 镜像预装 py3-flask 无此环节）。安装源走「应用网关 → pip 索引源」设置（`PIP_INDEX_URL`，默认官方 PyPI）；新版本不再声明的依赖更新时自动清除；`.deps` 在数据卷应用目录下，容器重建/升级不丢。审核预览页照单展示依赖清单。
 - **egress 出站代理（P0-3 修复）**：白名单域名经 `dns.lookup` 解析后对全部 A/AAAA 复核私网/保留段黑名单（环回/RFC1918/169.254 链路本地/CGNAT/ULA 等，防 `*.nip.io` 类 DNS 绕过，线上实锤项）；IP 字面量与 localhost/.local/.internal 仍一律拒绝；出站失败详情只进服务端日志不回传调用者（防内网探测 oracle）。残留风险：解析与请求间存在理论 TOCTOU 窗口，容器形态网络隔离补齐后消除。 **内网部署例外**：管理员可在「应用网关 → 内网出站白名单」（`EGRESS_INTRANET_ALLOWLIST`）配置域名/IP/IPv4 CIDR，命中即完全放行（管理员权威高于包声明，无需包 manifest 重复声明；CIDR 区间无法逐 IP 声明）；169.254 链路本地无条件拒绝。未命中时包 manifest 照常生效、内网目标照常拒绝。**自定义请求头转发**：`aap.http.fetch(url, timeout, headers)` 支持包传自定义头（第三方 API 鉴权场景，密钥经门户环境变量注入）；≤16 个、值 ≤4KB，Host/Connection/Content-Length/Proxy-* 等逐跳与托管头剥除；响应 `{"status": 上游状态码, "body": 文本≤500KB}`。
@@ -128,3 +128,4 @@ client = OpenAI(base_url="http://<host>:8080/v1", api_key="aapk_…")
 - **身份头（X-AAP-Identity）**：验签强制 exp 存在且未过期；jti 一次性（TTL 窗口内防重放；平台内部归因 `allowReplay` 豁免）。`/api/admin/redeem/*` 显式挂 `requireAdmin`（不再依赖挂载顺序偶然保护）。`AAP_PLATFORM`/沙箱平台地址一律取明文 HTTP 环回口（`loopbackPlatformPort`：HTTP 到达取 `req.socket.localPort`，**TLS 口到达回落 `config.port`**——第二轮渗透 NEW-2，8443 是 TLS 监听、明文调用必断），绝不信客户端 Host。
 - 包签名信任链（G4，Ed25519）：包内可选 `signature.json`；上传时四态判定（`verified`/`untrusted`/`unsigned`/`invalid`，invalid 硬拒），状态落 `apps.signature_status`。**信任公钥命中 → 免审**（上传即 approved、submit-review 自动通过）。信任列表管理：`/api/admin/signing-keys` CRUD + 内置官方公钥（环境变量 `AAP_OFFICIAL_SIGN_PUBKEY`）。签名工具 `packages/aap-sdk/sign-aap.mjs`（keygen/sign/verify），机制详见 `packages/aap-sdk/SIGNING.md`。
 - OIDC 管理面板：「安全」页展示 OIDC 配置组，并在顶部按当前访问地址自动生成**回调地址（一键复制）**——在 IdP 登记的重定向 URI 即该地址；Issuer/ClientId/Secret 修改后需重启生效。
+

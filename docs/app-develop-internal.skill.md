@@ -1,10 +1,10 @@
----
+﻿---
 name: app-develop-internal
-description: "涉及网关 / LLM 网关 / 沙箱 / 计费 / 账号安全的架构设计或 ADR 复核，或 .neon-aap 接口面（manifest / aap.*）契约变更时用。常规 bug 修复、UI/文案/测试改动不需要。"
+description: "涉及网关 / LLM 网关 / 沙箱 / 计费 / 账号安全的架构设计或 ADR 复核，或 .asp-app 接口面（manifest / aap.*）契约变更时用。常规 bug 修复、UI/文案/测试改动不需要。"
 version: 2.3.2
 ---
 
-# ai-app-portal（AI应用门户）开发指南
+# AI-SuperPanel（AI超级面板）开发指南
 
 > v2.3.2 变更：触发描述收窄并更名 app-develop-internal（避免与包作者规范同名）；PRD 指针修正为仓库真实路径；§9.5 压缩为实现要点（细节归 docs/DEVELOPMENT.md §9 单一来源）；§十 状态快照校正（ed25519 免审、persistent WS 透传均已实装；易过期的测试计数移除）。
 >
@@ -13,8 +13,8 @@ version: 2.3.2
 > v2.2.0 变更：新增 §十「实现状态快照（M1–M3 交付）」；§三 身份头更名 X-AAP-* 并写明密钥来源。
 > v2.1.0 变更：新增 §九「沙箱日志收口与调试沙箱」，与 app-develop 规范 v0.2（§3.5 日志 / §3.6 统一元素 / §八 aap-dev）配套。
 
-Neon 的 OSS 项目：自托管 AI 应用网关 + 门户，中文名「AI应用门户」，仓库名 `ai-app-portal`。
-- **PRD**：`ai-app-portal-docs/ai-app-portal-PRD-v0.3.1.md`（v0.3+，功能按 A–G 功能域组织：A 门户与身份 / B 应用网关 / C LLM 网关 / D 计费 / E 管理后台 / F 分发与运行 / G 生态；里程碑 M1–M4 只在第 7 节，与功能域编号解耦）
+Neon 的 OSS 项目：自托管 AI 应用网关 + 门户，中文名「AI超级面板」，仓库名 `AI-SuperPanel`。
+- **PRD**：`./ai-app-portal-PRD-v0.3.1.md`（v0.3+，功能按 A–G 功能域组织：A 门户与身份 / B 应用网关 / C LLM 网关 / D 计费 / E 管理后台 / F 分发与运行 / G 生态；里程碑 M1–M4 只在第 7 节，与功能域编号解耦）
 - **参考实现** = 他的私有项目 office-tool（Node/Express，CUGB 办公门户）。**私有代码可借鉴思路与代码，但任何单位指纹（校名/校色/校徽/内置业务工具）不得进入 OSS 版。**
 
 ## 一、硬决策（ADR，勿再反复讨论）
@@ -81,9 +81,9 @@ PoW 登录 proof-of-work、登录失败计数、IP 封禁（累犯时长倍增�
 
 **注册要点**：注册/找回密码/绑定邮箱三入口全挂 PoW + 可选 Turnstile（后台填 key 即启用，默认 PoW 兜底，内网可离线）；验证码通道抽象（SMTP / 阿里云或腾讯云 SMS 选一首发）；验证码 6 位 5 分钟有效、同通道 60s 限 1 条 + 24h 上限（**短信轰炸 = 刷穿短信费，限发硬要求**）、哈希存储单次有效；注册开关三档默认关闭；同 IP 24h ≤ 5 号；首账号自动 admin；全事件审计。
 
-## 六、生态：.neon-aap 用户扩展体系（G 域）
+## 六、生态：.asp-app 用户扩展体系（G 域）
 
-用户上传 **`.neon-aap`**（ai-app-portal 缩写命名）（ZIP：manifest.json + 静态 HTML 或 Python `mod.py`），遵循本技能出入参规范。**可见性三态：私有（自用）/ 审核中 / 公开（管理员审核后全员可用）**；管理员面板内看码/试运行/通过或驳回。
+用户上传 **`.asp-app`**（AI-SuperPanel 缩写命名）（ZIP：manifest.json + 静态 HTML 或 Python `mod.py`），遵循本技能出入参规范。**可见性三态：私有（自用）/ 审核中 / 公开（管理员审核后全员可用）**；管理员面板内看码/试运行/通过或驳回。
 
 - manifest 能力声明：`capabilities`（llm/db/storage）+ `network`（**出站域名白名单**）+ `runtime`（**invoked 按调用 | persistent 持久服务**）+ `env`（环境变量/机密声明，§9.5）。审核页照单审批；改白名单 = 重新审核
 - HTML 包：iframe sandbox + CSP，禁同源 cookie；门户 shell 嵌入
@@ -161,3 +161,4 @@ M1–M4 核心已交付；测试数与实装明细以 `docs/DEVELOPMENT.md` 为�
 - **M4 已交付（G2–G5 核心）**：Python 沙箱运行时（runner + aap 对象 llm/db/storage/http/log；invoked stdin/stdout JSON + 30s 强杀；persistent 拉起+空闲 5 分钟回收+崩溃重启≤3 次+反代纳管）；出站唯一通道 = `/api/aap/egress`（manifest 白名单逐请求核验，IP/内网直连拒绝）；`/api/aap/llm/chat` 平台代理（签名归因到运行用户 + 能力声明校验）；审核流（用户上传默认私有→提交审核→管理员通过/驳回带理由，版本更新=重新审核）；运行记录 `app_runs` + 审计
 - **M4 剩余**：aap-dev 完整版（serve 子命令 / real LLM / --submit 回传）、容器 ns/cgroups 硬隔离叠加（persistent WS upgrade 透传与 ed25519 签名免审均已实装，见上）
 - **ACME 已真实环境验证 ✅**：真实域名生产签发 → 8443 热启动 → HTTPS 受信；续期循环运行中。**待办（环境）**：OIDC 真实 IdP 联调；FPK 真机；E2 真人走查
+

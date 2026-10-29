@@ -1,5 +1,5 @@
-# AI应用门户 — 单镜像（Docker 形态；FPK 复用同一镜像）
-# 构建：docker build -f deploy/docker/Dockerfile -t ai-app-portal:latest .
+﻿# AI超级面板 — 单镜像（Docker 形态；FPK 复用同一镜像）
+# 构建：docker build -f deploy/docker/Dockerfile -t ai-superpanel:latest .
 # 运行：见 docker-compose.yml；数据卷 /data（SQLite、证书、密钥、头像）
 
 # ---------- 构建阶段 ----------
@@ -28,7 +28,7 @@ RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile
 COPY packages ./packages
 COPY apps ./apps
-COPY ai-app-portal-docs ./ai-app-portal-docs
+COPY docs ./docs
 COPY README.md ./README.md
 # 依次构建：shared（被 server/web 引用）→ server → web
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
@@ -43,7 +43,7 @@ RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
 FROM node:22-alpine
 RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.cloud.tencent.com#g' /etc/apk/repositories \
  && apk add --no-cache tini python3 py3-pip py3-flask \
- # py3-pip：.neon-aap 声明制依赖（manifest.requirements）上传时 pip --target 安装必需
+ # py3-pip：.asp-app 声明制依赖（manifest.requirements）上传时 pip --target 安装必需
  # （alpine 的 python3 不带 pip）；musl 仅能装 wheel，无 musllinux wheel 的 C 扩展包
  # 会在上传时报错——属预期行为
  # 沙箱可选降权：预建非特权用户；运行时加 SANDBOX_UID=10001 SANDBOX_GID=10001 生效
@@ -57,15 +57,16 @@ COPY --from=build /app/apps/server/dist ./dist
 COPY --from=build /app/apps/server/drizzle ./drizzle
 # 前端构建产物（server 生产托管 + SPA 兜底）
 COPY --from=build /app/apps/web/dist ./public
-# .neon-aap 运行时 SDK（M4：aap 对象 + runner）
+# .asp-app 运行时 SDK（M4：aap 对象 + runner）
 COPY --from=build /app/packages/aap-sdk ./aap-sdk
 ENV PYTHONPATH=/out/aap-sdk \
     PYTHON_BIN=python3
 
-# 开发指南与平台文档（右上角「开发指南」页数据源）
-COPY --from=build /app/ai-app-portal-docs/app-develop.skill-v0.2.md ./assets/app-develop.skill-v0.2.md
+# 开发指南与平台文档（右上角「开发指南」页数据源；同时保留下载用 skill 压缩包）
+COPY --from=build /app/docs/app-develop.skill-v0.2.md ./assets/app-develop.skill-v0.2.md
+COPY --from=build /app/docs/asp-app-develop.skill ./assets/asp-app-develop.skill
 COPY --from=build /app/README.md ./assets/README.md
-COPY --from=build /app/ai-app-portal-docs/app-develop-internal.skill.md ./assets/app-develop-internal.skill.md
+COPY --from=build /app/docs/app-develop-internal.skill.md ./assets/app-develop-internal.skill.md
 
 ENV NODE_ENV=production \
     DATA_DIR=/data \
@@ -83,3 +84,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "dist/server.js"]
+

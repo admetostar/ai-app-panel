@@ -242,7 +242,7 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
     return htmlError(res, 429, '请求过于频繁', '请稍后再试');
   }
 
-  // 门户托管应用（简单 HTML / .neon-aap 包）不走上游
+  // 门户托管应用（简单 HTML / .asp-app 包）不走上游
   if (app.kind !== 'upstream') {
     const sub0 = decodeSafe((req.params[0] as string | undefined) ?? '');
     // 用户上传包（归属者非管理员）经 iframe 沙箱隔离（PRD G1）：

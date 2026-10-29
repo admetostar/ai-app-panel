@@ -909,7 +909,7 @@ function MembershipTopupTab(): ReactNode {
   );
 }
 
-// ---------- 我的应用（M4：.neon-aap 上传 / 提交审核 / 状态跟踪） ----------
+// ---------- 我的应用（M4：.asp-app 上传 / 提交审核 / 状态跟踪） ----------
 
 interface MyAppRow {
   id: string;
@@ -956,11 +956,11 @@ function MyAppsTab(): ReactNode {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card size="small" title="上传 .neon-aap 包" extra={<Tag bordered={false} color="blue" style={{ fontSize: 11 }}>python 沙箱运行时已上线</Tag>}>
+      <Card size="small" title="上传 .asp-app 包" extra={<Tag bordered={false} color="blue" style={{ fontSize: 11 }}>python 沙箱运行时已上线</Tag>}>
         <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
           上传后默认仅自己可见可用；要公开给所有用户，请提交审核（管理员将查看代码与能力声明）。
         </Typography.Paragraph>
-        <input type="file" accept=".zip,.neon-aap" onChange={(e) => void onFile(e)} disabled={uploading} />
+        <input type="file" accept=".zip,.asp-app" onChange={(e) => void onFile(e)} disabled={uploading} />
         {uploading ? <Typography.Text type="secondary">上传校验中…</Typography.Text> : null}
         {lastError ? <Alert type="error" showIcon style={{ marginTop: 10 }} message={lastError} /> : null}
       </Card>

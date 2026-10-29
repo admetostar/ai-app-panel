@@ -1,6 +1,6 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # ============================================================
-# build-fpk.sh — 组装 ai-app-portal 的飞牛 FPK 包（原生形态）
+# build-fpk.sh — 组装 AI-SuperPanel 的飞牛 FPK 包（原生形态）
 #
 # 形态（app-develop-internal.skill §8，2026-09 定稿）：
 #   - 原生 FPK：载荷 = deploy/native 自包含包（自带 glibc Node 22 + 按目标
@@ -51,7 +51,7 @@ build_one() {
   fi
 
   local stage
-  stage="$(mktemp -d)/ai-app-portal"
+  stage="$(mktemp -d)/AI-SuperPanel"
   mkdir -p "$stage"
 
   # ② 模板 + 占位符（manifest 版本 / 平台）
@@ -67,9 +67,10 @@ build_one() {
   mv "$stage/app/ai-app-portal-native_${VERSION}_linux_${arch}" "$stage/app/server"
   # 开发指南/平台文档随包（guideRouter 定位 <载荷根>/assets/；旧 native 包亦补齐）
   mkdir -p "$stage/app/server/assets"
-  cp "$REPO/ai-app-portal-docs/app-develop.skill-v0.2.md" \
+  cp "$REPO/docs/app-develop.skill-v0.2.md" \
+     "$REPO/docs/asp-app-develop.skill" \
      "$REPO/README.md" \
-     "$REPO/ai-app-portal-docs/app-develop-internal.skill.md" \
+     "$REPO/docs/app-develop-internal.skill.md" \
      "$stage/app/server/assets/"
 
   # ④ 剔除编译进 dist 的测试文件（不随包分发）；前端直接用包内根路径构建
@@ -89,7 +90,7 @@ build_one() {
   #    a) 内层 app.tgz = gzip(tar(app/** ++ config/** 副本))
   #    b) manifest 按 key 宽度对齐「 = 」并追加 checksum = md5(app.tgz)（安装器完整性校验）
   #    c) 外层 tar.gz：app.tgz 置首 + 其余条目平铺
-  local out="$OUT/ai-app-portal_${VERSION}_${platform}.fpk"
+  local out="$OUT/AI-SuperPanel_${VERSION}_${platform}.fpk"
   rm -f "$out"
   # COPYFILE_DISABLE + --no-xattrs：禁止 macOS tar 把扩展属性打成 ._*/PaxHeader 条目
   export COPYFILE_DISABLE=1
@@ -115,3 +116,4 @@ for p in $([ "$PLATFORMS" = all ] && echo "x86 arm" || echo "$PLATFORMS"); do
 done
 
 echo "⚠ 真机验证清单：安装（.fpk=tar.gz+内层app.tgz，格式已对齐官方 fnpack）→ 向导端口（wizard_port）→ 桌面图标新标签页打开 http://NAS:端口 → 启停/状态 → 初始管理员密码在数据目录 app.log（TRIM_PKGVAR）"
+

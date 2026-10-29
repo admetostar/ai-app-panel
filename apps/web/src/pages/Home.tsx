@@ -1,4 +1,4 @@
-/** 门户首页（A1）：应用卡片墙——分类分组、搜索、锁定态、健康状态点。 */
+﻿/** 门户首页（A1）：应用卡片墙——分类分组、搜索、锁定态、健康状态点。 */
 import { Card, Empty, Input, Spin, Tag, Tooltip } from 'antd';
 import { LockOutlined, SearchOutlined } from '@ant-design/icons';
 import { useMemo, useState } from 'react';
@@ -136,7 +136,7 @@ export function HomePage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20 }}>
-            你好{me ? `，${me.user.name}` : ''}，欢迎来到 {boot.data?.branding.siteName ?? 'AI应用门户'}
+            你好{me ? `，${me.user.name}` : ''}，欢迎来到 {boot.data?.branding.siteName ?? 'AI超级面板'}
           </h2>
           <p style={{ margin: '4px 0 0', color: 'var(--aap-text-secondary)', fontSize: 13 }}>
             {boot.data?.needsInit
@@ -182,3 +182,4 @@ export function HomePage() {
     </div>
   );
 }
+

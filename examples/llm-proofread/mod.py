@@ -1,7 +1,7 @@
 """
-文语校对（llm-proofread）· .neon-aap Python 包（persistent）
+文语校对（llm-proofread）· .asp-app Python 包（persistent）
 ================================================================
-按 `ai-app-portal-docs/llm-proofread-aap-design.md` 实现（AAP 重构版，不移植原项目代码）：
+按 `docs/llm-proofread-aap-design.md` 实现（AAP 重构版，不移植原项目代码）：
 
 - 用户/登录/密钥/计费全部由平台承担：本包零 env 机密、零出站（network 空），
   LLM 走统一网关（aap.llm.chat），消耗按 passUser 归因计入发起用户额度池。

@@ -1,5 +1,5 @@
 /**
- * .neon-aap python 包第三方依赖（skill v0.2.6 声明制）：
+ * .asp-app python 包第三方依赖（skill v0.2.6 声明制）：
  * manifest.requirements 声明 → 上传/更新时 pip 安装到 <appsites>/<id>/.deps →
  * 沙箱 env 注入 PYTHONPATH 前置。设计要点：
  *  - 只装 wheel（--only-binary=:all:）：安装期不执行 sdist setup.py 任意代码

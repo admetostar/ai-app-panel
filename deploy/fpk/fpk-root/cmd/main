@@ -1,6 +1,6 @@
-#!/bin/bash
+﻿#!/bin/bash
 # ============================================================
-# AI应用门户 生命周期控制（start/stop/status）——飞牛 FPK 原生形态
+# AI超级面板 生命周期控制（start/stop/status）——飞牛 FPK 原生形态
 #
 # 运行身份：包用户（config/privilege run-as=package）
 # 数据：TRIM_PKGVAR（SQLite aap.db / 上传件 / master.key）
@@ -12,7 +12,7 @@
 # ============================================================
 set -u
 
-APP_NAME="ai-app-portal"
+APP_NAME="AI-SuperPanel"
 LOG_FILE="${TRIM_PKGVAR}/app.log"
 PID_FILE="${TRIM_PKGVAR}/app.pid"
 APP_DIR="${TRIM_APPDEST}/server"
@@ -96,3 +96,4 @@ case "${1:-}" in
     exit 1
     ;;
 esac
+

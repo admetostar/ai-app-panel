@@ -1,4 +1,4 @@
-/** .neon-aap invoked 工具执行页（G5）：入参表单 → 沙箱运行 → 结果渲染。 */
+/** .asp-app invoked 工具执行页（G5）：入参表单 → 沙箱运行 → 结果渲染。 */
 import { Alert, Button, Card, Input, Spin, Typography } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';

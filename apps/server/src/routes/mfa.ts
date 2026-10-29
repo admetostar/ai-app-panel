@@ -1,4 +1,4 @@
-/**
+﻿/**
  * MFA 路由（A3）：TOTP 绑定/确认/解绑、恢复码、Passkey 绑定与认证、
  * 登录状态机验证端点（password_ok → full）、步升认证。
  */
@@ -112,7 +112,7 @@ mfaRouter.post(
   requireStepUp,
   h(async (req, res) => {
     const u = req.user!;
-    const { secret, otpauthUri } = enrollTotp(u.id, getSetting('SITE_NAME') || 'AI应用门户', u.username ?? u.name);
+    const { secret, otpauthUri } = enrollTotp(u.id, getSetting('SITE_NAME') || 'AI超级面板', u.username ?? u.name);
     res.json({ secret, otpauthUri });
   }),
 );
@@ -342,3 +342,4 @@ mfaRouter.post(
     res.json({ stepUpUntil: until, ttlSec: stepUpTtlSec() });
   }),
 );
+

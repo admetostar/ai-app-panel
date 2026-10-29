@@ -1,4 +1,4 @@
-/**
+﻿/**
  * LLM 网关端点（C1/C4/C5/C6）：
  *   POST /v1/chat/completions（含流式）、GET /v1/models
  * 认证：Authorization: Bearer <网关凭据>（C2）；用户归因：应用转发
@@ -118,7 +118,7 @@ llmGatewayRouter.get(
     const now = Math.floor(Date.now() / 1000);
     res.json({
       object: 'list',
-      data: modelCatalog().map((m) => ({ id: m, object: 'model', created: now, owned_by: 'ai-app-portal' })),
+      data: modelCatalog().map((m) => ({ id: m, object: 'model', created: now, owned_by: 'AI-SuperPanel' })),
     });
   }),
 );
@@ -400,3 +400,4 @@ function estimateTokens(messages: unknown): number {
     return 1;
   }
 }
+

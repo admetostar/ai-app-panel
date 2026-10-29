@@ -296,7 +296,7 @@ describe('审核门禁（P1-6）', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: ownerCookie },
       body: JSON.stringify({
-        filename: 'pkg.neon-aap',
+        filename: 'pkg.asp-app',
         dataBase64: zipPkg({ 'manifest.json': JSON.stringify({ name: 'rev-app', display_name: 'Rev', type: 'html', version: '2.0.0' }), 'index.html': '<h1>v2</h1>' }).toString('base64'),
       }),
     });
@@ -449,7 +449,7 @@ describe('python 包声明制依赖（skill v0.2.6）', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
       body: JSON.stringify({
-        filename: 'deps.neon-aap',
+        filename: 'deps.asp-app',
         dataBase64: zipPkg({
           'manifest.json': JSON.stringify({
             name: 'deps-app-up', display_name: 'Deps', type: 'python', entry: 'mod.py', runtime: 'invoked',
@@ -478,7 +478,7 @@ describe('admin 包上传顺序（P3-14）', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
       body: JSON.stringify({
-        filename: 'pkg.neon-aap',
+        filename: 'pkg.asp-app',
         dataBase64: zipPkg({ 'manifest.json': JSON.stringify({ name: 'exist-up', display_name: 'Dup', type: 'html' }), 'index.html': '<h1>NEW</h1>' }).toString('base64'),
       }),
     });
@@ -731,12 +731,12 @@ describe('HTML 页面内容编辑（编辑弹窗数据面）', () => {
   });
 });
 
-describe('.neon-aap 包预解析（上传前预览）', () => {
+describe('.asp-app 包预解析（上传前预览）', () => {
   function preview(dataBase64: string): Promise<{ status: number; body: Record<string, unknown> }> {
     return fetch(`${base}/api/admin/apps/package/preview`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ filename: 'pkg.neon-aap', dataBase64 }),
+      body: JSON.stringify({ filename: 'pkg.asp-app', dataBase64 }),
     }).then(async (r) => ({ status: r.status, body: (await r.json()) as Record<string, unknown> }));
   }
 

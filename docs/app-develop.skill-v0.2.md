@@ -1,11 +1,11 @@
----
-name: neon-aap-develop
-description: "当用户要求开发、打包或重构 .neon-aap 应用（AI应用门户扩展包）时使用：manifest 契约、aap.* 能力接口、沙箱纪律与交付自检。"
+﻿---
+name: asp-app-develop
+description: "当用户要求开发、打包或重构 .asp-app 应用（AI超级面板扩展包）时使用：manifest 契约、aap.* 能力接口、沙箱纪律与交付自检。"
 ---
 
 # app-develop.skill.md
 
-> AI应用门户（ai-app-portal）应用开发规范 · 供开发 Agent 使用
+> AI超级面板（AI-SuperPanel）应用开发规范 · 供开发 Agent 使用
 > 版本 v0.2.6（2026-09）· 配套平台 PRD v0.3+
 >
 > **v0.2.6 变更**：manifest 新增 `requirements` 字段（§1.2 pip 依赖声明，声明制=审批依据）——超出标准库+平台预置框架的第三方库在 manifest 列出，**上传时平台自动 `pip install`**（只装 wheel）到应用私有目录，沙箱内直接 import，失败=上传被拒；版本更新不再声明的依赖自动清除。新平台增设「pip 索引源」设置（PIP_INDEX_URL，国内镜像）。native/FPK 形态启动时自检补装预置框架 flask（此前仅 docker 镜像预装，宿主缺 flask 时 persistent 包静默 503 崩溃循环——llm-proofread 实测案例）。§一/§五 同步。
@@ -26,9 +26,9 @@ description: "当用户要求开发、打包或重构 .neon-aap 应用（AI应�
 
 ## 你是谁、要做什么
 
-你正在为 **AI应用门户** 开发一个新应用。用户会告诉你需求设想；你的产出是一个符合本规范的 **`.neon-aap` 包**（ZIP 文件），用户拿到后上传门户即可安装使用。
+你正在为 **AI超级面板** 开发一个新应用。用户会告诉你需求设想；你的产出是一个符合本规范的 **`.asp-app` 包**（ZIP 文件），用户拿到后上传门户即可安装使用。
 
-`.neon-aap` = **ai-app-portal** 的缩写。包内只有两种形态，按需求二选一：
+`.asp-app` = **AI-SuperPanel** 的缩写。包内只有两种形态，按需求二选一：
 
 | 形态 | 适合 | 包内容 |
 |---|---|---|
@@ -419,7 +419,7 @@ aap-dev run mod.py --reset                # 顺带清空本地 db/storage（.aap
 
 ## 八、实战案例与坑清单
 
-### 8.1 把现有 Web 项目重构为 .neon-aap 的方法论
+### 8.1 把现有 Web 项目重构为 .asp-app 的方法论
 
 移植/重构的实质是**逐项替换自建设施为平台能力**，业务逻辑保留：
 
@@ -439,7 +439,7 @@ localStorage 清除、任务状态落 `aap.db`。
 **案例 B · llm-proofread**（React19+Express+tRPC+MySQL → 全新 persistent 包）：
 自建用户系统、LLM 多上游接入、密钥保管、审计日志**整体删除**；包内只剩校对编排、
 规则引擎、diff 呈现、每用户提示词/词库（aap.db）。完整设计见仓库内
-`ai-app-portal-docs/llm-proofread-aap-design.md`（平台仓库参考，门户用户可忽略）。
+`./llm-proofread-aap-design.md`（平台仓库参考，门户用户可忽略）。
 
 ### 8.2 坑清单（全部实测踩过；只列带独立诊断症状的条目，规则本体见 §二 / §3.x / §五）
 
@@ -453,4 +453,5 @@ localStorage 清除、任务状态落 `aap.db`。
 
 ---
 
-*本规范由 ai-app-portal 平台维护；接口面（§三）变更必须升版本并同步 `app-develop-internal.skill.md` 的平台实现约定。*
+*本规范由 AI-SuperPanel 平台维护；接口面（§三）变更必须升版本并同步 `app-develop-internal.skill.md` 的平台实现约定。*
+
