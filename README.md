@@ -21,7 +21,7 @@
 | `packages/shared` | 前后端共享类型与 API 契约 |
 | `packages/aap-sdk` | Python：`aap` 运行时存根 + `aap-dev` 本地调试沙箱（M4 实装） |
 | `examples/hk-toast-recipe` | .asp-app HTML 包示例（纯前端：manifest.json + index.html，可直接上传门户安装） |
-| `examples/ip-analyzer` | .asp-app Python 包示例（persistent 沙箱 + manifest.env 机密注入 + egress 白名单出站，移植自 neon9809/ip-analyzer） |
+| `examples/ip-analyzer` | .asp-app Python 包示例（persistent 沙箱 + manifest.env 机密注入 + egress 白名单出站） |
 | `examples/llm-proofread` | .asp-app Python 包示例（文语校对：规则引擎 + 逐段 LLM + 全文一致性，每用户提示词/词库落 aap.db，LLM 走统一网关按账号归因计费） |
 | `deploy/` | Docker / FPK 分发形态 |
 | `AGENTS.md` | AI 开发代理常驻约定（硬纪律 / 按需加载 / 交互约定） |
@@ -40,13 +40,6 @@ pnpm typecheck    # 全部类型检查
 
 要求 Node ≥ 22。
 
-## 发布（CI）
-
-push 到 `main` 或打 `v*` tag 时，GitHub Actions 自动：
-1. 构建多架构镜像（amd64/arm64）并发布到 **ghcr.io/neon9809/AI-SuperPanel**（main → `latest`，tag → 版本号）
-2. 真实容器冒烟（`/api/health`）；原生 **FPK**（x86/arm 双包，载荷为自包含包、统一网关入口，不依赖镜像拉取）按架构矩阵并行构建 → 附着到 GitHub Release
-
-发布只走 ghcr.io（Docker Hub 不使用）。tag 版本必须与根 `package.json.version` 一致。
 
 ## 核心能力（当前实现）
 
