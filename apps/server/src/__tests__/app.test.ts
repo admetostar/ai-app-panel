@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { PortalBootstrap } from '@aap/shared';
@@ -9,6 +10,8 @@ import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
 import { closeDb, initDb } from '../db/index.js';
 import { seedSettings } from '../lib/settings.js';
+import { createGroup } from '../lib/groups.js';
+import { createPlan, updatePlan } from '../lib/billing.js';
 
 let server: Server;
 let baseUrl: string;
@@ -18,7 +21,7 @@ beforeAll(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aap-test-'));
   initDb({
     file: path.join(tmpDir, 'test.db'),
-    migrationsDir: path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '../../drizzle'),
+    migrationsDir: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../drizzle'),
   });
   seedSettings();
   // 测试配置：默认值但关闭 webDist（测试环境无前端产物）
@@ -53,6 +56,19 @@ describe('W1 冒烟', () => {
     expect(body.needsInit).toBe(true);
   });
 
+  it('GET /api/portal/plans 匿名返回管理员启用的权益套餐', async () => {
+    const groupId = createGroup('公开套餐分组', '');
+    createPlan({ name: '可见权益包', groupId, durationDays: 30, priceFen: 1200, tokenGrant: 500, tier: 4, publicAppLimit: 2 });
+    const hiddenPlanId = createPlan({ name: '停售权益包', groupId, durationDays: 30, priceFen: 1000 });
+    updatePlan(hiddenPlanId, { enabled: false });
+
+    const res = await fetch(`${baseUrl}/api/portal/plans`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { plans: Array<{ name: string; groupName: string; tier: number }> };
+    expect(body.plans).toHaveLength(1);
+    expect(body.plans[0]).toMatchObject({ name: '可见权益包', groupName: '公开套餐分组', tier: 4 });
+  });
+
   it('未知 /api 路径返回 JSON 404（不被 SPA 兜底吞掉）', async () => {
     const res = await fetch(`${baseUrl}/api/nope`);
     expect(res.status).toBe(404);
@@ -60,4 +76,3 @@ describe('W1 冒烟', () => {
     expect(body.error.code).toBe('NOT_FOUND');
   });
 });
-

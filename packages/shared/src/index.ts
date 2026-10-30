@@ -39,6 +39,8 @@ export interface PublicUser {
   mfaEnabled: boolean;
   /** M3 接入：会员计划（free/member），M1 恒为 free */
   plan: 'free' | 'member';
+  /** 新用户尚未完成注册后的首次权益选择 */
+  membershipSelectionRequired: boolean;
   createdAt: number;
 }
 
@@ -51,6 +53,45 @@ export interface SessionInfo {
   /** 强制流程标记：改密 / 绑 MFA（首始 F3 用） */
   mustChangePassword: boolean;
   mustEnrollMfa: boolean;
+}
+
+// ---------- 用户权益 ----------
+
+export interface MembershipPlanSummary {
+  id: number;
+  name: string;
+  groupName: string;
+  durationDays: number;
+  priceFen: number;
+  tokenGrant: number;
+  tier: number;
+  publicAppLimit: number;
+  enabled: boolean;
+}
+
+export interface MembershipOrderSummary {
+  id: string;
+  kind: 'tokens' | 'membership';
+  planId: number | null;
+  tokens: number | null;
+  priceFen: number;
+  status: 'pending' | 'paid' | 'cancelled';
+  createdAt: number;
+}
+
+export interface UserMembershipData {
+  membership: {
+    planName: string;
+    tier: number;
+    groupName: string;
+    expiresAt: number;
+    publicAppLimit: number;
+    publicAppsUsed: number;
+    remainingPublicApps: number;
+  } | null;
+  tokenBalance: number;
+  plans: MembershipPlanSummary[];
+  orders: MembershipOrderSummary[];
 }
 
 // ---------- 门户品牌（A1，数据化品牌） ----------
@@ -106,6 +147,13 @@ export interface AppCard {
   kind?: 'upstream' | 'html' | 'package';
   runtimeMode?: 'invoked' | 'persistent' | null;
 };
+
+/** Owner-scoped application card data used by /api/apps/mine. */
+export interface OwnedAppCard extends AppCard {
+  enabled: boolean;
+  updatedAt: number;
+  signatureStatus: string | null;
+}
 
 // ---------- 常量 ----------
 

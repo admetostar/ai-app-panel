@@ -9,6 +9,7 @@ import { membershipPlans, users } from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
 import { requireAdmin } from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
+import { getSetting } from '../lib/settings.js';
 import { normalizeCode } from '../lib/redeem.js';
 import {
   generateBatch,
@@ -37,6 +38,15 @@ adminBillingRouter.use('/admin/billing', requireAdmin);
 // 挂载顺序偶然保护（重构挪序即变成未鉴权的造码/列码接口，渗透测试 P2-10）
 adminBillingRouter.use('/admin/redeem', requireAdmin);
 
+function assertFreePlanRemainsWhenRegistrationIsOpen(excludingPlanId?: number): void {
+  if (
+    getSetting('REGISTRATION_MODE') === 'open' &&
+    !listPlans(true).some((plan) => plan.id !== excludingPlanId && plan.priceFen === 0)
+  ) {
+    throw new HttpError(409, 'FREE_PLAN_REQUIRED', '开放注册期间必须保留至少一个启用的零价权益包');
+  }
+}
+
 // ---------- 套餐 ----------
 
 adminBillingRouter.get(
@@ -53,9 +63,15 @@ adminBillingRouter.get(
 adminBillingRouter.post(
   '/admin/billing/plans',
   h(async (req, res) => {
-    const body = (req.body ?? {}) as { name?: string; groupId?: number; durationDays?: number; priceFen?: number; tokenGrant?: number };
-    if (!body.name?.trim() || !body.groupId || !body.durationDays) {
-      throw new HttpError(400, 'INVALID_INPUT', '名称、分组、时长（天）必填');
+    const body = (req.body ?? {}) as { name?: string; groupId?: number; durationDays?: number; priceFen?: number; tokenGrant?: number; tier?: number; publicAppLimit?: number };
+    if (!body.name?.trim() || !body.groupId || ![30, 90, 365].includes(Number(body.durationDays))) {
+      throw new HttpError(400, 'INVALID_INPUT', '名称、分组和有效期必填');
+    }
+    if (!Number.isInteger(Number(body.publicAppLimit)) || Number(body.publicAppLimit) < 0) {
+      throw new HttpError(400, 'INVALID_INPUT', '公开应用数量必须是非负整数');
+    }
+    if (!Number.isInteger(Number(body.tier)) || Number(body.tier) < 0 || Number(body.tier) > 5) {
+      throw new HttpError(400, 'INVALID_INPUT', '权益等级必须是 0 到 5 的整数');
     }
     const id = createPlan({
       name: body.name,
@@ -63,6 +79,8 @@ adminBillingRouter.post(
       durationDays: Number(body.durationDays),
       priceFen: Number(body.priceFen ?? 0),
       tokenGrant: Number(body.tokenGrant ?? 0),
+      tier: Number(body.tier),
+      publicAppLimit: Number(body.publicAppLimit),
     });
     audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'billing.plan.create', { id, name: body.name });
     res.json({ ok: true, id });
@@ -72,7 +90,18 @@ adminBillingRouter.post(
 adminBillingRouter.put(
   '/admin/billing/plans/:id',
   h(async (req, res) => {
-    const body = (req.body ?? {}) as { name?: string; durationDays?: number; priceFen?: number; tokenGrant?: number; enabled?: boolean };
+    const body = (req.body ?? {}) as { name?: string; durationDays?: number; priceFen?: number; tokenGrant?: number; publicAppLimit?: number; enabled?: boolean };
+    const existing = listPlans().find((plan) => plan.id === Number(req.params.id));
+    if (existing && getSetting('REGISTRATION_MODE') === 'open') {
+      const keepsFreePlan = listPlans().some((plan) => {
+        const enabled = plan.id === existing.id ? body.enabled ?? plan.enabled : plan.enabled;
+        const priceFen = plan.id === existing.id ? body.priceFen ?? plan.priceFen : plan.priceFen;
+        return enabled && priceFen === 0;
+      });
+      if (!keepsFreePlan) {
+        throw new HttpError(409, 'FREE_PLAN_REQUIRED', '开放注册期间必须保留至少一个启用的零价权益包');
+      }
+    }
     updatePlan(Number(req.params.id), body);
     audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'billing.plan.update', { id: Number(req.params.id) });
     res.json({ ok: true });
@@ -83,6 +112,8 @@ adminBillingRouter.delete(
   '/admin/billing/plans/:id',
   h(async (req, res) => {
     const id = Number(req.params.id);
+    const plan = listPlans().find((item) => item.id === id);
+    if (plan?.enabled && plan.priceFen === 0) assertFreePlanRemainsWhenRegistrationIsOpen(id);
     const active = getDb()
       .select({ id: users.id })
       .from(users)

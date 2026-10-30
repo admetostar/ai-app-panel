@@ -7,9 +7,9 @@
  * 账本与缓存的边界不变：账本 append-only，缓存可重算。
  */
 import { randomBytes } from 'node:crypto';
-import { and, eq, gt, sql } from 'drizzle-orm';
+import { and, eq, gt, ne, sql } from 'drizzle-orm';
 import { getDb } from '../db/index.js';
-import { llmBalanceCache, llmLedger, llmRoutes, membershipPlans, topupOrders, userGroupMembers, users } from '../db/schema.js';
+import { apps, llmBalanceCache, llmLedger, llmRoutes, membershipPlans, topupOrders, userGroupMembers, users } from '../db/schema.js';
 import { HttpError } from './httpError.js';
 import { grantTokens, recomputeBalance } from './llm.js';
 import { audit } from './audit.js';
@@ -26,6 +26,8 @@ export interface PlanRow {
   durationDays: number;
   priceFen: number;
   tokenGrant: number;
+  tier: number;
+  publicAppLimit: number;
   enabled: boolean;
 }
 
@@ -42,11 +44,13 @@ export function listPlans(onlyEnabled = false): PlanRow[] {
     durationDays: r.durationDays,
     priceFen: r.priceFen,
     tokenGrant: r.tokenGrant,
+    tier: r.tier,
+    publicAppLimit: r.publicAppLimit,
     enabled: r.enabled,
   }));
 }
 
-export function createPlan(p: { name: string; groupId: number; durationDays: number; priceFen: number; tokenGrant?: number }): number {
+export function createPlan(p: { name: string; groupId: number; durationDays: number; priceFen: number; tokenGrant?: number; tier?: number; publicAppLimit?: number }): number {
   const info = getDb()
     .insert(membershipPlans)
     .values({
@@ -55,20 +59,58 @@ export function createPlan(p: { name: string; groupId: number; durationDays: num
       durationDays: Math.max(1, p.durationDays),
       priceFen: Math.max(0, p.priceFen),
       tokenGrant: Math.max(0, p.tokenGrant ?? 0),
+      tier: Math.min(5, Math.max(0, Math.trunc(p.tier ?? 0))),
+      publicAppLimit: Math.max(0, p.publicAppLimit ?? 10),
       createdAt: Date.now(),
     })
     .run();
   return Number(info.lastInsertRowid);
 }
 
-export function updatePlan(id: number, patch: { name?: string; durationDays?: number; priceFen?: number; tokenGrant?: number; enabled?: boolean }): void {
+export function updatePlan(id: number, patch: { name?: string; durationDays?: number; priceFen?: number; tokenGrant?: number; publicAppLimit?: number; enabled?: boolean }): void {
   const set: Partial<typeof membershipPlans.$inferInsert> = {};
   if (patch.name !== undefined) set.name = patch.name.trim().slice(0, 64);
   if (patch.durationDays !== undefined) set.durationDays = Math.max(1, patch.durationDays);
   if (patch.priceFen !== undefined) set.priceFen = Math.max(0, patch.priceFen);
   if (patch.tokenGrant !== undefined) set.tokenGrant = Math.max(0, patch.tokenGrant);
+  if (patch.publicAppLimit !== undefined) set.publicAppLimit = Math.max(0, patch.publicAppLimit);
   if (patch.enabled !== undefined) set.enabled = patch.enabled;
   getDb().update(membershipPlans).set(set).where(eq(membershipPlans.id, id)).run();
+}
+
+export interface PublicAppQuota {
+  limit: number;
+  used: number;
+  remaining: number;
+}
+
+export function getPublicAppQuota(userId: number, excludingAppId?: string): PublicAppQuota {
+  const db = getDb();
+  const user = db
+    .select({ membershipPlanId: users.membershipPlanId, membershipExpiresAt: users.membershipExpiresAt })
+    .from(users)
+    .where(eq(users.id, userId))
+    .get();
+  const plan = user?.membershipPlanId && user.membershipExpiresAt && user.membershipExpiresAt > Date.now()
+    ? db.select().from(membershipPlans).where(eq(membershipPlans.id, user.membershipPlanId)).get()
+    : undefined;
+  const predicates = [eq(apps.ownerUserId, userId), eq(apps.visibility, 'public')];
+  if (excludingAppId) predicates.push(ne(apps.id, excludingAppId));
+  const used = db
+    .select({ count: sql<number>`count(*)` })
+    .from(apps)
+    .where(and(...predicates))
+    .get()?.count ?? 0;
+  const limit = plan?.publicAppLimit ?? 0;
+  return { limit, used, remaining: Math.max(0, limit - used) };
+}
+
+export function assertPublicAppQuota(userId: number, excludingAppId?: string): PublicAppQuota {
+  const quota = getPublicAppQuota(userId, excludingAppId);
+  if (quota.remaining <= 0) {
+    throw new HttpError(403, 'PUBLIC_APP_LIMIT_REACHED', '当前订阅的公开应用数量已用完，请升级订阅计划');
+  }
+  return quota;
 }
 
 export function deletePlan(id: number): void {

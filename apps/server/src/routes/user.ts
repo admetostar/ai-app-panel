@@ -12,7 +12,7 @@ import { publicUserOf } from './shared.js';
 import { registerPurgeTask } from '../lib/audit.js';
 import { getSetting, getSettingBool, getSettingInt } from '../lib/settings.js';
 import { issueCode, verifyCode } from '../lib/verification.js';
-import { cancelOrder } from '../lib/billing.js';
+import { activateMembership, cancelOrder, createOrder, listPlans } from '../lib/billing.js';
 import { redeem as redeemCodeLib } from '../lib/redeem.js';
 import { audit } from '../lib/audit.js';
 import { recomputeBalance } from '../lib/llm.js';
@@ -20,6 +20,15 @@ import { recomputeBalance } from '../lib/llm.js';
 export const userRouter = Router();
 
 userRouter.use('/user', requireAuth);
+userRouter.use('/user', (req, res, next) => {
+  if (!req.user?.membershipSelectionRequired || req.path === '/membership/select-plan') {
+    next();
+    return;
+  }
+  res.status(403).json({
+    error: { code: 'MEMBERSHIP_SELECTION_REQUIRED', message: '请先选择权益计划', action: 'membership-selection' },
+  });
+});
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_AVATAR_BYTES = 100 * 1024;
@@ -158,7 +167,8 @@ userRouter.get(
     res.json({
       plan: row?.plan ?? 'free',
       tokenBalance: balance,
-      showTopupPanel: getSettingBool('SHOW_TOPUP_PANEL', true),
+      showTopupPanel: getSettingBool('SHOW_TOPUP_PANEL', false),
+      showOrdersPanel: getSettingBool('SHOW_ORDERS_PANEL', false),
       recentUsage: usage.map((u) => ({
         ts: u.ts,
         model: u.model,
@@ -177,24 +187,72 @@ userRouter.get(
 userRouter.get(
   '/user/membership',
   h(async (req, res) => {
-    const { listPlans, listUserOrders } = await import('../lib/billing.js');
-    const me = getDb().select().from(users).where(eq(users.id, req.user!.id)).get();
-    const planName = (() => {
-      if (!me?.membershipPlanId) return null;
-      const p = getDb().select().from(membershipPlans).where(eq(membershipPlans.id, me.membershipPlanId)).get();
-      return p?.name ?? null;
-    })();
+    const { getPublicAppQuota, listPlans, listUserOrders } = await import('../lib/billing.js');
+    const { listGroups } = await import('../lib/groups.js');
+    const uid = req.user!.id;
+    const me = getDb().select().from(users).where(eq(users.id, uid)).get();
+    const plan = me?.membershipPlanId
+      ? getDb().select().from(membershipPlans).where(eq(membershipPlans.id, me.membershipPlanId)).get()
+      : undefined;
+    const activePlan = plan && me?.membershipExpiresAt && me.membershipExpiresAt > Date.now() ? plan : undefined;
+    const groupNames = new Map(listGroups().map((group) => [group.id, group.name]));
+    const publicQuota = getPublicAppQuota(uid);
     res.json({
-      membership: me?.membershipExpiresAt && me.membershipExpiresAt > Date.now()
-        ? { planName, expiresAt: me.membershipExpiresAt }
+      membership: activePlan && me?.membershipExpiresAt
+        ? {
+            planName: activePlan.name,
+            tier: activePlan.tier,
+            groupName: groupNames.get(activePlan.groupId) ?? `#${activePlan.groupId}`,
+            expiresAt: me.membershipExpiresAt,
+            publicAppLimit: publicQuota.limit,
+            publicAppsUsed: publicQuota.used,
+            remainingPublicApps: publicQuota.remaining,
+          }
         : null,
-      plans: listPlans(true),
-      orders: listUserOrders(req.user!.id),
+      tokenBalance: recomputeBalance(uid),
+      plans: listPlans().map((item) => ({ ...item, groupName: groupNames.get(item.groupId) ?? `#${item.groupId}` })),
+      orders: listUserOrders(uid),
     });
   }),
 );
 
-/** 开通会员：建订单（manual 渠道），管理员确认到账后生效 */
+/** 注册后首次权益选择：零价立即开通，付费套餐创建待确认订单 */
+userRouter.post(
+  '/user/membership/select-plan',
+  h(async (req, res) => {
+    const body = (req.body ?? {}) as { planId?: number };
+    const plan = listPlans(true).find((item) => item.id === Number(body.planId));
+    if (!plan) throw new HttpError(404, 'PLAN_NOT_FOUND', '权益包不存在或已下架');
+
+    let orderId: string | null = null;
+    getDb().transaction(() => {
+      const current = getDb()
+        .select({ required: users.membershipSelectionRequired })
+        .from(users)
+        .where(eq(users.id, req.user!.id))
+        .get();
+      if (!current?.required) throw new HttpError(409, 'MEMBERSHIP_ALREADY_SELECTED', '权益计划已选择');
+
+      if (plan.priceFen === 0) {
+        activateMembership(req.user!.id, plan.id);
+      } else {
+        orderId = createOrder(req.user!.id, 'membership', { priceFen: plan.priceFen, planId: plan.id }).id;
+      }
+      getDb()
+        .update(users)
+        .set({ membershipSelectionRequired: false })
+        .where(and(eq(users.id, req.user!.id), eq(users.membershipSelectionRequired, true)))
+        .run();
+    });
+    res.json({
+      ok: true,
+      activated: plan.priceFen === 0,
+      planName: plan.name,
+      orderId,
+    });
+  }),
+);
+
 userRouter.post(
   '/user/membership/subscribe',
   h(async (req, res) => {

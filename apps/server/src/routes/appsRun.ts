@@ -1,21 +1,21 @@
 /**
- * .asp-app 运行与审核（M4，G3/G4/G5）：
+ * .asp-app 运行与发布（M4，G3/G4/G5）：
  *  - POST /api/apps/:id/run            invoked 执行（requireAuth + 可见性门禁；运行记录入 app_runs + 审计）
  *  - GET  /api/apps/:id/meta           执行页元数据（入参 schema 等；匿名按可见性门禁可读公开应用）
  *  - POST /api/apps/submit             用户上传 .asp-app（requireAuth；默认私有可见，归属=上传者；
  *                                      正式目录写入一律在归属校验之后，防止同名包清空他人应用）
- *  - POST /api/apps/:id/submit-review  提交审核（requireAuth；版本更新=重新审核）
- *  - GET  /api/apps/mine               我的应用（requireAuth，含审核状态）
- *  - 管理端：GET /api/admin/review/pending、approve / reject（驳回带理由）
+ *  - POST /api/apps/:id/publish        用户发布为公开（requireAuth + 订阅额度校验）
+ *  - GET  /api/apps/mine               我的应用（requireAuth）
  */
 import fs, { statfsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import express, { Router } from 'express';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
+import type { AppCard, OwnedAppCard } from '@aap/shared';
 import { getDb } from '../db/index.js';
-import { appRuns, apps } from '../db/schema.js';
+import { appRuns, apps, llmAppTokens } from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
-import { requireAdmin, requireAuth } from '../lib/auth.js';
+import { requireAuth, requireStepUp } from '../lib/auth.js';
 import { canAccess } from '../gateway/registry.js';
 import { appSiteDir } from '../gateway/staticApp.js';
 import { loopbackPlatformPort, runInvoked } from '../lib/sandbox.js';
@@ -29,6 +29,7 @@ import { missingRequiredEnv } from '../lib/appEnv.js';
 import { stopPersistentFor } from '../lib/sandbox.js';
 import { getSettingInt } from '../lib/settings.js';
 import { appEnvVars } from '../db/schema.js';
+import { assertPublicAppQuota } from '../lib/billing.js';
 
 // ---------- 上传限频（每用户每日；内存计数，重启归零，软防护） ----------
 
@@ -287,7 +288,7 @@ appsRunRouter.put(
   }),
 );
 
-// ---------- 用户提交 .asp-app（默认私有；版本更新=重新审核） ----------
+// ---------- 用户提交 .asp-app（默认私有；版本更新直接更新） ----------
 
 appsRunRouter.post(
   '/apps/submit',
@@ -343,19 +344,16 @@ appsRunRouter.post(
       fs.rmSync(appSiteDir(tmpDir), { recursive: true, force: true });
       throw new HttpError(400, 'PACKAGE_TAMPERED', `包签名校验失败：${signatureCheck.reason ?? '签名无效'}`);
     }
-    // 官方签名（信任公钥命中）→ 免审：直接置 approved（G4）
-    const reviewStatus = signatureCheck.status === 'verified' ? 'approved' : 'none';
-
+    const initialReviewStatus = signatureCheck.status === 'verified' ? 'approved' : 'none';
     const now = Date.now();
     const existing = getDb().select().from(apps).where(eq(apps.id, manifest.name)).get();
     if (existing) {
-      // 版本更新：仅归属者或管理员；视为重新审核（verified 免审直接 approved）
+      // 版本更新：仅归属者或管理员；通过包校验后直接更新
       const isOwner = existing.ownerUserId === req.user!.id;
       if (!isOwner && req.user!.role !== 'admin') {
         fs.rmSync(appSiteDir(tmpDir), { recursive: true, force: true });
         throw new HttpError(409, 'APP_EXISTS', '同名应用已存在');
       }
-      const pending = signatureCheck.status !== 'verified';
       const to = appSiteDir(manifest.name);
       fs.rmSync(to, { recursive: true, force: true });
       fs.renameSync(appSiteDir(tmpDir), to);
@@ -366,10 +364,8 @@ appsRunRouter.post(
           // 新包字段优先，旧 manifest 仅补足校验器不感知的字段（如 description）
           manifestJson: JSON.stringify({ ...(safeParse(existing.manifestJson) || {}), ...rawManifest, ...manifest }),
           signatureStatus: signatureCheck.status,
-          reviewStatus: pending ? 'pending' : 'approved',
-          // 审核门禁（P1-6）：非私有应用推未审新版先下线，待审通过恢复
-          // （approve 置 enabled=true），杜绝未审代码对他人即时生效
-          ...(pending && existing.visibility !== 'private' ? { enabled: false } : {}),
+          reviewStatus: 'approved',
+          reviewNote: null,
           submittedAt: now,
           updatedAt: now,
         })
@@ -379,7 +375,7 @@ appsRunRouter.post(
         name: manifest.name,
         signature: signatureCheck.status,
       });
-      res.json({ ok: true, id: manifest.name, review: pending ? 'pending' : 'approved' });
+      res.json({ ok: true, id: manifest.name });
       return;
     }
 
@@ -403,7 +399,7 @@ appsRunRouter.post(
         manifestJson: JSON.stringify({ ...rawManifest, ...manifest }),
         signatureStatus: signatureCheck.status,
         runtimeMode: manifest.type === 'python' ? manifest.runtime : null,
-        reviewStatus, // verified = 官方签名免审（G4）
+        reviewStatus: initialReviewStatus,
         enabled: true, // 私有即可用（G4：上传 → 校验 → 私有可用）
         createdAt: now,
         updatedAt: now,
@@ -416,7 +412,7 @@ appsRunRouter.post(
       capabilities: manifest.capabilities,
       signature: signatureCheck.status,
     });
-    res.json({ ok: true, id: manifest.name, review: reviewStatus });
+    res.json({ ok: true, id: manifest.name });
   }),
 );
 
@@ -439,18 +435,22 @@ appsRunRouter.get(
     const rows = getDb()
       .select()
       .from(apps)
-      .where(and(eq(apps.ownerUserId, uid), eq(apps.kind, 'package')))
+      .where(and(eq(apps.ownerUserId, uid), ne(apps.kind, 'upstream')))
       .orderBy(sql`updated_at DESC`)
       .all();
     res.json({
-      apps: rows.map((r) => ({
+      apps: rows.map((r): OwnedAppCard => ({
         id: r.id,
         name: r.name,
-        kind: r.kind,
-        runtimeMode: r.runtimeMode,
-        visibility: r.visibility,
-        reviewStatus: r.reviewStatus,
-        reviewNote: r.reviewNote,
+        description: r.description,
+        icon: r.icon,
+        category: r.category,
+        kind: r.kind as OwnedAppCard['kind'],
+        runtimeMode: r.runtimeMode as OwnedAppCard['runtimeMode'],
+        visibility: r.visibility as AppCard['visibility'],
+        status: (r.healthState as AppCard['status']) ?? 'unknown',
+        sort: r.sort,
+        accessible: r.enabled,
         signatureStatus: r.signatureStatus,
         enabled: r.enabled,
         updatedAt: r.updatedAt,
@@ -459,96 +459,53 @@ appsRunRouter.get(
   }),
 );
 
-// ---------- 提交审核 / 取消审核 ----------
+appsRunRouter.delete(
+  '/apps/:id',
+  requireStepUp,
+  h(async (req, res) => {
+    const id = String(req.params.id);
+    const app = loadApp(id);
+    if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
+    if (app.ownerUserId !== req.user!.id) throw new HttpError(403, 'FORBIDDEN', '只能删除自己创建的应用');
+    if (app.kind === 'upstream') throw new HttpError(400, 'NOT_PACKAGE', '仅托管应用可以在个人中心删除');
+
+    stopPersistentFor(id);
+    fs.rmSync(appSiteDir(id), { recursive: true, force: true });
+    getDb().delete(apps).where(eq(apps.id, id)).run();
+    getDb().delete(llmAppTokens).where(eq(llmAppTokens.appId, id)).run();
+    audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.delete', { appId: id });
+    res.json({ ok: true });
+  }),
+);
+
+// ---------- 公开发布 ----------
 
 appsRunRouter.post(
-  '/apps/:id/submit-review',
+  '/apps/:id/publish',
   requireAuth,
   h(async (req, res) => {
     const app = loadApp(String(req.params.id));
     if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
-    if (app.ownerUserId !== req.user!.id && req.user!.role !== 'admin') {
-      throw new HttpError(403, 'FORBIDDEN', '只有归属者可以提交审核');
+    if (app.ownerUserId !== req.user!.id) {
+      throw new HttpError(403, 'FORBIDDEN', '只有应用归属者可以发布');
     }
-    if (app.kind !== 'package') throw new HttpError(400, 'NOT_PACKAGE', '仅 .asp-app 包需要审核');
-    // 官方签名（信任公钥命中）→ 免审：直接 approved（G4）
-    const auto = app.signatureStatus === 'verified';
+    if (app.kind === 'upstream') throw new HttpError(400, 'NOT_PACKAGE', '仅托管应用包可以发布');
+    assertPublicAppQuota(app.ownerUserId, app.id);
     getDb()
       .update(apps)
       .set({
-        reviewStatus: auto ? 'approved' : 'pending',
-        reviewNote: auto ? '官方签名免审' : null,
+        visibility: 'public',
+        enabled: true,
+        reviewStatus: 'approved',
+        reviewNote: null,
         submittedAt: Date.now(),
         updatedAt: Date.now(),
       })
       .where(eq(apps.id, app.id))
       .run();
-    audit(`user:${req.user!.id}`, req.clientIp ?? null, auto ? 'app.review.auto_approved' : 'app.review.submit', {
+    audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.publish.public', {
       appId: app.id,
     });
-    res.json({ ok: true, review: auto ? 'approved' : 'pending' });
-  }),
-);
-
-// ---------- 管理端审核 ----------
-
-appsRunRouter.get(
-  '/admin/review/pending',
-  requireAdmin,
-  h(async (_req, res) => {
-    const rows = getDb()
-      .select()
-      .from(apps)
-      .where(eq(apps.reviewStatus, 'pending'))
-      .orderBy(sql`submitted_at DESC`)
-      .all();
-    res.json({
-      pending: rows.map((r) => ({
-        id: r.id,
-        name: r.name,
-        description: r.description,
-        ownerUserId: r.ownerUserId,
-        visibility: r.visibility,
-        manifest: safeParse(r.manifestJson),
-        submittedAt: r.submittedAt,
-      })),
-    });
-  }),
-);
-
-appsRunRouter.post(
-  '/admin/review/:id/approve',
-  requireAdmin,
-  h(async (req, res) => {
-    const body = (req.body ?? {}) as { visibility?: string };
-    const id = String(req.params.id);
-    const app = loadApp(id);
-    if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
-    const visibility = body.visibility ?? 'public';
-    getDb()
-      .update(apps)
-      .set({ reviewStatus: 'approved', reviewNote: null, enabled: true, updatedAt: Date.now(), ...(body.visibility ? { visibility } : {}) })
-      .where(eq(apps.id, id))
-      .run();
-    audit(`admin:${req.user!.id}`, req.clientIp ?? null, 'app.review.approved', { appId: id, visibility });
-    res.json({ ok: true });
-  }),
-);
-
-appsRunRouter.post(
-  '/admin/review/:id/reject',
-  requireAdmin,
-  h(async (req, res) => {
-    const body = (req.body ?? {}) as { note?: string };
-    const id = String(req.params.id);
-    const app = loadApp(id);
-    if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
-    getDb()
-      .update(apps)
-      .set({ reviewStatus: 'rejected', reviewNote: String(body.note ?? '').slice(0, 300), updatedAt: Date.now() })
-      .where(eq(apps.id, id))
-      .run();
-    audit(`admin:${req.user!.id}`, req.clientIp ?? null, 'app.review.rejected', { appId: id, note: body.note });
-    res.json({ ok: true });
+    res.json({ ok: true, visibility: 'public' });
   }),
 );

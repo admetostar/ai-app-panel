@@ -361,7 +361,7 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
       } else {
         html = baseTag + routeFix + html;
       }
-      // 统一页面元素（P3）：应用门户 / 个人中心 / 退出登录（幂等、失败静默）
+      // 统一页面元素（P3）：返回超级面板入口（幂等、失败静默）
       html = injectChrome(html, id);
       return res.send(html);
     }

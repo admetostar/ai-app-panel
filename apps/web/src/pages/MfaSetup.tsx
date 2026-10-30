@@ -5,7 +5,7 @@
  */
 import { Alert, Button, Card, Form, Input, Tabs, Typography, message } from 'antd';
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom';
 import QRCode from 'qrcode';
 import { api } from '../api/client';
 import { useQueryClient } from '@tanstack/react-query';
@@ -20,9 +20,12 @@ interface MfaStatusView {
 
 export function MfaSetupPage() {
   const navigate = useNavigate();
+  const { activeUserPageTheme } = useOutletContext<{ activeUserPageTheme: 'light' | 'dark' }>();
+  const [searchParams] = useSearchParams();
+  const afterAuth = searchParams.get('returnTo') === '/account' ? '/account' : '/';
   const qc = useQueryClient();
   const { me } = useSession();
-  const [stepUpModal, ensureStepUp] = useStepUp();
+  const [stepUpModal, ensureStepUp] = useStepUp(activeUserPageTheme);
   const [totp, setTotp] = useState<{ secret: string; otpauthUri: string; qr: string } | null>(null);
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -153,7 +156,7 @@ export function MfaSetupPage() {
               </Card>
             </>
           ) : null}
-          <Button type="primary" block onClick={() => navigate('/')}>
+          <Button type="primary" block onClick={() => navigate(afterAuth)}>
             我已保存，完成
           </Button>
         </>
@@ -207,7 +210,7 @@ export function MfaSetupPage() {
             ]}
           />
           {me && !forced ? (
-            <Button type="link" block onClick={() => navigate('/')}>
+            <Button type="link" block onClick={() => navigate(afterAuth)}>
               跳过绑定
             </Button>
           ) : null}

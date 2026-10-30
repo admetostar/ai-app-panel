@@ -412,7 +412,12 @@ describe('P 可见性新模型（restricted/private/分组）', () => {
     expect(html).toContain('HELLO-HTML');
     expect(html).toContain('/portal-chrome.js');
     const chrome = await fetch(`${base}/portal-chrome.js`);
-    expect((await chrome.text())).toContain('应用门户');
+    const chromeJs = await chrome.text();
+    expect(chromeJs).toContain('返回超级面板');
+    expect(chromeJs).not.toContain('应用门户');
+    expect(chromeJs).not.toContain('个人中心');
+    expect(chromeJs).not.toContain('退出登录');
+    expect(chromeJs).not.toContain('/api/auth/me');
   });
 });
 

@@ -1,7 +1,7 @@
 /**
  * 管理后台（E1/E2，P0 硬指标）——目录与功能域一一对应：
  *   总览（仪表卡 + 快捷入口 + 最近动态）
- *   站点设置（品牌/默认主题/备案）
+ *   站点设置（品牌/备案）
  *   应用管理（应用列表 + 网关限流）
  *   用户与注册（用户列表 + 注册策略 + 邀请码）
  *   安全（防爆破/PoW/会话/签名密钥/Turnstile + 审计日志）
@@ -17,7 +17,6 @@ import {
   Badge,
   Button,
   Card,
-  ColorPicker,
   Descriptions,
   Form,
   Input,
@@ -40,6 +39,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import { useSession } from '../state/session';
 import { AppEnvModal } from '../components/AppEnvModal';
+import { TierBadge } from '../components/TierBadge';
 import type { PublicUser } from '@aap/shared';
 
 // ---------- 类型 ----------
@@ -90,6 +90,7 @@ interface Overview {
     httpsEnabled: boolean;
     certDaysRemaining: number | null;
     registrationMode: string;
+    freePlanConfigured: boolean;
     appCount: number;
   };
   liveSessions: number;
@@ -218,8 +219,6 @@ function SettingsForm({
 // ---------- 配置控件渲染（下拉/开关/取色/数字/密码+查看） ----------
 
 const KEY_WIDGET: Record<string, string> = {
-  THEME_ID: 'theme',
-  ACCENT_COLOR: 'color',
   AAP_SIGN_SECRET: 'password',
   TURNSTILE_SECRET_KEY: 'password',
   SMTP_PASS: 'password',
@@ -227,22 +226,6 @@ const KEY_WIDGET: Record<string, string> = {
 };
 
 function renderControl(s: SettingRow, form?: { setFieldsValue: (v: Record<string, unknown>) => void }, secretReveal = false): ReactNode {
-  if (s.key === 'THEME_ID' && s.choiceLabels) {
-    return <Select options={Object.entries(s.choiceLabels).map(([value, label]) => ({ value, label }))} style={{ width: 220 }} />;
-  }
-  if (s.key === 'ACCENT_COLOR') {
-    return (
-      <Space.Compact style={{ width: '100%' }}>
-        <ColorPicker
-          value={s.value || undefined}
-          onChange={(c) => form?.setFieldsValue({ ACCENT_COLOR: c.toHexString() })}
-          showText
-          disabledAlpha
-        />
-        <Input placeholder="留空用主题默认" style={{ width: 180 }} disabled />
-      </Space.Compact>
-    );
-  }
   if (s.type === 'bool') return <Switch />;
   if (s.choiceLabels) {
     return <Select options={Object.entries(s.choiceLabels).map(([value, label]) => ({ value, label }))} />;
@@ -307,6 +290,7 @@ export function AdminPage() {
     c &&
       c.adminPasswordChanged &&
       c.adminMfaEnabled &&
+      c.freePlanConfigured &&
       (c.httpsEnabled || skipCert) &&
       c.appCount > 0 &&
       (c.registrationMode !== 'closed' || skipReg),
@@ -367,6 +351,11 @@ export function AdminPage() {
                       {!c.httpsEnabled ? <> · <a onClick={() => markSkip('cert')}>跳过（内网）</a></> : null}
                     </>
                   ),
+                },
+                {
+                  title: '配置零价权益包',
+                  status: c.freePlanConfigured ? 'finish' : 'process',
+                  description: <a onClick={go('ops')}>{c.freePlanConfigured ? '查看权益包' : '去创建'}</a>,
                 },
                 {
                   title: '注册策略',
@@ -728,8 +717,6 @@ function AppsTab(): ReactNode {
 
       <AppEnvModal appId={envApp?.id ?? ''} appName={envApp?.name ?? ''} open={envApp != null} onClose={() => setEnvApp(null)} />
 
-      <ReviewCard />
-
       <Card size="small" title="网关限流与超时" extra={<Tag bordered={false} color="green" style={{ fontSize: 11 }}>默认值即可跑</Tag>}>
         <SettingsForm groups={['应用网关']} />
       </Card>
@@ -813,7 +800,7 @@ function AppsTab(): ReactNode {
                       ) : null}
                       <div>
                         签名：
-                        {({ verified: '可信签名（免审接入）', untrusted: '未信任签名（走审核）', unsigned: '未签名（走审核）', invalid: '签名无效（接入将被拒）' } as Record<string, string>)[pkgPreview.signature] ?? pkgPreview.signature}
+                        {({ verified: '可信签名', untrusted: '未信任签名', unsigned: '未签名', invalid: '签名无效（接入将被拒）' } as Record<string, string>)[pkgPreview.signature] ?? pkgPreview.signature}
                       </div>
                       {pkgPreview.exists ? <div>同名应用已存在：接入将作为版本更新（仅归属者/管理员可提交）。</div> : null}
                     </div>
@@ -1047,6 +1034,12 @@ function UsersRegTab(): ReactNode {
         />
       </Card>
 
+      <Alert
+        type="info"
+        showIcon
+        message="开放注册前需先配置至少一个已启用的零价权益包"
+        description="新注册用户必须先选择权益包；零价包立即生效，付费包创建待确认订单。"
+      />
       <Card size="small" title="注册策略">
         <SettingsForm groups={['注册与账号']} />
       </Card>
@@ -1814,6 +1807,8 @@ interface PlanRowUI {
   durationDays: number;
   priceFen: number;
   tokenGrant: number;
+  tier: number;
+  publicAppLimit: number;
   enabled: boolean;
 }
 interface OrderRowUI {
@@ -1841,6 +1836,15 @@ function fen2yuan(fen: number): string {
   return (fen / 100).toFixed(2);
 }
 
+const PLAN_DURATION_DAYS: Record<string, number> = { month: 30, quarter: 90, year: 365 };
+
+function planDurationLabel(days: number): string {
+  if (days === 30) return '月（30 天）';
+  if (days === 90) return '季度（90 天）';
+  if (days === 365) return '年（365 天）';
+  return days >= 100_000 ? '长期' : `${days} 天`;
+}
+
 function OpsTab(): ReactNode {
   const qc = useQueryClient();
   const usersQ = useQuery({ queryKey: ['admin-users'], queryFn: () => api<{ users: PublicUser[] }>('/api/admin/users') });
@@ -1850,6 +1854,8 @@ function OpsTab(): ReactNode {
   const opsQ = useQuery({ queryKey: ['billing-ops'], queryFn: () => api<OpsStatsUI>('/api/admin/billing/ops') });
   const groupsQ = useQuery({ queryKey: ['admin-groups'], queryFn: () => api<{ groups: GroupRow[] }>('/api/admin/groups') });
   const [planForm] = Form.useForm();
+  const [planModalOpen, setPlanModalOpen] = useState(false);
+  const [planSaving, setPlanSaving] = useState(false);
 
   const ops = opsQ.data;
   const grossMargin = ops ? ops.revenue30d - ops.cost30d : 0;
@@ -1873,18 +1879,21 @@ function OpsTab(): ReactNode {
         </Card>
       </div>
 
-      <Card size="small" title="功能订阅套餐">
+      <Card size="small" title="功能订阅套餐" extra={<Button type="primary" onClick={() => setPlanModalOpen(true)}>创建套餐</Button>}>
         <Table<PlanRowUI>
           rowKey="id"
           size="small"
           pagination={false}
+          scroll={{ x: 1000 }}
           dataSource={plansQ.data?.plans ?? []}
           columns={[
-            { title: '名称', dataIndex: 'name', width: 140 },
+            { title: '计划名称', dataIndex: 'name', width: 150 },
+            { title: '权益等级', dataIndex: 'tier', width: 120, render: (tier: number) => <TierBadge tier={tier} /> },
             { title: '分组', dataIndex: 'groupName', width: 140 },
-            { title: '时长', dataIndex: 'durationDays', width: 90, render: (v: number) => `${v} 天` },
+            { title: '可用时间', dataIndex: 'durationDays', width: 130, render: (v: number) => planDurationLabel(v) },
+            { title: '可公开发布应用数', dataIndex: 'publicAppLimit', width: 150 },
+            { title: 'Token 额度', dataIndex: 'tokenGrant', width: 120, render: (v: number) => v.toLocaleString() },
             { title: '价格', dataIndex: 'priceFen', width: 90, render: (v: number) => `¥${fen2yuan(v)}` },
-            { title: '赠额度', dataIndex: 'tokenGrant', width: 100 },
             { title: '状态', width: 80, render: (_, r) => (r.enabled ? <Tag color="green">在售</Tag> : <Tag>停售</Tag>) },
             {
               title: '操作',
@@ -1910,37 +1919,79 @@ function OpsTab(): ReactNode {
             },
           ]}
         />
-        <Form form={planForm} layout="inline" style={{ marginTop: 10, rowGap: 8 }} onFinish={async (v) => {
-          try {
-            await api('/api/admin/billing/plans', {
-              method: 'POST',
-              json: { ...v, groupId: Number(v.groupId), durationDays: Number(v.durationDays), priceFen: Math.round(Number(v.priceFen ?? 0) * 100), tokenGrant: Number(v.tokenGrant ?? 0) },
-            });
-            message.success('套餐已创建');
-            planForm.resetFields();
-            void qc.invalidateQueries({ queryKey: ['billing-plans'] });
-          } catch (err) {
-            message.error(err instanceof Error ? err.message : '创建失败');
-          }
-        }}>
-          <Form.Item name="name" rules={[{ required: true, message: '必填' }]}>
-            <Input placeholder="套餐名（订阅-高级）" style={{ width: 160 }} />
-          </Form.Item>
-          <Form.Item name="groupId" rules={[{ required: true, message: '必选' }]}>
-            <Select placeholder="对应分组" style={{ width: 150 }} options={groupsQ.data?.groups.map((g) => ({ value: g.id, label: g.name }))} />
-          </Form.Item>
-          <Form.Item name="durationDays" rules={[{ required: true, message: '必填' }]}>
-            <Input placeholder="时长(天)=30" style={{ width: 110 }} />
-          </Form.Item>
-          <Form.Item name="priceFen" rules={[{ required: true, message: '必填' }]}>
-            <Input placeholder="价格(元)=30" style={{ width: 110 }} />
-          </Form.Item>
-          <Form.Item name="tokenGrant">
-            <Input placeholder="赠额度=0" style={{ width: 100 }} />
-          </Form.Item>
-          <Button htmlType="submit" type="primary">创建套餐</Button>
-        </Form>
       </Card>
+
+      <Modal
+        title="创建功能订阅套餐"
+        open={planModalOpen}
+        confirmLoading={planSaving}
+        okText="创建套餐"
+        cancelText="取消"
+        onCancel={() => {
+          setPlanModalOpen(false);
+          planForm.resetFields();
+        }}
+        onOk={() => planForm.submit()}
+        destroyOnClose
+      >
+        <Form
+          form={planForm}
+          layout="vertical"
+          initialValues={{ durationUnit: 'month', tier: 0, publicAppLimit: 10, tokenGrant: 0, priceYuan: 0 }}
+          onFinish={async (values) => {
+            setPlanSaving(true);
+            try {
+              await api('/api/admin/billing/plans', {
+                method: 'POST',
+                json: {
+                  name: values.name,
+                  groupId: Number(values.groupId),
+                  durationDays: PLAN_DURATION_DAYS[String(values.durationUnit)],
+                  tier: Number(values.tier),
+                  publicAppLimit: Number(values.publicAppLimit),
+                  tokenGrant: Number(values.tokenGrant ?? 0),
+                  priceFen: Math.round(Number(values.priceYuan ?? 0) * 100),
+                },
+              });
+              message.success('套餐已创建');
+              setPlanModalOpen(false);
+              planForm.resetFields();
+              void qc.invalidateQueries({ queryKey: ['billing-plans'] });
+            } catch (err) {
+              message.error(err instanceof Error ? err.message : '创建失败');
+            } finally {
+              setPlanSaving(false);
+            }
+          }}
+        >
+          <Form.Item name="name" label="计划名称" rules={[{ required: true, message: '请填写计划名称' }]}>
+            <Input maxLength={64} placeholder="例如：专业版" />
+          </Form.Item>
+          <Form.Item name="groupId" label="分组" rules={[{ required: true, message: '请选择分组' }]}>
+            <Select placeholder="选择订阅权益分组" options={groupsQ.data?.groups.map((group) => ({ value: group.id, label: group.name }))} />
+          </Form.Item>
+          <Form.Item name="tier" label="权益等级" rules={[{ required: true, message: '请选择权益等级' }]}>
+            <Select
+              options={Array.from({ length: 6 }, (_, tier) => ({
+                value: tier,
+                label: <Space size={8}><TierBadge tier={tier} size={20} /></Space>,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item name="durationUnit" label="可用时间" rules={[{ required: true }]}>
+            <Select options={[{ value: 'month', label: '月（30 天）' }, { value: 'quarter', label: '季度（90 天）' }, { value: 'year', label: '年（365 天）' }]} />
+          </Form.Item>
+          <Form.Item name="publicAppLimit" label="可公开发布应用数量" rules={[{ required: true, message: '请设置公开应用数量' }]}>
+            <InputNumber min={0} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="tokenGrant" label="Token 额度">
+            <InputNumber min={0} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="priceYuan" label="价格（元）" rules={[{ required: true }]}>
+            <InputNumber min={0} precision={2} style={{ width: '100%' }} />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Card size="small" title="待确认订单（人工确认到账；确认后权益/额度自动生效）">
         <Table<OrderRowUI>
@@ -2228,100 +2279,5 @@ function RedeemCard(): ReactNode {
         ) : null}
       </Card>
     </Space>
-  );
-}
-
-// ---------- 审核卡（G3：包审核——看声明/通过/驳回） ----------
-
-interface PendingApp {
-  id: string;
-  name: string;
-  description: string;
-  ownerUserId: number | null;
-  visibility: string;
-  manifest: Record<string, unknown> | null;
-  submittedAt: number;
-}
-
-function ReviewCard(): ReactNode {
-  const qc = useQueryClient();
-  const pendingQ = useQuery({ queryKey: ['review-pending'], queryFn: () => api<{ pending: PendingApp[] }>('/api/admin/review/pending') });
-  const [rejectId, setRejectId] = useState<string | null>(null);
-  const [note, setNote] = useState('');
-
-  function invalidate(): void {
-    void qc.invalidateQueries({ queryKey: ['review-pending'] });
-    void qc.invalidateQueries({ queryKey: ['admin-apps'] });
-    void qc.invalidateQueries({ queryKey: ['apps'] });
-  }
-
-  const list = pendingQ.data?.pending ?? [];
-
-  return (
-    <Card size="small" title={`应用审核（${list.length} 个待审）`}>
-      {list.length === 0 ? (
-        <Typography.Text type="secondary">暂无待审核应用</Typography.Text>
-      ) : (
-        list.map((p) => (
-          <Card key={p.id} size="small" style={{ marginBottom: 10 }} title={`${p.name}（${p.id}）`}>
-            <Descriptions column={1} size="small">
-              <Descriptions.Item label="归属者">用户 {p.ownerUserId}</Descriptions.Item>
-              <Descriptions.Item label="提交时间">{new Date(p.submittedAt).toLocaleString()}</Descriptions.Item>
-              <Descriptions.Item label="类型">{String(p.manifest?.type ?? '—')} / {String(p.manifest?.runtime ?? '—')}</Descriptions.Item>
-              <Descriptions.Item label="能力声明">
-                {(Array.isArray(p.manifest?.capabilities) ? (p.manifest!.capabilities as string[]) : []).map((c) => (
-                  <Tag key={c} color="blue" style={{ fontSize: 11 }}>{c}</Tag>
-                ))}
-              </Descriptions.Item>
-              <Descriptions.Item label="出站白名单">
-                {(Array.isArray(p.manifest?.network) ? (p.manifest!.network as string[]) : []).join('、') || '（无出站）'}
-              </Descriptions.Item>
-            </Descriptions>
-            <Space wrap style={{ marginTop: 8 }}>
-              <Select
-                style={{ width: 170 }}
-                value="public"
-                onChange={() => void 0}
-                id={`vis-${p.id}`}
-                options={[
-                  { value: 'public', label: '公开' },
-                  { value: 'restricted', label: '指定可见（需再配 ACL）' },
-                ]}
-              />
-              <Button
-                type="primary"
-                onClick={async () => {
-                  const el = document.getElementById(`vis-${p.id}`) as HTMLInputElement | null;
-                  void el;
-                  await api(`/api/admin/review/${p.id}/approve`, { method: 'POST', json: { visibility: 'public' } });
-                  message.success('已通过并公开');
-                  invalidate();
-                }}
-              >
-                通过
-              </Button>
-              <Button danger onClick={() => setRejectId(p.id)}>
-                驳回
-              </Button>
-            </Space>
-          </Card>
-        ))
-      )}
-      <Modal
-        title="驳回（附理由）"
-        open={Boolean(rejectId)}
-        onCancel={() => setRejectId(null)}
-        onOk={async () => {
-          if (!rejectId) return;
-          await api(`/api/admin/review/${rejectId}/reject`, { method: 'POST', json: { note } });
-          message.success('已驳回');
-          setRejectId(null);
-          setNote('');
-          invalidate();
-        }}
-      >
-        <Input.TextArea rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder="驳回理由将展示给作者" />
-      </Modal>
-    </Card>
   );
 }

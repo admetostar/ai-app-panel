@@ -25,6 +25,8 @@ import { buildLoginRedirect, exchangeCallback, isAdminSubject } from '../lib/oid
 import { adminCount, disposeCredentialsFile, getLocalPasswordHash, writeLocalCredentials } from '../lib/bootstrap.js';
 import { audit, registerPurgeTask } from '../lib/audit.js';
 import { publicUserOf } from './shared.js';
+import { defaultAvatarForUser } from '../lib/userAvatar.js';
+import { listPlans } from '../lib/billing.js';
 
 export const authRouter = Router();
 
@@ -121,6 +123,9 @@ authRouter.post(
     const mode = registrationMode();
     if (mode === 'closed') {
       throw new HttpError(403, 'REGISTRATION_CLOSED', '本站未开放注册');
+    }
+    if (mode === 'open' && !listPlans(true).some((plan) => plan.priceFen === 0)) {
+      throw new HttpError(503, 'FREE_PLAN_REQUIRED', '本站尚未配置启用的零价权益包，暂时无法开放注册');
     }
     const body = (req.body ?? {}) as {
       username?: string;
@@ -257,10 +262,12 @@ authRouter.post(
           name: reg.username,
           role: promote ? 'admin' : 'user',
           status: 'active',
+          membershipSelectionRequired: !promote,
           createdAt: now,
         })
         .run();
       userId = Number(info.lastInsertRowid);
+      getDb().update(users).set({ avatar: defaultAvatarForUser(userId) }).where(eq(users.id, userId)).run();
       // 口令哈希直接搬运（注册 start 时已 scrypt，避免二次计算）
       getDb()
         .insert(localCredentials)
@@ -456,10 +463,13 @@ authRouter.get('/auth/oidc/callback', h(async (req, res) => {
             name: profile.name,
             role: 'user',
             status: 'pending_approval',
+            membershipSelectionRequired: true,
             createdAt: now,
           })
           .run();
-        audit(`oidc:${profile.subject}`, ip, 'user.oidc.pending_approval', { userId: Number(info.lastInsertRowid) });
+        const userId = Number(info.lastInsertRowid);
+        getDb().update(users).set({ avatar: defaultAvatarForUser(userId) }).where(eq(users.id, userId)).run();
+        audit(`oidc:${profile.subject}`, ip, 'user.oidc.pending_approval', { userId });
         res.redirect(302, '/login?error=oidc_pending');
         return;
       }
@@ -471,10 +481,13 @@ authRouter.get('/auth/oidc/callback', h(async (req, res) => {
           email: profile.email,
           name: profile.name,
           role: promote ? 'admin' : 'user',
+          membershipSelectionRequired: !promote,
           createdAt: now,
         })
         .run();
-      row = getDb().select().from(users).where(eq(users.id, Number(info.lastInsertRowid))).get();
+        const userId = Number(info.lastInsertRowid);
+        getDb().update(users).set({ avatar: defaultAvatarForUser(userId) }).where(eq(users.id, userId)).run();
+        row = getDb().select().from(users).where(eq(users.id, userId)).get();
       // 白名单内的待批准账号：自动激活并提升
       if (promote && row!.status === 'pending_approval') {
         getDb().update(users).set({ role: 'admin', status: 'active' }).where(eq(users.id, row!.id)).run();

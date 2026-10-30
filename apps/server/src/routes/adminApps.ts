@@ -22,6 +22,7 @@ import { audit } from '../lib/audit.js';
 import { probeAll } from '../gateway/health.js';
 import { stopPersistentFor } from '../lib/sandbox.js';
 import { installPyDeps } from '../lib/pydeps.js';
+import { assertPublicAppQuota } from '../lib/billing.js';
 
 export const adminAppsRouter = Router();
 
@@ -199,6 +200,14 @@ adminAppsRouter.put(
     if (body.category !== undefined) patch.category = body.category;
     if (body.visibility !== undefined) {
       if (!VISIBILITIES.has(body.visibility)) throw new HttpError(400, 'INVALID_VISIBILITY', '访问策略必须是 public/login/member');
+      if (
+        body.visibility === 'public' &&
+        existing.visibility !== 'public' &&
+        existing.ownerUserId !== null &&
+        existing.ownerUserId !== req.user!.id
+      ) {
+        assertPublicAppQuota(existing.ownerUserId, existing.id);
+      }
       patch.visibility = body.visibility;
     }
     if (body.passUser !== undefined) {

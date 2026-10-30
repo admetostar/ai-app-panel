@@ -2,7 +2,7 @@
  * 门户托管静态应用（P4）与应用统一页面元素（P3）。
  *  - kind='html'：门户直接托管 data/appsites/<id>/（简单 HTML 页 / .asp-app html 包）
  *  - kind='package'：python 包等待运行时（M4），占位页
- *  - 统一页面元素：HTML 响应注入 /portal-chrome.js（应用门户 / 个人中心 / 退出登录），
+ *  - 统一页面元素：HTML 响应注入 /portal-chrome.js（返回超级面板），
  *    失败静默不阻断（W0 契约：包作者不得遮挡右上角）。
  */
 import fs from 'node:fs';
@@ -407,7 +407,7 @@ export function serveHtmlApp(req: Request, res: Response, app: AppRow, sub: stri
   res.status(404).type('html').send('Not Found');
 }
 
-/** 统一页面元素注入：右上角悬浮条（应用门户 / 个人中心 / 退出登录） */
+/** 统一页面元素注入：右上角「返回超级面板」悬浮入口 */
 export function injectChrome(html: string, appId: string): string {
   const tag = `<script src="/portal-chrome.js" data-aap-app="${encodeURIComponent(appId)}" defer></script>`;
   if (html.includes('/portal-chrome.js')) return html; // 幂等
@@ -415,7 +415,7 @@ export function injectChrome(html: string, appId: string): string {
   return tag + html;
 }
 
-/** /portal-chrome.js 静态内容（小而自包含；会话态运行时拉取） */
+/** /portal-chrome.js 静态内容（小而自包含） */
 export function portalChromeJs(): string {
   return `(function(){
   if (window.__aapChrome) return;
@@ -427,32 +427,12 @@ export function portalChromeJs(): string {
     'border-radius:999px;padding:4px 8px;font:12px/1.6 system-ui,-apple-system,sans-serif;',
     'box-shadow:0 2px 8px rgba(0,0,0,.12)}',
     '#aap-chrome a{color:#1E5AA8;text-decoration:none;padding:2px 8px;border-radius:999px;white-space:nowrap}',
-    '#aap-chrome a:hover{background:rgba(30,90,168,.1)}',
-    '#aap-chrome .aap-user{color:#666;padding:0 4px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-    '@media (max-width:520px){#aap-chrome .aap-user{display:none}}'
+    '#aap-chrome a:hover{background:rgba(30,90,168,.1)}'
   ].join('');
   document.head.appendChild(style);
   var bar = document.createElement('div');
   bar.id = 'aap-chrome';
-  var back = encodeURIComponent(location.pathname + location.search);
-  bar.innerHTML =
-    '<a href="/">应用门户</a>' +
-    '<a href="/account">个人中心</a>' +
-    '<span class="aap-user" id="aap-chrome-user"></span>' +
-    '<a href="/api/auth/logout?next=' + back + '" id="aap-chrome-logout" style="display:none">退出登录</a>';
+  bar.innerHTML = '<a href="/">返回超级面板</a>';
   document.body.appendChild(bar);
-  fetch('/api/auth/me', { credentials: 'include' })
-    .then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (me) {
-      if (me && me.user && me.authState === 'full') {
-        document.getElementById('aap-chrome-user').textContent = me.user.name;
-        document.getElementById('aap-chrome-logout').style.display = '';
-      } else {
-        var lo = document.getElementById('aap-chrome-logout');
-        if (lo) lo.remove();
-      }
-    })
-    .catch(function () {});
 })();`;
 }
-

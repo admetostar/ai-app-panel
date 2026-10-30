@@ -2,7 +2,7 @@
  * 登录页（A2/A3）：密码登录 → PoW 条件网关 → MFA 挑战（TOTP/恢复码/Passkey）
  * → 强制流程跳转（改密 / 绑 MFA）。
  */
-import { Alert, Button, Card, Form, Input, Tabs, Typography, message } from 'antd';
+import { Alert, Button, Form, Input, Tabs, Typography, message } from 'antd';
 import { KeyOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
@@ -14,6 +14,7 @@ import { api, ApiError } from '../api/client';
 import { obtainPowToken, solvePow, type PowChallenge } from '../lib/pow';
 import { usePostAuthRedirect } from '../state/session';
 import type { SessionInfo } from '@aap/shared';
+import { AuthPanel } from '../components/AuthPanel';
 
 type LoginResult = SessionInfo & { mfaRequired: boolean };
 
@@ -32,13 +33,17 @@ export function LoginPage() {
     queryKey: ['bootstrap'],
     queryFn: () => api<PortalBootstrap>('/api/portal/bootstrap'),
   });
-  const redirect = usePostAuthRedirect();
+  const redirect = usePostAuthRedirect('/account');
   const [loading, setLoading] = useState(false);
   const [mfaRequired, setMfaRequired] = useState(false);
   const [mfaLoading, setMfaLoading] = useState(false);
   const [powHint, setPowHint] = useState<string | null>(null);
 
-  async function proceed(r: { mustChangePassword?: boolean; mustEnrollMfa?: boolean }): Promise<void> {
+  async function proceed(r: {
+    mustChangePassword?: boolean;
+    mustEnrollMfa?: boolean;
+    user?: { membershipSelectionRequired?: boolean };
+  }): Promise<void> {
     message.success('登录成功');
     redirect(r);
   }
@@ -127,10 +132,13 @@ export function LoginPage() {
   }
 
   return (
-    <Card style={{ maxWidth: 420, margin: '48px auto' }}>
-      <Typography.Title level={4} style={{ marginTop: 0 }}>
+    <AuthPanel>
+      <Typography.Title level={3} className="aap-auth-title">
         登录
       </Typography.Title>
+      <Typography.Paragraph className="aap-auth-description">
+        使用你的 AI 超级面板账号管理应用与权益。
+      </Typography.Paragraph>
 
       {oidcErrorMsg ? (
         <Alert
@@ -217,6 +225,6 @@ export function LoginPage() {
           </div>
         </>
       )}
-    </Card>
+    </AuthPanel>
   );
 }

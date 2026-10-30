@@ -42,6 +42,8 @@ export const users = sqliteTable(
     membershipPlanId: integer('membership_plan_id'),
     /** 会员到期时间（null = 未开通/已过期） */
     membershipExpiresAt: integer('membership_expires_at'),
+    /** 新注册普通用户完成首次权益选择前禁止进入门户功能 */
+    membershipSelectionRequired: integer('membership_selection_required', { mode: 'boolean' }).notNull().default(false),
     mfaEnabled: integer('mfa_enabled', { mode: 'boolean' }).notNull().default(false),
     mustChangePassword: integer('must_change_password', { mode: 'boolean' }).notNull().default(false),
     deletionRequestedAt: integer('deletion_requested_at'),
@@ -467,6 +469,10 @@ export const membershipPlans = sqliteTable('membership_plans', {
   priceFen: integer('price_fen').notNull().default(0),
   /** 开通赠送的 LLM 额度（token） */
   tokenGrant: integer('token_grant').notNull().default(0),
+  /** 权益等级：0 为基础权益，1–5 对应权益图标 */
+  tier: integer('tier').notNull().default(0),
+  /** 订阅用户可公开发布的应用总数 */
+  publicAppLimit: integer('public_app_limit').notNull().default(10),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
   createdAt: integer('created_at').notNull(),
 });

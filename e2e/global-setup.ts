@@ -59,7 +59,7 @@ export async function setup(): Promise<void> {
 
   // 门户服务（tsx 直跑，生产 web 产物由 WEB_DIST 指定）
   const serverDir = path.join(__dirname, '../apps/server');
-  portal = spawn('npx', ['tsx', 'src/server.ts'], {
+  portal = spawn(process.execPath, [path.join(serverDir, 'node_modules', 'tsx', 'dist', 'cli.mjs'), 'src/server.ts'], {
     cwd: serverDir,
     env: {
       ...process.env,
@@ -74,7 +74,7 @@ export async function setup(): Promise<void> {
   });
   await waitHealthy(`${PORTAL}/api/health`, 30_000);
 
-  // 预置数据：登录初始管理员 → 开放注册 → 接入 demo 应用
+  // 预置数据：登录初始管理员 → 配零价权益包 → 开放注册 → 接入 demo 应用
   const login = await fetch(`${PORTAL}/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: PORTAL },
@@ -107,6 +107,17 @@ export async function setup(): Promise<void> {
   if (!secret) throw new Error(`MFA enroll 失败: ${JSON.stringify(enroll.body)}`);
   const confirm = await api('POST', '/api/auth/mfa/totp/confirm', { token: await totpGenerate({ secret }) }, cookie);
   if (confirm.status !== 200) throw new Error(`MFA confirm 失败: ${JSON.stringify(confirm.body)}`);
+
+  const group = await api('POST', '/api/admin/groups', { name: 'E2E 免费权益组', note: 'E2E registration plan' }, cookie);
+  if (group.status >= 300) throw new Error(`权益分组创建失败: ${JSON.stringify(group.body)}`);
+  const groupId = (group.body as { id: number }).id;
+  const plan = await api(
+    'POST',
+    '/api/admin/billing/plans',
+    { name: 'E2E 免费权益包', groupId, durationDays: 30, priceFen: 0, tokenGrant: 0, tier: 0, publicAppLimit: 10 },
+    cookie,
+  );
+  if (plan.status >= 300) throw new Error(`零价权益包创建失败: ${JSON.stringify(plan.body)}`);
 
   const settings = await api('PUT', '/api/admin/settings', { REGISTRATION_MODE: 'open' }, cookie);
   if (settings.status >= 300) throw new Error(`开放注册失败: ${JSON.stringify(settings.body)}`);

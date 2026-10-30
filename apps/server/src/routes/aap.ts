@@ -122,6 +122,7 @@ aapRouter.post(
             plan: user.plan === 'member' ? 'member' : 'free',
             mfaEnabled: Boolean(user.mfaEnabled),
             mustChangePassword: Boolean(user.mustChangePassword),
+            membershipSelectionRequired: Boolean(user.membershipSelectionRequired),
           },
           token.appId,
         );

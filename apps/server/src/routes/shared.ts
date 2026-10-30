@@ -1,6 +1,7 @@
 /** 路由层共享小工具 */
 import type { PublicUser } from '@aap/shared';
 import type { users } from '../db/schema.js';
+import { defaultAvatarForUser } from '../lib/userAvatar.js';
 
 type UserRow = typeof users.$inferSelect;
 
@@ -8,7 +9,7 @@ type UserRow = typeof users.$inferSelect;
 export function publicUserOf(row: UserRow): PublicUser {
   return {
     id: row.id,
-    avatar: row.avatar ?? null,
+    avatar: row.avatar ?? defaultAvatarForUser(row.id),
     kind: row.kind === 'oidc' ? 'oidc' : 'local',
     username: row.username,
     email: row.email,
@@ -18,6 +19,7 @@ export function publicUserOf(row: UserRow): PublicUser {
     status: row.status as PublicUser['status'],
     mfaEnabled: row.mfaEnabled,
     plan: row.plan === 'member' ? 'member' : 'free',
+    membershipSelectionRequired: row.membershipSelectionRequired,
     createdAt: row.createdAt,
   };
 }

@@ -8,7 +8,7 @@ import { useState, type ReactNode } from 'react';
 import { api, ApiError } from '../api/client';
 import { useSession } from '../state/session';
 
-export function useStepUp(): [ReactNode, () => Promise<boolean>] {
+export function useStepUp(theme: 'light' | 'dark' = 'light'): [ReactNode, () => Promise<boolean>] {
   const { me } = useSession();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -64,6 +64,7 @@ export function useStepUp(): [ReactNode, () => Promise<boolean>] {
       onCancel={() => close(false)}
       footer={null}
       destroyOnClose
+      rootClassName={`aap-account-modal aap-account-modal--${theme}`}
     >
       <Tabs
         items={[

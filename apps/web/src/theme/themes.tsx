@@ -1,15 +1,13 @@
 /**
- * 主题系统：≥6 套内置主题（A1），方法论复用 fnos-dashboard：
+ * 主题系统保留内置色板，门户全局默认使用石墨暗色；个人中心与我的应用可在页面会话内覆盖：
  * 主题 = 一组 design token（CSS variables + AntD token 双写），
- * 品牌数据（settings.THEME_ID/ACCENT_COLOR）只引用 id，切换实时生效。
+ * CSS 变量和 AntD token 由同一套颜色定义生成。
  * TS 是单一来源；CSS 变量由 ThemeProvider 写入 :root，自定义样式消费。
  */
 import { ConfigProvider, theme as antdTheme, type ThemeConfig } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { BUILTIN_THEME_IDS, type BuiltinThemeId, type PortalBootstrap } from '@aap/shared';
-import { api } from '../api/client';
+import { useEffect, useMemo, type ReactNode } from 'react';
+import type { BuiltinThemeId } from '@aap/shared';
 
 export interface AapThemeColors {
   primary: string;
@@ -123,7 +121,7 @@ export const BUILTIN_THEMES: AapTheme[] = [
 ];
 
 export function getTheme(id: string | null | undefined): AapTheme {
-  return BUILTIN_THEMES.find((t) => t.id === id) ?? BUILTIN_THEMES[0]!;
+  return BUILTIN_THEMES.find((t) => t.id === id) ?? BUILTIN_THEMES.find((t) => t.id === 'graphite')!;
 }
 
 function cssVarName(k: keyof AapThemeColors): string {
@@ -139,74 +137,17 @@ function applyCssVars(theme: AapTheme, accent: string | null): void {
   root.dataset.aapTheme = theme.id;
 }
 
-const LS_THEME = 'aap.theme';
-const LS_ACCENT = 'aap.accent';
-
-interface ThemeContextValue {
-  theme: AapTheme;
-  themeId: string;
-  accent: string | null;
-  setThemeId: (id: string) => void;
-  setAccent: (c: string | null) => void;
-  /** 清除个人偏好，回到管理员配置的默认主题 */
-  resetPersonal: () => void;
-}
-
-const ThemeContext = createContext<ThemeContextValue | null>(null);
-
-export function useTheme(): ThemeContextValue {
-  const v = useContext(ThemeContext);
-  if (!v) throw new Error('useTheme 必须在 ThemeProvider 内使用');
-  return v;
-}
-
 export function ThemeProvider({ children }: { children: ReactNode }): ReactNode {
-  // R3 主题归属：默认主题/强调色由管理员在后台配置（settings，经 bootstrap 下发）；
-  // 用户在本页（个人中心-外观）做的选择写入 localStorage，仅覆盖本人浏览器。
-  const boot = useQuery({
-    queryKey: ['bootstrap'],
-    queryFn: () => api<PortalBootstrap>('/api/portal/bootstrap'),
-    staleTime: 60_000,
-    retry: 1,
-  });
-  const [personalThemeId, setPersonalThemeId] = useState<string | null>(() => localStorage.getItem(LS_THEME));
-  const [personalAccent, setPersonalAccent] = useState<string | null>(() => localStorage.getItem(LS_ACCENT));
-
-  const themeId = personalThemeId ?? boot.data?.branding.themeId ?? 'ocean';
-  const accent = personalAccent ?? boot.data?.branding.accentColor ?? null;
-  const theme = getTheme(themeId);
+  const theme = getTheme('graphite');
 
   useEffect(() => {
-    applyCssVars(theme, accent);
-  }, [theme, accent]);
-
-  const value = useMemo<ThemeContextValue>(
-    () => ({
-      theme,
-      themeId,
-      accent,
-      setThemeId: (id: string) => {
-        localStorage.setItem(LS_THEME, id);
-        setPersonalThemeId(id);
-      },
-      setAccent: (c: string | null) => {
-        if (c) localStorage.setItem(LS_ACCENT, c);
-        else localStorage.removeItem(LS_ACCENT);
-        setPersonalAccent(c);
-      },
-      /** 清除个人偏好，回到管理员配置的默认 */
-      resetPersonal: () => {
-        localStorage.removeItem(LS_THEME);
-        localStorage.removeItem(LS_ACCENT);
-        setPersonalThemeId(null);
-        setPersonalAccent(null);
-      },
-    }),
-    [theme, themeId, accent],
-  );
+    localStorage.removeItem('aap.theme');
+    localStorage.removeItem('aap.accent');
+    applyCssVars(theme, null);
+  }, [theme]);
 
   const antdConfig = useMemo<ThemeConfig>(() => {
-    const primary = accent ?? theme.colors.primary;
+    const primary = theme.colors.primary;
     return {
       algorithm: theme.dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
       token: {
@@ -224,18 +165,11 @@ export function ThemeProvider({ children }: { children: ReactNode }): ReactNode 
           "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif",
       },
     };
-  }, [theme, accent]);
+  }, [theme]);
 
   return (
-    <ThemeContext.Provider value={value}>
-      <ConfigProvider locale={zhCN} theme={antdConfig}>
-        {children}
-      </ConfigProvider>
-    </ThemeContext.Provider>
+    <ConfigProvider locale={zhCN} theme={antdConfig}>
+      {children}
+    </ConfigProvider>
   );
-}
-
-/** 主题 id 契约校验（服务端 settings 只存 id） */
-export function isBuiltinThemeId(id: string): id is BuiltinThemeId {
-  return (BUILTIN_THEME_IDS as readonly string[]).includes(id);
 }

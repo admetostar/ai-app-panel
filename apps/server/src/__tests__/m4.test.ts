@@ -1,7 +1,7 @@
 /**
  * M4 生态测试（G2/G3/G4/G5）：
  * 包上传（manifest 校验）→ 私有可用 → invoked 沙箱执行（echo / 每包 SQLite / 白名单拒绝）
- * → 提交审核 → 管理员通过/驳回。
+ * → 直接公开发布并校验订阅名额。
  * 依赖系统 python3（执行沙箱）。
  */
 import { execSync } from 'node:child_process';
@@ -12,6 +12,7 @@ import AdmZip from 'adm-zip';
 import { WebSocket } from 'ws';
 import { sessionCookieFor, setupTestDb, teardownTestDb } from './testkit.js';
 import { closeDb, getDb } from '../db/index.js';
+import { apps, users } from '../db/schema.js';
 import { seedSettings, setSetting } from '../lib/settings.js';
 import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
@@ -165,39 +166,29 @@ def handle(input, aap):
     expect(b.error).toContain('白名单');
   });
 
-  it('审核流：提交审核 → 驳回带理由 → 再提交 → 通过', async () => {
-    // 提交审核
-    const sub = await fetch(`${base}/api/apps/hellotool/submit-review`, {
+  it('公开发布：没有订阅名额时拒绝发布，且不再开放管理员审核接口', async () => {
+    const owner = getDb().select().from(users).get()!;
+    getDb().insert(apps).values({
+      id: 'quota-publish-test',
+      name: '额度发布测试',
+      ownerUserId: owner.id,
+      visibility: 'private',
+      kind: 'package',
+      upstream: '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }).run();
+    const publish = await fetch(`${base}/api/apps/quota-publish-test/publish`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
     });
-    expect(sub.status).toBe(200);
+    expect(publish.status).toBe(403);
+    expect(await publish.json()).toMatchObject({ error: { code: 'PUBLIC_APP_LIMIT_REACHED' } });
 
-    // 管理端驳回
-    const rej = await fetch(`${base}/api/admin/review/hellotool/reject`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ note: '缺少使用说明' }),
+    const pending = await fetch(`${base}/api/admin/review/pending`, {
+      headers: { origin: base, cookie: adminCookie },
     });
-    expect(rej.status).toBe(200);
-
-    // 再提交 → 通过（公开）
-    await fetch(`${base}/api/apps/hellotool/submit-review`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-    });
-    const ok = await fetch(`${base}/api/admin/review/hellotool/approve`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ visibility: 'public' }),
-    });
-    expect(ok.status).toBe(200);
-
-    // 匿名可见（public）
-    const anon = await fetch(`${base}/api/apps`);
-    const apps = (await anon.json()) as { apps: Array<{ id: string; accessible: boolean }> };
-    const t = apps.apps.find((a) => a.id === 'hellotool');
-    expect(t?.accessible).toBe(true);
+    expect(pending.status).toBe(404);
   });
 
   it('网络守卫：包内绕过平台代理直连 TCP → 被拒绝', async () => {

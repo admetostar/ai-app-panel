@@ -19,6 +19,8 @@ import { audit } from '../lib/audit.js';
 import { stopAllPersistent } from '../lib/sandbox.js';
 import { createGroup, deleteGroup, groupMemberIds, listGroups, setGroupMembers, updateGroup } from '../lib/groups.js';
 import { status as tlsStatus } from '../gateway/tls.js';
+import { defaultAvatarForUser } from '../lib/userAvatar.js';
+import { listPlans } from '../lib/billing.js';
 
 export const adminRouter = Router();
 
@@ -59,6 +61,7 @@ adminRouter.post(
       })
       .run();
     const uid = Number(info.lastInsertRowid);
+    getDb().update(users).set({ avatar: defaultAvatarForUser(uid) }).where(eq(users.id, uid)).run();
     await writeLocalCredentials(uid, password);
     audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.user.created', { uid, username });
     res.json({ ok: true, id: uid, initialPassword: password });
@@ -166,6 +169,10 @@ adminRouter.put(
   h(async (req, res) => {
     const body = (req.body ?? {}) as Record<string, string>;
     const keys = Object.keys(body);
+    const registrationMode = body.REGISTRATION_MODE ?? getSetting('REGISTRATION_MODE') ?? 'closed';
+    if (registrationMode === 'open' && !listPlans(true).some((plan) => plan.priceFen === 0)) {
+      throw new HttpError(409, 'FREE_PLAN_REQUIRED', '开放注册前请先创建并启用至少一个零价权益包');
+    }
     for (const key of keys) {
       if (!SETTING_DEFS[key]) throw new HttpError(400, 'UNKNOWN_SETTING', `未知配置项: ${key}`);
       updateSettingFromAdmin(key, String(body[key] ?? ''));
@@ -390,6 +397,7 @@ adminRouter.get(
         httpsEnabled: tlsStatus().httpsEnabled,
         certDaysRemaining: tlsStatus().cert?.daysRemaining ?? null,
         registrationMode: getSetting('REGISTRATION_MODE') ?? 'closed',
+        freePlanConfigured: listPlans(true).some((plan) => plan.priceFen === 0),
         appCount,
       },
       liveSessions,

@@ -5,7 +5,6 @@
 import { withBase } from '../lib/base';
 import {
   Alert,
-  ColorPicker,
   Button,
   Card,
   Descriptions,
@@ -20,16 +19,17 @@ import {
   Typography,
   message,
 } from 'antd';
-import { useEffect, useState, type ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../api/client';
 import { obtainPowToken } from '../lib/pow';
 import { useSession } from '../state/session';
 import { useStepUp, withStepUp } from '../components/StepUpModal';
 import { registerNewPasskey } from '../lib/mfaClient';
-import { BUILTIN_THEMES, useTheme } from '../theme/themes';
 import { AppEnvModal } from '../components/AppEnvModal';
+import { TierBadge } from '../components/TierBadge';
+import type { MembershipOrderSummary, MembershipPlanSummary, UserMembershipData } from '@aap/shared';
 
 // ---------- 主页面 ----------
 
@@ -42,10 +42,15 @@ interface SessionRow {
   lastSeenAt: number;
 }
 
+const ACCOUNT_TABS = ['profile', 'security', 'myapps', 'billing'] as const;
+type AccountTabKey = (typeof ACCOUNT_TABS)[number];
+
 export function AccountPage() {
+  const { activeUserPageTheme } = useOutletContext<{ activeUserPageTheme: 'light' | 'dark' }>();
   const { me, refetch } = useSession();
+  const [searchParams, setSearchParams] = useSearchParams();
   const qc = useQueryClient();
-  const [stepUpModal, ensureStepUp] = useStepUp();
+  const [stepUpModal, ensureStepUp] = useStepUp(activeUserPageTheme);
   const [profileForm] = Form.useForm();
   const [saving, setSaving] = useState(false);
   const [emailModal, setEmailModal] = useState(false);
@@ -57,6 +62,45 @@ export function AccountPage() {
   const [emailSending, setEmailSending] = useState(false);
 
   const user = me?.user;
+  const requestedTab = searchParams.get('tab');
+  const accountTab = ACCOUNT_TABS.find((tab) => tab === requestedTab) ?? ACCOUNT_TABS[0];
+  const [activeAccountTab, setActiveAccountTab] = useState<AccountTabKey>(accountTab);
+
+  useEffect(() => {
+    setActiveAccountTab(accountTab);
+    if (!requestedTab) return;
+    requestAnimationFrame(() => {
+      document.getElementById(`account-section-${accountTab}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [accountTab, requestedTab]);
+
+  useEffect(() => {
+    let frame = 0;
+    const syncActiveSection = (): void => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const activationLine = 160;
+        let current: AccountTabKey = ACCOUNT_TABS[0];
+        for (const key of ACCOUNT_TABS) {
+          const section = document.getElementById(`account-section-${key}`);
+          if (section && section.getBoundingClientRect().top <= activationLine) current = key;
+        }
+        if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+          current = 'billing';
+        }
+        setActiveAccountTab(current);
+      });
+    };
+
+    window.addEventListener('scroll', syncActiveSection, { passive: true });
+    window.addEventListener('resize', syncActiveSection);
+    syncActiveSection();
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('scroll', syncActiveSection);
+      window.removeEventListener('resize', syncActiveSection);
+    };
+  }, []);
 
   useEffect(() => {
     if (user) profileForm.setFieldsValue({ name: user.name });
@@ -168,7 +212,7 @@ export function AccountPage() {
   }
 
   return (
-    <div style={{ maxWidth: 860, margin: '0 auto' }}>
+    <div className="aap-account-page">
       {stepUpModal}
       {me.user.status === 'deletion_pending' ? (
         <Alert
@@ -185,21 +229,25 @@ export function AccountPage() {
         />
       ) : null}
 
-      <Typography.Title level={4}>个人中心</Typography.Title>
+      <div className="aap-account-heading">
+        <Typography.Text className="aap-account-eyebrow">ACCOUNT</Typography.Text>
+        <Typography.Title level={2}>个人中心</Typography.Title>
+        <Typography.Paragraph>管理你的个人资料、安全设置、应用和账户权益。</Typography.Paragraph>
+      </div>
 
       <Tabs
+        className="aap-account-tabs"
+        animated={false}
+        tabPosition="left"
         items={[
-          {
-            key: 'appearance',
-            label: '外观',
-            children: <AppearanceTab />,
-          },
           {
             key: 'profile',
             label: '个人资料',
+            forceRender: true,
             children: (
+              <div id="account-section-profile" className="aap-account-section">
               <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                <Card title="基础资料">
+                <Card size="small" title="基础资料">
                   <Form form={profileForm} layout="vertical" onFinish={saveProfile} style={{ maxWidth: 420 }}>
                     <Form.Item name="name" label="昵称" rules={[{ required: true, message: '昵称不能为空' }]}>
                       <Input maxLength={64} />
@@ -216,7 +264,7 @@ export function AccountPage() {
                     </Button>
                   </Form>
                 </Card>
-                <Card title="绑定邮箱">
+                <Card size="small" title="绑定邮箱">
                   <Typography.Paragraph type="secondary">
                     当前：{user.email ?? '未绑定'}。换绑需先验证身份，再验证新邮箱。
                   </Typography.Paragraph>
@@ -229,15 +277,30 @@ export function AccountPage() {
                     换绑邮箱
                   </Button>
                 </Card>
+                <Card size="small" title="注销账号">
+                  <Alert
+                    type="warning"
+                    showIcon
+                    style={{ marginBottom: 12 }}
+                    message="注销后 7 天冷静期，期间可撤回"
+                    description="冷静期结束后，账号数据将被匿名化且不可恢复；审计记录按合规要求脱敏保留。"
+                  />
+                  <Button danger onClick={() => void requestDelete()}>
+                    申请注销账号
+                  </Button>
+                </Card>
               </Space>
+              </div>
             ),
           },
           {
             key: 'security',
-            label: '安全',
+            label: '账户安全',
+            forceRender: true,
             children: (
+              <div id="account-section-security" className="aap-account-section">
               <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                <Card title="修改密码">
+                <Card size="small" title="修改密码">
                   <Form layout="vertical" onFinish={changePassword} style={{ maxWidth: 420 }}>
                     <Form.Item name="currentPassword" label="当前密码" rules={[{ required: true }]}>
                       <Input.Password />
@@ -254,10 +317,10 @@ export function AccountPage() {
                     </Button>
                   </Form>
                 </Card>
-                <Card title="多因子认证（MFA）" extra={user.mfaEnabled ? <Tag color="green">已启用</Tag> : <Tag color="orange">未启用</Tag>}>
+                <Card size="small" title="多因子认证（MFA）" extra={user.mfaEnabled ? <Tag color="green">已启用</Tag> : <Tag color="orange">未启用</Tag>}>
                   <MfaManageBody ensureStepUp={ensureStepUp} />
                 </Card>
-                <Card title="登录会话">
+                <Card size="small" title="登录会话">
                   <Table<SessionRow>
                     size="small"
                     rowKey="id"
@@ -296,46 +359,41 @@ export function AccountPage() {
                   />
                 </Card>
               </Space>
+              </div>
             ),
           },
           {
             key: 'myapps',
-            label: '我的应用',
-            children: <MyAppsTab />,
+            label: '应用管理',
+            forceRender: true,
+            children: (
+              <div id="account-section-myapps" className="aap-account-section aap-account-section--myapps">
+                <MyAppsTab ensureStepUp={ensureStepUp} />
+              </div>
+            ),
           },
           {
             key: 'billing',
-            label: '订阅与充值',
-            // BillingTab（余额 + 最近调用）曾漏挂载致个人页无余额查询入口（2026-09-22）
-            children: (
-              <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                <BillingTab />
-                <MembershipTopupTab />
-              </Space>
-            ),
-          },
-          {
-            key: 'danger',
-            label: '注销账号',
-            children: (
-              <Card title="注销账号">
-                <Alert
-                  type="warning"
-                  showIcon
-                  style={{ marginBottom: 12 }}
-                  message="注销后 7 天冷静期，期间可撤回"
-                  description="冷静期结束后，账号数据将被匿名化且不可恢复；审计记录按合规要求脱敏保留。"
-                />
-                <Button danger onClick={() => void requestDelete()}>
-                  申请注销账号
-                </Button>
-              </Card>
-            ),
+            label: '我的权益',
+            forceRender: true,
+            children: <div id="account-section-billing" className="aap-account-section"><MembershipTopupTab /></div>,
           },
         ]}
+        activeKey={activeAccountTab}
+        onChange={(key) => {
+          setActiveAccountTab(key as AccountTabKey);
+          setSearchParams({ tab: key });
+        }}
       />
 
-      <Modal title="换绑邮箱" open={emailModal} onCancel={() => setEmailModal(false)} footer={null} destroyOnClose>
+      <Modal
+        title="换绑邮箱"
+        open={emailModal}
+        onCancel={() => setEmailModal(false)}
+        footer={null}
+        destroyOnClose
+        rootClassName={`aap-account-modal aap-account-modal--${activeUserPageTheme}`}
+      >
         <Form form={emailForm} layout="vertical" onFinish={verifyEmailChange}>
           <Form.Item
             name="newEmail"
@@ -392,6 +450,7 @@ export function AccountPage() {
         onCancel={() => setDeleteModal(false)}
         footer={null}
         destroyOnClose
+        rootClassName={`aap-account-modal aap-account-modal--${activeUserPageTheme}`}
       >
         <Alert type="error" showIcon style={{ marginBottom: 12 }} message="此操作不可逆（冷静期后）" />
         <Form form={deleteForm} onFinish={confirmDelete}>
@@ -590,136 +649,8 @@ function MfaManageBody({ ensureStepUp }: { ensureStepUp: () => Promise<boolean> 
   );
 }
 
-// ---------- 外观（R3：个性化主题；默认主题由管理员配置） ----------
+// ---------- 我的权益（M3：manual 渠道下单，管理员确认到账后生效） ----------
 
-function AppearanceTab(): ReactNode {
-  const { theme, themeId, accent, setThemeId, setAccent, resetPersonal } = useTheme();
-  void theme;
-  return (
-    <Card title="个性化外观" extra={<Button size="small" onClick={resetPersonal}>恢复站点默认</Button>}>
-      <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-        站点默认主题与强调色由管理员统一配置；这里的选择只对你本人当前浏览器生效。
-      </Typography.Paragraph>
-      <Typography.Title level={5} style={{ fontSize: 13 }}>主题</Typography.Title>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10 }}>
-        {BUILTIN_THEMES.map((t) => (
-          <div
-            key={t.id}
-            onClick={() => setThemeId(t.id)}
-            style={{
-              border: `2px solid ${t.id === themeId ? 'var(--aap-primary)' : 'var(--aap-border)'}`,
-              borderRadius: 10,
-              padding: 10,
-              cursor: 'pointer',
-              background: t.colors.bgLayout,
-            }}
-          >
-            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-              {[t.colors.primary, t.colors.accent, t.colors.bgContainer].map((c, i) => (
-                <span key={i} style={{ width: 18, height: 18, borderRadius: 5, background: c, border: '1px solid rgba(0,0,0,0.08)', display: 'inline-block' }} />
-              ))}
-            </div>
-            <div style={{ color: t.colors.text, fontSize: 13, fontWeight: 600 }}>
-              {t.name}
-              {t.id === themeId ? <span style={{ color: t.colors.primary }}> · 当前</span> : null}
-            </div>
-          </div>
-        ))}
-      </div>
-      <Typography.Title level={5} style={{ fontSize: 13, marginTop: 16 }}>强调色</Typography.Title>
-      <Space>
-        <ColorPicker value={accent ?? undefined} onChange={(c: { toHexString: () => string }) => setAccent(c.toHexString())} onClear={() => setAccent(null)} allowClear showText />
-        <Typography.Text type="secondary">{accent ?? '跟随主题默认'}</Typography.Text>
-      </Space>
-    </Card>
-  );
-}
-
-// ---------- 账务（M2：LLM 额度与用量；M3 上线充值） ----------
-
-interface BillingData {
-  plan: string;
-  tokenBalance: number | null;
-  recentUsage: Array<{
-    ts: number;
-    model: string | null;
-    appId: string | null;
-    promptTokens: number | null;
-    completionTokens: number | null;
-    delta: number;
-  }>;
-  note: string;
-}
-
-function BillingTab(): ReactNode {
-  const billing = useQuery({ queryKey: ['billing'], queryFn: () => api<BillingData>('/api/user/billing') });
-  const d = billing.data;
-  return (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card size="small" title="Token 额度（LLM 网关）">
-        <Descriptions column={1}>
-          <Descriptions.Item label="当前计划">
-            {d?.plan === 'member' ? <Tag color="gold">已订阅</Tag> : <Tag>免费版</Tag>}
-          </Descriptions.Item>
-          <Descriptions.Item label="剩余额度">
-            <Typography.Text strong>{d?.tokenBalance?.toLocaleString() ?? '—'}</Typography.Text>
-          </Descriptions.Item>
-        </Descriptions>
-        <Typography.Paragraph type="secondary" style={{ marginTop: 10 }}>
-          {d?.note ?? ''}
-        </Typography.Paragraph>
-      </Card>
-      <Card size="small" title="最近调用">
-        {d?.recentUsage?.length ? (
-          <Table
-            rowKey={(r, i) => `${r.ts}-${i}`}
-            size="small"
-            dataSource={d.recentUsage}
-            pagination={false}
-            columns={[
-              { title: '时间', width: 160, render: (_, r) => new Date(r.ts).toLocaleString() },
-              { title: '模型', dataIndex: 'model', ellipsis: true },
-              { title: '应用', dataIndex: 'appId', width: 110 },
-              { title: 'tokens', width: 110, render: (_, r) => `${r.promptTokens ?? 0}+${r.completionTokens ?? 0}` },
-              {
-                title: '扣减',
-                width: 90,
-                render: (_, r) => <Typography.Text type="danger">{r.delta}</Typography.Text>,
-              },
-            ]}
-          />
-        ) : (
-          <Typography.Text type="secondary">暂无调用记录</Typography.Text>
-        )}
-      </Card>
-    </Space>
-  );
-}
-
-// ---------- 功能订阅与充值（M3：manual 渠道下单，管理员确认到账后生效） ----------
-
-interface PlanUI {
-  id: number;
-  name: string;
-  groupName: string;
-  durationDays: number;
-  priceFen: number;
-  tokenGrant: number;
-}
-interface OrderUI {
-  id: string;
-  kind: 'tokens' | 'membership';
-  planId: number | null;
-  tokens: number | null;
-  priceFen: number;
-  status: 'pending' | 'paid' | 'cancelled';
-  createdAt: number;
-}
-interface MembershipData {
-  membership: { planName: string; expiresAt: number } | null;
-  plans: PlanUI[];
-  orders: OrderUI[];
-}
 interface TopupResult {
   orderId: string;
   tokens?: number;
@@ -730,24 +661,34 @@ function yuan(fen: number): string {
   return `¥${(fen / 100).toFixed(2)}`;
 }
 
+function membershipDurationLabel(days: number): string {
+  if (days === 30) return '月（30 天）';
+  if (days === 90) return '季度（90 天）';
+  if (days === 365) return '年（365 天）';
+  return days >= 100_000 ? '长期' : `${days} 天`;
+}
+
 function MembershipTopupTab(): ReactNode {
   const qc = useQueryClient();
-  const data = useQuery({ queryKey: ['membership'], queryFn: () => api<MembershipData>('/api/user/membership') });
+  const data = useQuery({ queryKey: ['membership'], queryFn: () => api<UserMembershipData>('/api/user/membership') });
   const billing = useQuery({
     queryKey: ['billing'],
-    queryFn: () => api<{ showTopupPanel: boolean }>('/api/user/billing'),
+    queryFn: () => api<{ showTopupPanel: boolean; showOrdersPanel: boolean }>('/api/user/billing'),
   });
-  const showTopup = billing.data?.showTopupPanel !== false;
+  const showTopup = billing.data?.showTopupPanel === true;
+  const showOrders = billing.data?.showOrdersPanel === true;
   const [amount, setAmount] = useState('');
   const [busy, setBusy] = useState(false);
   const [redeemCode, setRedeemCode] = useState('');
   const [redeeming, setRedeeming] = useState(false);
+  const [selectedPlan, setSelectedPlan] = useState<MembershipPlanSummary | null>(null);
 
   async function subscribe(planId: number): Promise<void> {
     setBusy(true);
     try {
       const r = await api<TopupResult>('/api/user/membership/subscribe', { method: 'POST', json: { planId } });
       message.info(`订单已创建（${yuan(r.priceFen)}），等待管理员确认到账后生效`);
+      setSelectedPlan(null);
       void qc.invalidateQueries({ queryKey: ['membership'] });
     } catch (err) {
       message.error(err instanceof Error ? err.message : '下单失败');
@@ -772,38 +713,89 @@ function MembershipTopupTab(): ReactNode {
   const d = data.data;
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card size="small" title="我的功能订阅">
-        {d?.membership ? (
-          <Alert
-            type="success"
-            showIcon
-            message={`订阅生效中：${d.membership.planName}`}
-            description={`到期时间：${new Date(d.membership.expiresAt).toLocaleString()}（到期自动降级，数据保留）`}
-          />
-        ) : (
-          <Typography.Text type="secondary">当前未开通功能订阅。开通后解锁对应分组的应用。</Typography.Text>
-        )}
-      </Card>
-
-      <Card size="small" title="功能订阅套餐">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10 }}>
-          {(d?.plans ?? []).map((p) => (
-            <Card key={p.id} size="small" style={{ borderColor: 'var(--aap-border)' }}>
-              <div style={{ fontWeight: 700 }}>{p.name}</div>
-              <div style={{ color: 'var(--aap-text-secondary)', fontSize: 12, margin: '4px 0' }}>
-                {p.durationDays} 天 · 权益分组：{p.groupName}
-                {p.tokenGrant > 0 ? ` · 赠 ${p.tokenGrant.toLocaleString()} 额度` : ''}
-              </div>
-              <Button type="primary" size="small" block loading={busy} onClick={() => void subscribe(p.id)}>
-                {yuan(p.priceFen)} 开通
-              </Button>
-            </Card>
-          ))}
-          {(d?.plans.length ?? 0) === 0 ? <Typography.Text type="secondary">暂无在售套餐</Typography.Text> : null}
+      {billing.isError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="权益显示设置加载失败"
+          description={billing.error instanceof Error ? billing.error.message : '请刷新页面重试'}
+        />
+      ) : null}
+      <Card
+        size="small"
+        className="membership-current-plan"
+        title={
+          <Space size={8}>
+            <span>当前权益详情</span>
+            {d?.membership ? <TierBadge tier={d.membership.tier} /> : null}
+            <Typography.Text style={{ fontSize: 12, color: '#D6A542' }}>
+              {d?.membership?.planName ?? '未订阅'}
+            </Typography.Text>
+          </Space>
+        }
+      >
+        <div className="membership-current-plan__summary">
+          <div className="membership-current-plan__eyebrow">权益概览</div>
+          <div className="membership-current-plan__grid">
+            <div className="membership-current-plan__item">
+              <Typography.Text type="secondary">到期时间</Typography.Text>
+              <Typography.Text strong>{d?.membership ? new Date(d.membership.expiresAt).toLocaleString() : '—'}</Typography.Text>
+            </div>
+            <div className="membership-current-plan__item">
+              <Typography.Text type="secondary">权益分组</Typography.Text>
+              <Typography.Text strong>{d?.membership?.groupName ?? '—'}</Typography.Text>
+            </div>
+            <div className="membership-current-plan__item">
+              <Typography.Text type="secondary">应用发布</Typography.Text>
+              <Tag color="green" style={{ borderRadius: 999, marginInlineEnd: 0, width: 'fit-content' }}>
+                {d?.membership ? `${d.membership.remainingPublicApps} / ${d.membership.publicAppLimit} 个` : '0 个'}
+              </Tag>
+            </div>
+            <div className="membership-current-plan__item">
+              <Typography.Text type="secondary">剩余 Token 额度</Typography.Text>
+              <Tag color="green" style={{ borderRadius: 999, marginInlineEnd: 0, width: 'fit-content' }}>
+                {d?.tokenBalance?.toLocaleString() ?? '—'}
+              </Tag>
+            </div>
+          </div>
         </div>
       </Card>
 
-      <Card size="small" title="兑换码（额度/订阅）">
+      <Card size="small" className="membership-plan-card" title="可选择权益包">
+        {d?.plans.length ? (
+          <div className="membership-plan-grid">
+            {d.plans.map((plan) => (
+              <Card
+                key={plan.id}
+                size="small"
+                className="membership-plan-option"
+                title={
+                  <Space wrap>
+                    <TierBadge tier={plan.tier} />
+                    <Typography.Text strong>{plan.name}</Typography.Text>
+                    <Tag color={plan.enabled ? 'green' : 'default'}>{plan.enabled ? '在售' : '停售'}</Tag>
+                  </Space>
+                }
+              >
+                <div className="membership-plan-option__details">
+                  <div><Typography.Text type="secondary">权益分组</Typography.Text><Typography.Text>{plan.groupName}</Typography.Text></div>
+                  <div><Typography.Text type="secondary">可用时间</Typography.Text><Typography.Text>{membershipDurationLabel(plan.durationDays)}</Typography.Text></div>
+                  <div><Typography.Text type="secondary">应用发布</Typography.Text><Typography.Text>{plan.publicAppLimit} 个</Typography.Text></div>
+                  <div><Typography.Text type="secondary">Token 额度</Typography.Text><Typography.Text>{plan.tokenGrant.toLocaleString()}</Typography.Text></div>
+                </div>
+                <div className="membership-plan-option__footer">
+                  <Typography.Text strong style={{ color: 'var(--aap-primary)' }}>{yuan(plan.priceFen)}</Typography.Text>
+                  <Button type="primary" disabled={!plan.enabled} onClick={() => setSelectedPlan(plan)}>获取</Button>
+                </div>
+              </Card>
+            ))}
+          </div>
+        ) : (
+          <Typography.Text type="secondary">暂无可选择权益包</Typography.Text>
+        )}
+      </Card>
+
+      <Card size="small" title="使用兑换码">
         <Space wrap>
           <Input
             style={{ width: 240 }}
@@ -869,8 +861,9 @@ function MembershipTopupTab(): ReactNode {
       </Card>
       ) : null}
 
+      {showOrders ? (
       <Card size="small" title="我的订单">
-        <Table<OrderUI>
+        <Table<MembershipOrderSummary>
           rowKey="id"
           size="small"
           pagination={false}
@@ -905,29 +898,73 @@ function MembershipTopupTab(): ReactNode {
           ]}
         />
       </Card>
+      ) : null}
+
+      <Modal title="订阅账单" open={selectedPlan !== null} onCancel={() => setSelectedPlan(null)} footer={null} destroyOnClose>
+        {selectedPlan ? (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <div style={{ padding: 16, borderRadius: 8, background: 'var(--aap-bg-layout)', border: '1px solid var(--aap-border)' }}>
+              <Typography.Text type="secondary">订阅方案</Typography.Text>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 6 }}>
+                <Space align="center" size={8}>
+                  <TierBadge tier={selectedPlan.tier} />
+                  <Typography.Title level={4} style={{ margin: 0 }}>{selectedPlan.name}</Typography.Title>
+                </Space>
+                <Tag color="blue">{membershipDurationLabel(selectedPlan.durationDays)}</Tag>
+              </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '10px 16px', marginTop: 16 }}>
+                    <Typography.Text type="secondary">权益等级</Typography.Text>
+                    <TierBadge tier={selectedPlan.tier} />
+                    <Typography.Text type="secondary">服务分组</Typography.Text>
+                    <Typography.Text>{selectedPlan.groupName}</Typography.Text>
+                <Typography.Text type="secondary">公开应用名额</Typography.Text>
+                <Tag color="green" style={{ borderRadius: 999, marginInlineEnd: 0 }}>{selectedPlan.publicAppLimit} 个</Tag>
+                <Typography.Text type="secondary">Token 额度</Typography.Text>
+                <Tag color="green" style={{ borderRadius: 999, marginInlineEnd: 0 }}>{selectedPlan.tokenGrant.toLocaleString()}</Tag>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderTop: '1px solid var(--aap-border)', marginTop: 16, paddingTop: 14 }}>
+                <Typography.Text strong>应付总额</Typography.Text>
+                <Typography.Title level={3} style={{ margin: 0, color: 'var(--aap-primary)' }}>{yuan(selectedPlan.priceFen)}</Typography.Title>
+              </div>
+            </div>
+            <Alert
+              type="info"
+              showIcon
+              message="确认后为你保留这份订阅方案"
+              description="点击支付并提交订单后，请按平台指引完成付款。当前为人工确认到账，管理员确认后订阅权益自动生效。"
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <Button onClick={() => setSelectedPlan(null)}>取消</Button>
+              <Button type="primary" loading={busy} onClick={() => void subscribe(selectedPlan.id)}>
+                支付并提交订单
+              </Button>
+            </div>
+          </Space>
+        ) : null}
+      </Modal>
     </Space>
   );
 }
 
-// ---------- 我的应用（M4：.asp-app 上传 / 提交审核 / 状态跟踪） ----------
+// ---------- 我的应用（.asp-app 上传与发布） ----------
 
 interface MyAppRow {
   id: string;
   name: string;
+  kind: 'package' | 'html';
   runtimeMode: string | null;
   visibility: string;
-  reviewStatus: 'none' | 'pending' | 'approved' | 'rejected';
-  reviewNote: string | null;
   enabled: boolean;
   updatedAt: number;
 }
 
-function MyAppsTab(): ReactNode {
+function MyAppsTab({ ensureStepUp }: { ensureStepUp: () => Promise<boolean> }): ReactNode {
   const qc = useQueryClient();
   const mine = useQuery({ queryKey: ['my-apps'], queryFn: () => api<{ apps: MyAppRow[] }>('/api/apps/mine') });
   const [uploading, setUploading] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [envApp, setEnvApp] = useState<MyAppRow | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>): Promise<void> {
     const f = e.target.files?.[0];
@@ -936,8 +973,8 @@ function MyAppsTab(): ReactNode {
     setLastError(null);
     try {
       const dataBase64 = String(await f.arrayBuffer().then((b) => btoa(String.fromCharCode(...new Uint8Array(b)))));
-      const r = await api<{ id: string; review: string }>('/api/apps/submit', { method: 'POST', json: { filename: f.name, dataBase64 } });
-      message.success(`包「${r.id}」上传成功，仅自己可见${r.review === 'pending' ? '（重新进入审核）' : ''}`);
+      const r = await api<{ id: string }>('/api/apps/submit', { method: 'POST', json: { filename: f.name, dataBase64 } });
+      message.success(`包「${r.id}」上传成功，默认仅自己可见`);
       void qc.invalidateQueries({ queryKey: ['my-apps'] });
     } catch (err) {
       setLastError(err instanceof Error ? err.message : '上传失败');
@@ -947,25 +984,28 @@ function MyAppsTab(): ReactNode {
     }
   }
 
-  const REVIEW_TAG: Record<string, ReactNode> = {
-    none: <Tag>未提交审核</Tag>,
-    pending: <Tag color="orange">审核中</Tag>,
-    approved: <Tag color="green">已通过</Tag>,
-    rejected: <Tag color="red">已驳回</Tag>,
-  };
-
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Card size="small" title="上传 .asp-app 包" extra={<Tag bordered={false} color="blue" style={{ fontSize: 11 }}>python 沙箱运行时已上线</Tag>}>
         <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-          上传后默认仅自己可见可用；要公开给所有用户，请提交审核（管理员将查看代码与能力声明）。
+          上传后默认仅自己可见可用；发布为公开时，平台会检查当前订阅允许的公开应用数量。
         </Typography.Paragraph>
-        <input type="file" accept=".zip,.asp-app" onChange={(e) => void onFile(e)} disabled={uploading} />
+        <Button danger disabled={uploading} onClick={() => fileInputRef.current?.click()}>
+          选择文件
+        </Button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".zip,.asp-app"
+          onChange={(e) => void onFile(e)}
+          disabled={uploading}
+          style={{ display: 'none' }}
+        />
         {uploading ? <Typography.Text type="secondary">上传校验中…</Typography.Text> : null}
         {lastError ? <Alert type="error" showIcon style={{ marginTop: 10 }} message={lastError} /> : null}
       </Card>
 
-      <Card size="small" title="我的包">
+      <Card size="small" title="已创建应用">
         <Table<MyAppRow>
           rowKey="id"
           size="small"
@@ -973,13 +1013,8 @@ function MyAppsTab(): ReactNode {
           dataSource={mine.data?.apps ?? []}
           columns={[
             { title: '应用', dataIndex: 'id', width: 160 },
-            { title: '运行', width: 110, render: (_, r) => (r.runtimeMode === 'invoked' ? '按调用' : r.runtimeMode === 'persistent' ? '持久服务' : '—') },
-            { title: '审核', width: 120, render: (_, r) => REVIEW_TAG[r.reviewStatus] ?? <Tag>{r.reviewStatus}</Tag> },
-            {
-              title: '驳回理由',
-              ellipsis: true,
-              render: (_, r) => r.reviewNote ?? '—',
-            },
+            { title: '运行', width: 110, render: (_, r) => r.kind === 'html' ? 'HTML 页面' : r.runtimeMode === 'invoked' ? '按调用' : r.runtimeMode === 'persistent' ? '持久服务' : '—' },
+            { title: '可见范围', width: 120, render: (_, r) => r.visibility === 'public' ? <Tag color="green">公开</Tag> : <Tag>仅自己</Tag> },
             {
               title: '操作',
               width: 200,
@@ -988,23 +1023,45 @@ function MyAppsTab(): ReactNode {
                   <Button size="small" onClick={() => setEnvApp(r)}>
                     环境变量
                   </Button>
-                  {r.reviewStatus !== 'pending' ? (
+                  {r.visibility !== 'public' ? (
                     <Button
                       size="small"
                       type="primary"
                       onClick={async () => {
                         try {
-                          await api(`/api/apps/${r.id}/submit-review`, { method: 'POST' });
-                          message.success('已提交审核');
+                          await api(`/api/apps/${r.id}/publish`, { method: 'POST' });
+                          message.success('应用已公开发布');
                           void qc.invalidateQueries({ queryKey: ['my-apps'] });
+                          void qc.invalidateQueries({ queryKey: ['apps'] });
                         } catch (err) {
-                          message.error(err instanceof Error ? err.message : '提交失败');
+                          message.error(err instanceof Error ? err.message : '发布失败');
                         }
                       }}
                     >
-                      提交审核
+                      发布为公开
                     </Button>
                   ) : null}
+                  <Popconfirm
+                    title={`删除应用「${r.name}」？`}
+                    description="应用文件和运行数据将被永久删除。"
+                    okText="删除"
+                    cancelText="取消"
+                    okButtonProps={{ danger: true }}
+                    onConfirm={async () => {
+                      const verified = await ensureStepUp();
+                      if (!verified) return;
+                      try {
+                        await api(`/api/apps/${r.id}`, { method: 'DELETE' });
+                        message.success('应用已删除');
+                        void qc.invalidateQueries({ queryKey: ['my-apps'] });
+                        void qc.invalidateQueries({ queryKey: ['apps'] });
+                      } catch (err) {
+                        message.error(err instanceof Error ? err.message : '删除失败');
+                      }
+                    }}
+                  >
+                    <Button size="small" danger>删除</Button>
+                  </Popconfirm>
                 </Space>
               ),
             },

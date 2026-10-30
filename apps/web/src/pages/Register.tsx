@@ -1,12 +1,13 @@
 /** 注册页（A2）：读门户注册开关；两步注册（资料 → 邮箱验证码）；全程 PoW。 */
-import { Alert, Button, Card, Form, Input, Result, Typography, message } from 'antd';
+import { Alert, Button, Form, Input, Result, Typography, message } from 'antd';
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import type { PortalBootstrap } from '@aap/shared';
 import { api } from '../api/client';
 import { obtainPowToken } from '../lib/pow';
 import { usePostAuthRedirect } from '../state/session';
+import { AuthPanel } from '../components/AuthPanel';
 
 interface StartResult {
   registrationId: string;
@@ -15,7 +16,6 @@ interface StartResult {
 }
 
 export function RegisterPage() {
-  const navigate = useNavigate();
   const redirect = usePostAuthRedirect();
   const { data: boot } = useQuery({
     queryKey: ['bootstrap'],
@@ -54,7 +54,11 @@ export function RegisterPage() {
     if (!start) return;
     setLoading(true);
     try {
-      const r = await api<{ mustChangePassword: boolean; mustEnrollMfa: boolean }>(
+      const r = await api<{
+        mustChangePassword: boolean;
+        mustEnrollMfa: boolean;
+        user: { membershipSelectionRequired: boolean };
+      }>(
         '/api/auth/register/verify',
         { method: 'POST', json: { registrationId: start.registrationId, code: values.code } },
       );
@@ -69,20 +73,25 @@ export function RegisterPage() {
 
   if (mode === 'closed') {
     return (
-      <Result
-        status="403"
-        title="本站未开放注册"
-        subTitle="如需账号，请联系管理员。"
-        extra={<Link to="/login">返回登录</Link>}
-      />
+      <AuthPanel>
+        <Result
+          status="403"
+          title="本站未开放注册"
+          subTitle="如需账号，请联系管理员。"
+          extra={<Link to="/login">返回登录</Link>}
+        />
+      </AuthPanel>
     );
   }
 
   return (
-    <Card style={{ maxWidth: 440, margin: '48px auto' }}>
-      <Typography.Title level={4} style={{ marginTop: 0 }}>
+    <AuthPanel>
+      <Typography.Title level={3} className="aap-auth-title">
         注册账号
       </Typography.Title>
+      <Typography.Paragraph className="aap-auth-description">
+        创建账号，开始使用并发布你的应用创作。
+      </Typography.Paragraph>
 
       {step === 'form' ? (
         <Form form={form} layout="vertical" onFinish={onFormFinish}>
@@ -167,6 +176,6 @@ export function RegisterPage() {
           </Form>
         </>
       )}
-    </Card>
+    </AuthPanel>
   );
 }

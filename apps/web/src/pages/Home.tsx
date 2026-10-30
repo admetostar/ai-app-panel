@@ -1,120 +1,64 @@
 ﻿/** 门户首页（A1）：应用卡片墙——分类分组、搜索、锁定态、健康状态点。 */
-import { Card, Empty, Input, Spin, Tag, Tooltip } from 'antd';
-import { LockOutlined, SearchOutlined } from '@ant-design/icons';
-import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { withBase } from '../lib/base';
+import { Alert, Button, Card, Collapse, Empty, Input, Space, Spin, Typography } from 'antd';
+import { ArrowRightOutlined, SearchOutlined } from '@ant-design/icons';
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import type { AppCard, PortalBootstrap } from '@aap/shared';
 import { api } from '../api/client';
 import { useSession } from '../state/session';
+import { GUIDE_FAQ_ITEMS } from '../lib/guideFaq';
+import { PortalAppCard } from '../components/PortalAppCard';
+import { TierBadge } from '../components/TierBadge';
 
-const VISIBILITY_LABEL: Record<AppCard['visibility'], string> = {
-  public: '公开',
-  login: '需登录',
-  restricted: '指定可见',
-  private: '仅自己',
-};
-
-function StatusDot({ status }: { status: AppCard['status'] }) {
-  const color = status === 'ok' ? '#52c41a' : status === 'down' ? '#ff4d4f' : '#d9d9d9';
-  const title = status === 'ok' ? '运行正常' : status === 'down' ? '上游异常' : '状态未知';
-  return (
-    <Tooltip title={title}>
-      <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 4, background: color }} />
-    </Tooltip>
-  );
+interface PublicPlan {
+  id: number;
+  name: string;
+  groupName: string;
+  durationDays: number;
+  priceFen: number;
+  tokenGrant: number;
+  tier: number;
+  publicAppLimit: number;
 }
 
-function AppTile({ app }: { app: AppCard }) {
-  const inner = (
-    <Card
-      size="small"
-      hoverable={app.accessible}
-      style={{
-        height: '100%',
-        opacity: app.accessible ? 1 : 0.72,
-        borderColor: 'var(--aap-border)',
-      }}
-    >
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-        <div
-          style={{
-            width: 44,
-            height: 44,
-            borderRadius: 10,
-            background: 'var(--aap-bg-layout)',
-            display: 'grid',
-            placeItems: 'center',
-            fontSize: 22,
-            flexShrink: 0,
-          }}
-        >
-          {app.icon ?? app.name.slice(0, 1)}
-        </div>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {app.name}
-            </span>
-            <StatusDot status={app.status} />
-            {!app.accessible ? <LockOutlined style={{ color: 'var(--aap-text-secondary)', fontSize: 12 }} /> : null}
-          </div>
-          <div
-            style={{
-              color: 'var(--aap-text-secondary)',
-              fontSize: 12,
-              marginTop: 2,
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden',
-              minHeight: 32,
-            }}
-          >
-            {app.description || '　'}
-          </div>
-        </div>
-      </div>
-      <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Tag bordered={false} style={{ fontSize: 11 }}>
-          {VISIBILITY_LABEL[app.visibility]}
-        </Tag>
-        {app.accessible ? (
-          <span style={{ color: 'var(--aap-primary)', fontSize: 12 }}>打开 →</span>
-        ) : (
-          <span style={{ color: 'var(--aap-text-secondary)', fontSize: 12 }}>
-            {app.visibility === 'login' || app.visibility === 'restricted' ? '登录后可用' : '暂不可用'}
-          </span>
-        )}
-      </div>
-    </Card>
-  );
+function planDurationLabel(days: number): string {
+  if (days === 30) return '月度权益';
+  if (days === 90) return '季度权益';
+  if (days === 365) return '年度权益';
+  return days >= 100_000 ? '长期权益' : `${days} 天`;
+}
 
-  const isTool = app.kind === 'package' && app.runtimeMode === 'invoked';
-  // 直接跳应用本体：门户导航由注入的 chrome 悬浮条承载（W0），无需 /open 包装页。
-  // /app/* 是服务端网关路由，必须整页跳转而非 SPA Link
-  const target = withBase(isTool ? `/run/${app.id}` : `/app/${encodeURIComponent(app.id)}/`);
-  return app.accessible ? (
-    <a href={target} style={{ textDecoration: 'none', color: 'inherit' }}>
-      {inner}
-    </a>
-  ) : (
-    <Link to="/login">{inner}</Link>
-  );
+function formatPrice(fen: number): string {
+  return `¥${(fen / 100).toFixed(2)}`;
 }
 
 export function HomePage() {
+  const navigate = useNavigate();
+  const location = useLocation();
   const { me } = useSession();
   const [keyword, setKeyword] = useState('');
-  const { data, isLoading } = useQuery({
+  const appsQuery = useQuery({
     queryKey: ['apps'],
     queryFn: () => api<{ apps: AppCard[] }>('/api/apps'),
   });
+  const data = appsQuery.data;
   const boot = useQuery({
     queryKey: ['bootstrap'],
     queryFn: () => api<PortalBootstrap>('/api/portal/bootstrap'),
   });
+  const plans = useQuery({
+    queryKey: ['portal-plans'],
+    queryFn: () => api<{ plans: PublicPlan[] }>('/api/portal/plans'),
+  });
+  const planRows = plans.data?.plans ?? [];
+
+  useEffect(() => {
+    if (!location.hash) return;
+    requestAnimationFrame(() => {
+      document.getElementById(location.hash.slice(1))?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [location.hash]);
 
   const filtered = useMemo(() => {
     const apps = data?.apps ?? [];
@@ -132,54 +76,134 @@ export function HomePage() {
   }, [data, keyword]);
 
   return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20 }}>
+    <div className="aap-home-page">
+      <section className="aap-home-hero">
+        <div className="aap-home-hero__content">
+          <span className="aap-home-kicker">AI Super Panel</span>
+          <Typography.Title className="aap-home-title" level={1}>
             你好{me ? `，${me.user.name}` : ''}，欢迎来到 {boot.data?.branding.siteName ?? 'AI超级面板'}
-          </h2>
-          <p style={{ margin: '4px 0 0', color: 'var(--aap-text-secondary)', fontSize: 13 }}>
+          </Typography.Title>
+          <Typography.Paragraph className="aap-home-description">
             {boot.data?.needsInit
               ? '⚠ 站点尚未初始化：请首次启动时按容器日志中的初始凭据登录完成引导。'
-              : '从下方选择一个应用开始。应用经平台统一代理，支持 WebSocket / SSE。'}
-          </p>
+              : <>
+                  <strong>AI超级面板（AI-SuperPanel）</strong> 是一个应用托管平台。你让自己的 AI 助手（agent）写好一个小工具，打包成 <strong>.asp-app</strong> 文件上传到平台后，即可分享给任何人使用。
+                </>}
+          </Typography.Paragraph>
+          <Input
+            allowClear
+            size="large"
+            className="aap-home-search"
+            prefix={<SearchOutlined />}
+            placeholder="搜索应用名称或介绍"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            onPressEnter={() => document.getElementById('home-applications')?.scrollIntoView({ behavior: 'smooth' })}
+          />
+          <Button
+            className="aap-home-hero__cta"
+            size="large"
+            type="primary"
+            icon={<ArrowRightOutlined />}
+            onClick={() => navigate(me ? '/my-apps' : '/guide')}
+          >
+            现在开始
+          </Button>
         </div>
-        <div style={{ flex: 1 }} />
-        <Input
-          allowClear
-          prefix={<SearchOutlined style={{ color: 'var(--aap-text-secondary)' }} />}
-          placeholder="搜索应用"
-          style={{ width: 240 }}
-          value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
-        />
-      </div>
+        <a className="aap-home-scroll" href="#home-applications">向下探索 <span aria-hidden="true">↓</span></a>
+      </section>
 
-      {isLoading ? (
-        <div style={{ textAlign: 'center', padding: 64 }}>
-          <Spin />
+      <section id="home-applications" className="aap-home-section aap-home-applications">
+        <div className="aap-home-section__inner">
+          <span className="aap-home-section__eyebrow">APPLICATIONS</span>
+          <Typography.Title level={2}>发现应用</Typography.Title>
+          <Typography.Paragraph className="aap-home-section__lead">浏览社区创作，找到适合你的 AI 应用。</Typography.Paragraph>
+          {appsQuery.isLoading ? (
+            <div className="aap-home-loading"><Spin /></div>
+          ) : appsQuery.isError ? (
+            <Alert type="error" showIcon message="应用列表加载失败" description={appsQuery.error instanceof Error ? appsQuery.error.message : '请刷新页面重试'} />
+          ) : filtered.length === 0 ? (
+            <Empty
+              description={
+                keyword
+                  ? '没有匹配的应用'
+                  : '还没有公开发布的应用，欢迎注册本站后按操作指南发布您的应用创作。'
+              }
+            />
+          ) : (
+            filtered.map(([category, apps]) => (
+              <section key={category} className="aap-home-category">
+                <h3>{category}</h3>
+                <div className="aap-home-app-grid">
+                  {apps.map((app) => <PortalAppCard key={app.id} app={app} />)}
+                </div>
+              </section>
+            ))
+          )}
         </div>
-      ) : filtered.length === 0 ? (
-        <Empty description={keyword ? '没有匹配的应用' : '还没有应用，管理员可在后台接入第一个应用'} />
-      ) : (
-        filtered.map(([category, apps]) => (
-          <section key={category} style={{ marginBottom: 24 }}>
-            <h3 style={{ fontSize: 14, color: 'var(--aap-text-secondary)', margin: '0 0 8px' }}>{category}</h3>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-                gap: 12,
-              }}
-            >
-              {apps.map((a) => (
-                <AppTile key={a.id} app={a} />
+      </section>
+
+      <section id="home-rights" className="aap-home-section aap-home-rights">
+        <div className="aap-home-section__inner">
+          <span className="aap-home-section__eyebrow">MEMBERSHIP</span>
+          <Typography.Title level={2}>选择适合你的权益</Typography.Title>
+          <Typography.Paragraph className="aap-home-section__lead">先从基础权益开始，按需解锁更多应用发布空间。</Typography.Paragraph>
+          {plans.isLoading ? (
+            <div className="aap-home-loading"><Spin /></div>
+          ) : plans.isError ? (
+            <Alert type="error" showIcon message="权益套餐加载失败" description={plans.error instanceof Error ? plans.error.message : '请刷新页面重试'} />
+          ) : planRows.length === 0 ? (
+            <Empty description="暂无可选择的权益包" />
+          ) : (
+            <div className="aap-home-plan-grid">
+              {planRows.map((plan) => (
+                <Card key={plan.id} className="aap-home-plan-card" bordered>
+                  <span className="aap-home-plan-card__duration">{planDurationLabel(plan.durationDays)}</span>
+                  <Space align="center" size={8}>
+                    <TierBadge tier={plan.tier} size={26} />
+                    <Typography.Title level={3}>{plan.name}</Typography.Title>
+                  </Space>
+                  <div className="aap-home-plan-card__price">{formatPrice(plan.priceFen)}<span> / 套</span></div>
+                  <div className="aap-home-plan-card__features">
+                    <div><span>权益分组</span><strong>{plan.groupName}</strong></div>
+                    <div><span>应用发布</span><strong>{plan.publicAppLimit} 个</strong></div>
+                    <div><span>赠送额度</span><strong>{plan.tokenGrant.toLocaleString()}</strong></div>
+                    <div><span>有效时间</span><strong>{plan.durationDays >= 100_000 ? '长期' : `${plan.durationDays} 天`}</strong></div>
+                  </div>
+                  <Button
+                    block
+                    type="primary"
+                    onClick={() => navigate(me ? '/account?tab=billing' : '/login')}
+                  >
+                    {me ? '前往获取' : '登录后获取'}
+                  </Button>
+                </Card>
               ))}
             </div>
-          </section>
-        ))
-      )}
+          )}
+        </div>
+      </section>
+
+      <section id="home-faq" className="aap-home-section aap-home-faq">
+        <div className="aap-home-section__inner">
+          <span className="aap-home-section__eyebrow">FAQ</span>
+          <Typography.Title level={2}>常见问题</Typography.Title>
+          <div className="aap-home-faq__content">
+            <Collapse
+              ghost
+              items={GUIDE_FAQ_ITEMS.map((item, index) => ({
+                key: String(index),
+                label: item.question,
+                children: <Typography.Paragraph>{item.answer}</Typography.Paragraph>,
+              }))}
+            />
+            <div className="aap-home-faq__guide">
+              <Typography.Text type="secondary">想了解完整的应用制作与发布流程？</Typography.Text>
+              <Link to="/guide">查看操作指南 <ArrowRightOutlined /></Link>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
-

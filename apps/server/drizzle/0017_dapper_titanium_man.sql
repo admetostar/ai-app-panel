@@ -1,0 +1,1 @@
+ALTER TABLE `membership_plans` ADD `public_app_limit` integer DEFAULT 10 NOT NULL;

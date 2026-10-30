@@ -5,22 +5,6 @@ import type { SessionInfo } from '@aap/shared';
 import { api } from '../api/client';
 import { useNavigate } from 'react-router-dom';
 
-export const GUIDE_MODAL_DISMISS_KEY = 'aap-guide-modal-dismissed';
-
-export function shouldShowGuideOnLogin(): boolean {
-  if (typeof window === 'undefined') return true;
-  return window.localStorage.getItem(GUIDE_MODAL_DISMISS_KEY) !== '1';
-}
-
-export function setGuideModalDismissed(dismissed: boolean): void {
-  if (typeof window === 'undefined') return;
-  if (dismissed) {
-    window.localStorage.setItem(GUIDE_MODAL_DISMISS_KEY, '1');
-    return;
-  }
-  window.localStorage.removeItem(GUIDE_MODAL_DISMISS_KEY);
-}
-
 export function useSession() {
   const q = useQuery({
     queryKey: ['me'],
@@ -37,25 +21,32 @@ export function useSession() {
   return { me: q.data ?? null, loading: q.isLoading, refetch: q.refetch };
 }
 
-/** 登录成功后的统一跳转：强制改密 → 强制绑 MFA → 回门户；并刷新会话缓存 */
-export function usePostAuthRedirect(): (r: { mustChangePassword?: boolean; mustEnrollMfa?: boolean }) => void {
+/** 登录成功后的统一跳转：强制改密 → 强制绑 MFA → 默认目标；并刷新会话缓存 */
+export function usePostAuthRedirect(destination = '/'): (r: {
+  mustChangePassword?: boolean;
+  mustEnrollMfa?: boolean;
+  membershipSelectionRequired?: boolean;
+  user?: { membershipSelectionRequired?: boolean };
+}) => void {
   const navigate = useNavigate();
   const qc = useQueryClient();
   return (r) => {
     void qc.invalidateQueries({ queryKey: ['me'] });
+    const redirectSuffix = destination === '/' ? '' : `?returnTo=${encodeURIComponent(destination)}`;
     if (r.mustChangePassword) {
-      navigate('/initialize', { replace: true });
+      navigate(`/initialize${redirectSuffix}`, { replace: true });
       return;
     }
     if (r.mustEnrollMfa) {
-      navigate('/mfa-setup', { replace: true });
+      navigate(`/mfa-setup${redirectSuffix}`, { replace: true });
+      return;
+    }
+    if (r.membershipSelectionRequired ?? r.user?.membershipSelectionRequired) {
+      navigate('/membership-selection', { replace: true });
       return;
     }
 
-    if (typeof window !== 'undefined' && shouldShowGuideOnLogin()) {
-      window.dispatchEvent(new CustomEvent('aap:show-guide-modal', { detail: { showDontAskAgain: true } }));
-    }
-    navigate('/', { replace: true });
+    navigate(destination, { replace: true });
   };
 }
 

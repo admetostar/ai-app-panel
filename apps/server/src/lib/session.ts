@@ -72,6 +72,7 @@ interface SessionJoinRow {
   plan: string;
   mfa_enabled: number;
   must_change_password: number;
+  membership_selection_required: number;
 }
 
 let joinStmt: Database.Statement | null = null;
@@ -87,7 +88,7 @@ export function loadSessionByToken(token: string | undefined | null): SessionUse
     joinStmt = s.prepare(`
       SELECT s.token_hash, s.auth_state, s.step_up_until, s.expires_at, s.last_seen_at,
              u.id AS u_id, u.kind, u.username, u.email, u.phone, u.name, u.role, u.status,
-             u.plan, u.mfa_enabled, u.must_change_password
+             u.plan, u.mfa_enabled, u.must_change_password, u.membership_selection_required
       FROM sessions s JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = ?
     `);
@@ -131,6 +132,7 @@ export function loadSessionByToken(token: string | undefined | null): SessionUse
     stepUpUntil: row.step_up_until ?? null,
     mfaEnabled: row.mfa_enabled === 1,
     mustChangePassword: row.must_change_password === 1,
+    membershipSelectionRequired: row.membership_selection_required === 1,
   };
 }
 

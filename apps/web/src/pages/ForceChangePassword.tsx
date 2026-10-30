@@ -4,11 +4,14 @@
  */
 import { Button, Card, Form, Input, Typography, message } from 'antd';
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { usePostAuthRedirect, useSession } from '../state/session';
 
 export function ForceChangePasswordPage() {
-  const redirect = usePostAuthRedirect();
+  const [searchParams] = useSearchParams();
+  const returnTo = searchParams.get('returnTo') === '/account' ? '/account' : '/';
+  const redirect = usePostAuthRedirect(returnTo);
   const { refetch } = useSession();
   const [loading, setLoading] = useState(false);
 
@@ -26,6 +29,7 @@ export function ForceChangePasswordPage() {
       redirect({
         mustChangePassword: me.data?.mustChangePassword ?? false,
         mustEnrollMfa: me.data?.mustEnrollMfa ?? false,
+        user: { membershipSelectionRequired: me.data?.user.membershipSelectionRequired ?? false },
       });
     } catch (err) {
       message.error(err instanceof Error ? err.message : '修改失败');

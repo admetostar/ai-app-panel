@@ -1,0 +1,1 @@
+ALTER TABLE `users` ADD `membership_selection_required` integer DEFAULT false NOT NULL;

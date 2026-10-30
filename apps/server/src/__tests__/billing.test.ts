@@ -7,14 +7,18 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { setupTestDb, teardownTestDb } from './testkit.js';
 import { closeDb, getDb } from '../db/index.js';
-import { llmBalanceCache, topupOrders, userGroupMembers, userGroups, users } from '../db/schema.js';
+import { apps, llmBalanceCache, topupOrders, userGroupMembers, userGroups, users } from '../db/schema.js';
 import { seedSettings } from '../lib/settings.js';
 import {
   cancelOrder,
+  assertPublicAppQuota,
+  activateMembership,
   confirmOrder,
   createOrder,
   createPlan,
   downgradeExpired,
+  getPublicAppQuota,
+  listPlans,
   reconcileRecent,
 } from '../lib/billing.js';
 import { appendLedger, cachedBalance, precheck, recomputeBalance } from '../lib/llm.js';
@@ -31,7 +35,7 @@ beforeAll(() => {
 
   const g = getDb().insert(userGroups).values({ name: '会员-高级', createdAt: Date.now() }).run();
   groupId = Number(g.lastInsertRowid);
-  planId = createPlan({ name: '高级会员', groupId, durationDays: 30, priceFen: 3000, tokenGrant: 50_000 });
+  planId = createPlan({ name: '高级会员', groupId, durationDays: 30, priceFen: 3000, tokenGrant: 50_000, tier: 3, publicAppLimit: 1 });
 
   const u = getDb()
     .insert(users)
@@ -46,6 +50,10 @@ afterAll(() => {
 });
 
 describe('M3 计费闭环（D1/D2）', () => {
+  it('套餐列表保留权益等级', () => {
+    expect(listPlans().find((plan) => plan.id === planId)?.tier).toBe(3);
+  });
+
   it('订单：创建（manual 渠道）→ 确认到账 → 会员生效入组 + 额度到账', () => {
     const order = createOrder(userId, 'membership', { priceFen: 3000, planId });
     expect(order.status).toBe('pending');
@@ -74,6 +82,24 @@ describe('M3 计费闭环（D1/D2）', () => {
     confirmOrder(order.id, 1);
     const after = getDb().select().from(users).where(eq(users.id, userId)).get()!.membershipExpiresAt!;
     expect(after - before).toBeGreaterThanOrEqual(29 * 86_400_000);
+  });
+
+  it('公开应用额度：按用户当前公开应用数计算剩余名额', () => {
+    activateMembership(userId, planId);
+    getDb().insert(apps).values({
+      id: 'public-quota-test',
+      name: '公开额度测试',
+      ownerUserId: userId,
+      visibility: 'public',
+      kind: 'package',
+      upstream: '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }).run();
+
+    expect(getPublicAppQuota(userId)).toEqual({ limit: 1, used: 1, remaining: 0 });
+    expect(() => assertPublicAppQuota(userId)).toThrow(/数量已用完/);
+    expect(getPublicAppQuota(userId, 'public-quota-test').remaining).toBe(1);
   });
 
   it('取消：pending 可取消，已付不可取消', () => {

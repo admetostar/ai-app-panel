@@ -5,6 +5,8 @@ import { getDb } from '../db/index.js';
 import { users } from '../db/schema.js';
 import { getSetting } from '../lib/settings.js';
 import { oidcEnabled } from '../lib/oidc.js';
+import { listPlans } from '../lib/billing.js';
+import { listGroups } from '../lib/groups.js';
 
 /**
  * 门户公共引导信息（未登录可读）：品牌数据（A1）+ 注册开关状态 + 初始化标记。
@@ -21,8 +23,8 @@ portalRouter.get('/portal/bootstrap', (_req, res) => {
       siteName: getSetting('SITE_NAME') || 'AI超级面板',
       tagline: getSetting('SITE_TAGLINE') || '',
       logo: getSetting('LOGO') || null,
-      themeId: getSetting('THEME_ID') || 'ocean',
-      accentColor: getSetting('ACCENT_COLOR') || null,
+      themeId: 'graphite',
+      accentColor: null,
       footerText: getSetting('FOOTER_TEXT') || '',
       icpNumber: getSetting('ICP_NUMBER') || null,
       policeNumber: getSetting('POLICE_NUMBER') || null,
@@ -37,3 +39,11 @@ portalRouter.get('/portal/bootstrap', (_req, res) => {
   res.json(bootstrap);
 });
 
+portalRouter.get('/portal/plans', (_req, res) => {
+  const groupNames = new Map(listGroups().map((group) => [group.id, group.name]));
+  const plans = listPlans(true).map((plan) => ({
+    ...plan,
+    groupName: groupNames.get(plan.groupId) ?? `#${plan.groupId}`,
+  }));
+  res.json({ plans });
+});

@@ -24,7 +24,7 @@
 pnpm install
 pnpm dev            # server:8080（tsx watch）+ web:5173（Vite，代理 /api 与 /app）
 pnpm build          # shared → server → web（生产产物 apps/web/dist）
-pnpm test           # 服务端测试（vitest，16 个文件 176 用例）
+pnpm test           # 服务端测试（vitest，16 个文件 187 用例）
 pnpm test:e2e       # Playwright 端到端（自动拉起真实服务 + mock 上游）
 pnpm typecheck      # 全仓类型检查
 pnpm db:generate    # drizzle-kit 生成迁移（schema 变更后必跑）
@@ -54,7 +54,7 @@ pnpm db:generate    # drizzle-kit 生成迁移（schema 变更后必跑）
   - `html`：门户托管静态页（`DATA_DIR/appsites/<id>/`），支持简单 HTML 粘贴接入与 .asp-app html 包
   - `package`：.asp-app Python 包。`invoked` 经「统一执行入口」`POST /api/apps/:id/run` 拉起一次性进程运行；`persistent` 首次访问 `/app/<id>/` 时由平台拉起长驻进程并反代（HTTP 与 WebSocket 同通道，同一套门禁/限流；空闲回收 `SANDBOX_IDLE_RECYCLE_SECONDS` 默认 300s 可调、崩溃自动重启上限 3 次、并发执行上限 `SANDBOX_MAX_CONCURRENT_RUNS`、全局进程数上限 `SANDBOX_MAX_PERSISTENT`（默认 12，超限回收最久未用进程腾位））。反代转发前剥 `/app/<id>` 前缀（包路由挂根），前缀经 `x-forwarded-prefix` 下发、站内相对 `Location` 镜像回写；门户卡片直跳 `/app/<id>/`（`/open/<id>` 保留为兼容重定向页）
 - **用户包 iframe 沙箱（PRD G1 落地）**：归属者非管理员的 html/package 应用，入口渲染为门户外壳页 + `<iframe sandbox="allow-scripts …">`（**无 allow-same-origin**）加载 `/app/<id>/raw/…`；包内容运行在 opaque origin——读 `/api` 受 CORS 拦、写 `/api` 受 CSRF（Origin: null）拦，无同源 cookie 面；统一页面元素挂在外壳层（包代码不可触碰）；管理员自建应用保持既往直出行为。**raw 通道响应强制覆盖 `Content-Security-Policy: sandbox allow-scripts …; object-src 'none'; base-uri 'none'`（RAW_SANDBOX_CSP，HTTP 托管与 persistent 反代两路同一份）**——顶层导航直达 raw URL 同样被关进 opaque origin，iframe 不再是唯一隔离点（2026-09-19 审计 P0）；raw 判定锚定段边界 `^raw(?:/|$)`，`rawfoo` 类路径不再误判直出。
-- **审核门禁（G3 落地）**：`canAccess` 对 `reviewStatus` 为 pending/rejected 的应用仅放行归属者与管理员；非私有应用推未审新版先置 `enabled=false` 下线，审核通过恢复（「已公开应用推新版即时生效」的绕过路径已封堵）
+- **公开发布额度**：用户上传 `.asp-app` 默认私有；点击发布时按有效订阅计划检查 `public_app_limit`，名额用完则拒绝，名额内立即公开。上传和更新仍执行包结构、manifest、签名完整性与依赖安装校验，不再进入管理员审核流程。
 - WebSocket：HTTP 与 HTTPS server 均挂 `upgrade` → 路径匹配 → 会话鉴权 → 三态门禁 → TCP 管道；`persistent` 沙箱应用的 WS 经同一门禁透传到沙箱端口（与 HTTP 反代同路径语义：**转发前剥 `/app/<id>` 前缀并下发 `x-forwarded-prefix`**，raw 通道剥除 raw 段——2026-09-19 审计修复前 WS 未剥前缀，persistent 应用 WS 不可用）。
 - **安全加固（2026-09-14 批）**：网关错误页全参数 HTML 转义 + `/app/:id` isSlug 校验（防反射/存储 XSS，线上实锤项）；托管应用越界判断改 `path.relative`（防 `..%2F兄弟目录` 跨用户读文件，线上实锤项）；`display_name` 剥 HTML 敏感字符 + 限长；persistent 沙箱响应头套用 `RESP_STRIP`（防 cookie tossing / CSP 覆写）并逐请求注入签名身份头；persistent 崩溃重启计数随条目继承（`MAX_RESTARTS` 真正生效防 CrashLoop）；invoked stdout/stderr 捕获 512KB 上限 + 执行排队上限 64（超出 429 `SANDBOX_BUSY`）。
 - 限流：真令牌桶双维度（每用户 + 每 IP 兜底），`RATE_USER_PER_MIN` / `RATE_IP_PER_MIN`；IP 维度按 `TRUST_PROXY` 解析且 HTTP 与 WS upgrade 同语义（开启取 XFF 最右一跳，未开启用 socket 地址，防伪造 XFF 绕过限流）。
@@ -64,7 +64,7 @@ pnpm db:generate    # drizzle-kit 生成迁移（schema 变更后必跑）
   - `restricted` 登录 + 命中 `app_acl`（分组或账号）任一；ACL 为空 = 全部登录用户；归属者与管理员恒可见；**PUT 更新应用会实际落 ACL**（未提交的一侧保留现值，变更记 `app.acl.update` 审计——2026-09-19 审计前 PUT 静默丢弃 ACL）
   - `private` 仅归属者（用户自建应用默认；门户对非归属者隐藏卡片）
 - passUser 身份注入：`X-AAP-Identity`（base64url JSON：uid/kind/subject/aud/jti/iat/exp）+ `X-AAP-Identity-Sig`（HMAC-SHA256，密钥 `AAP_SIGN_SECRET`）。应用侧验签参考 `gateway/identity.ts` 的 `verifyIdentity`（aud 与 (kind,uid) 契约必查）。验签密钥自动下发：passUser 的 .aap 包沙箱 env 注入 `AAP_SIGN_SECRET`，上游应用在应用表单勾选时显示复制（详见 §3 密钥查看）。客户端自带的身份头在代理入口一律剥除（HTTP/WS/沙箱反代同一张剥离表），仅网关签名注入的可信。
-- 统一页面元素：HTML 响应自动注入 `/portal-chrome.js`（应用门户 / 个人中心 / 退出登录，带会话态显示与回跳）；幂等、失败静默。覆盖三条通道：HTML 托管直出、persistent 反代直连（HTML 缓冲注入，2MB 上限）、沙箱外壳层（包代码不可触碰，raw 通道不重复注入）。包作者须预留右上角空间且不得自建登录。
+- 统一页面元素：HTML 响应自动注入 `/portal-chrome.js`（仅显示「返回超级面板」入口）；幂等、失败静默。覆盖三条通道：HTML 托管直出、persistent 反代直连（HTML 缓冲注入，2MB 上限）、沙箱外壳层（包代码不可触碰，raw 通道不重复注入）。包作者须预留右上角空间且不得自建登录。
 
 ## 5. LLM 网关（/v1/*，M2）
 
@@ -89,19 +89,25 @@ client = OpenAI(base_url="http://<host>:8080/v1", api_key="aapk_…")
 ## 6. 账号与通知通道
 
 - 注册两步（资料 → 邮箱验证码），验证码通道 `MAIL_PROVIDER`：`smtp`（五项配置）或 `resend`（仅需 API Key，`RESEND_FROM` 留空用沙箱发件人）；都未配置时为日志兜底（验证码打到服务端日志，内网可离线）。
+- **注册后权益选择**：邮箱注册完成验证后，普通新用户必须在 `/membership-selection` 选择启用权益包，服务端会拦截其他受保护 API 直至选择完成；零价包立即开通，付费包创建人工确认订单后结束强制选择。OIDC 新普通账号同样进入该流程；首个管理员账号豁免，以便先完成后台配置。开放注册（`REGISTRATION_MODE=open`）必须至少有一个启用的零价权益包，后台设置 API、注册入口及套餐停用/删除操作均在服务端校验；首配向导也会要求创建该权益包。
 - 防滥用：注册/找回/绑定全程 PoW + 可选 Turnstile；同通道 60s 限 1 条 + 24h 上限；同 IP 24h 注册 ≤5（**计数含已完成注册**——registrations 完成时置 `completed_at` 保留行而非删行，完成行超 24h 清、未完成行按 TTL 清；2026-09-19 审计前删行即释放名额，上限形同虚设）。**找回验证码错猜 ≥5 次（10 分钟窗）作废该邮箱全部待用码**，错猜计入登录失败队列（联动 PoW 门槛与 IP 自动封禁）；重新发码即恢复全新尝试额度。**找回密码发码的 60s 重发/日上限命中时对外静默 200**（与不存在的邮箱响应体完全一致，ghost 路径补等量 scrypt 拉齐时序量级）——429 差异曾是确定性账号枚举 oracle（2026-09-19 审计修复）。**客户端 PoW 求解优先 WebCrypto，非安全上下文（HTTP 部署，`crypto.subtle` 不存在）自动回退纯 JS SHA-256**（`apps/web/src/lib/sha256.ts`，默认难度 16 位纯 JS 亚秒级；服务端校验语义不变）——否则 NAS/内网 HTTP 访问时注册、绑定邮箱等全部 PoW 流程直接抛 `crypto.subtle.digest` TypeError（2026-09-22 修复）。
 - MFA：TOTP（±1 窗 + 计数器重放拒绝，写回带 `last_used_counter < ?` 条件护栏防并发一码双用）+ Passkey（WebAuthn）+ 恢复码（10 枚一次性）+ 步升认证（密码或因子重验，`MFA_STEPUP_TTL` 内免重验）；管理员强制启用。**TOTP 登录/步升验证错猜 ≥5 次（10 分钟窗）作废当前会话**（`MFA_TOO_MANY_ATTEMPTS`），**并叠加账号维度持久计数（login_attempts 表 `mfa:<uid>` 命名空间，跨会话合计，成功清零，ip 列写哨兵不污染 IP 封禁面）**——单会话作废后重新登录不再重置额度（2026-09-19 审计修复）。**改密要求完全登录态**（`authState==='full'`，半登录态 403）。**强制流程服务端门禁（forceFlowGate）**：`mustChangePassword` 或「本地 admin 未绑 MFA」（OIDC 管理员委托 IdP 豁免）的会话除白名单端点（me/logout/change-password/mfa/*/step-up/*/portal/bootstrap）外一律 403 `FORCE_CHANGE_PASSWORD`/`FORCE_ENROLL_MFA`；登录/注册响应与 /auth/me 统一返回 `mustEnrollMfa`。**绑定新因子（TOTP enroll/confirm、Passkey 注册）需步升认证**（防被劫持会话静默绑新因子实现持久化）；登录即授予步升窗口（密码/Passkey/邮箱码本身就是刚验证过的因子，强制绑 MFA 流程因此不被卡）。**首启引导时序**：`ensureInitialAdmin` 等初始凭据 scrypt 落库后才 `listen`（曾 fire-and-forget，首秒内登录随机 401）。
 - **前端 MFA 流转（2026-09-24）**：强制改密页成功后按 `/auth/me` 重算的 `mustEnrollMfa` 分流——仅未绑 MFA 的 admin 进绑定页，普通用户直达门户（曾写死跳 `/mfa-setup`，普通用户被误带入绑定页）。绑定页（`/mfa-setup`）挂载先查 `/api/auth/mfa/status` 预检：TOTP 已确认不自动重发 enroll（服务端会 409）；绑齐 TOTP+Passkey 引导去个人中心；非强制场景出示「跳过绑定」。步升窗口（5 分钟）过期时绑定/管理动作收到 403 `STEP_UP_REQUIRED` 自动弹步升窗重验后重试（`useStepUp`/`withStepUp` 共享于 `apps/web/src/components/StepUpModal.tsx`）。**个人中心·安全 Tab 的 MFA 管理卡片**：状态与恢复码余量展示、Passkey 列表/删除/注册本设备、解绑 TOTP（admin 保底约束由服务端消息透出）、恢复码重新生成（弹窗一次性出示），全部前置步升。
+- **账户导航与头像**：页眉右侧头像/昵称入口以灰白信息面板展示账号资料、从当前有效订阅接口读取的权益名称与等级图标、角色和三段式主题选择；只提供「个人中心」「我的应用」「退出登录」及管理员专属「管理后台」导航。浅色为默认主题，深色与跟随系统选项仅作用于个人中心和「我的应用」，通过同源 cookie 保持刷新后的选择，不写入后台。个人中心四个区域纵向排列，左侧导航点击后滚动定位；登录成功直接进入个人中心。头像文件位于 `apps/server/assets/icons`，新注册、本地管理员建号、OIDC 首登及首次管理员均按用户 ID 稳定分配；历史空头像账号由 `publicUserOf` 提供确定性回退，Web 构建通过 Vite glob 将头像打包。注销卡片位于个人资料末尾，操作需步升验证。
+- **我的应用**：`/my-apps` 使用首页同款应用卡片样式展示当前用户自建应用，页面背景与内容区使用统一底色；`GET /api/apps/mine` 返回归属者卡片所需的名称、说明、图标、分类、运行状态、可见范围和启用状态。发布、配置环境变量、删除等操作仍集中在个人中心「应用管理」分区。
+- **门户首页与认证页**：首页按首屏欢迎区、应用列表、在售权益包、常见问题纵向排列；页眉「浏览应用」等导航平滑定位到对应区块，用户入口与页面导航留有间距。「现在开始」对未登录用户进入分步应用制作导航（内容复用操作指南，逐步阅读或跳过后进入登录/注册），已登录用户直达应用管理；其它页面页眉的「操作指南」进入同一分步导航。登录成功不再弹出操作指南。权益包通过公开只读接口 `/api/portal/plans` 获取，仅返回管理员启用的套餐；FAQ 与操作指南共用同一份问答数据。登录/注册页使用 `apps/server/assets/login.jpg` 铺满左栏，提供服务条款与可接受使用政策静态页并显示站点页脚；首页首屏使用 `apps/server/assets/home-background.png`，其余区块为浅色背景。
 - 防爆破双维度：IP 维度之外增加**账号维度**失败计数（`login_attempts.user_key`），同账号跨 IP 分布式撞库同样触发 PoW 要求。邀请码消费在注册事务内带 `usedBy IS NULL` 条件（防并发双花）。
 - OIDC SSO：配置 Issuer/ClientId/Secret 即启用（重启生效）；`OIDC_ADMIN_SUBJECTS` 首登提升管理员；待批准账号重复登录干净回到待批提示（不下发即刻失效的会话）。
 
 ## 7. 订阅与计费（M3）
 
-- **功能订阅**：`membership_plans`（名称/对应分组/时长/价格分/赠额度）→ 用户下单（manual 渠道，管理员运营面板确认到账）→ 自动入分组 + 赠额度到账；到期结算循环自动降级（移出分组、数据保留）。**订单确认/会员开通/兑换入账均为单事务**：置 paid 与入账同生共死，入账失败整体回滚（订单回到 pending、码回到未用态），杜绝「已收款未入账」。
-- **额度充值**：订单按 `TOPUP_TOKENS_PER_FEN` 折算到账；`SHOW_TOPUP_PANEL` 可对用户隐藏充值面板（兑换码不受影响）。
+- **功能订阅**：`membership_plans`（名称/对应分组/时长/价格分/赠额度/公开应用数量/0–5 权益等级）→ 用户下单（manual 渠道，管理员运营面板确认到账）→ 自动入分组 + 赠额度到账；到期结算循环自动降级（移出分组、数据保留）。权益等级 1–5 使用 `apps/server/assets/tier-icons` 对应图标，等级 0 显示基础等级文本。**订单确认/会员开通/兑换入账均为单事务**：置 paid 与入账同生共死，入账失败整体回滚（订单回到 pending、码回到未用态），杜绝「已收款未入账」。
+- **额度充值**：订单按 `TOPUP_TOKENS_PER_FEN` 折算到账；管理员可通过 `SHOW_TOPUP_PANEL` 控制用户中心「额度充值」卡片（新安装默认隐藏，兑换码不受影响）。
 - **卡券码**：批量生成额度码/订阅码（`AAP-XXXX-XXXX-XXXX`），原子兑换防双花，可作废/设有效期；兑换走 `grantTokens`（三触发失效缓存）。
-- **运营面板**：30 天收入/成本/毛利（成本按路由 `costPer1k`）、余额与消耗排行、应用热度、订单确认；用户额度发放/调减入口与计费设置（`TOPUP_TOKENS_PER_FEN`、`SHOW_TOPUP_PANEL`）也在本页。
-- **用户端入口**：个人中心「订阅与充值」Tab 自上而下为 Token 余额与最近调用（`GET /api/user/billing`）→ 功能订阅/套餐 → 兑换码 → 额度充值（`SHOW_TOPUP_PANEL=false` 时对用户隐藏）→ 订单记录；余额随兑换/到账刷新（react-query `['billing']` 失效联动）。
+- **运营面板**：30 天收入/成本/毛利（成本按路由 `costPer1k`）、余额与消耗排行、应用热度、订单确认；用户额度发放/调减入口与计费设置（`TOPUP_TOKENS_PER_FEN`、`SHOW_TOPUP_PANEL`、`SHOW_ORDERS_PANEL`）也在本页。
+- **用户端入口**：个人中心「我的权益」分区展示当前权益详情及可选择权益包，选择后显示账单摘要；支付创建待确认订单，管理员确认到账后生效。支持使用兑换码；「额度充值」和「我的订单」卡片默认隐藏，可分别通过 `SHOW_TOPUP_PANEL` 与 `SHOW_ORDERS_PANEL` 控制显示。
+- **注册与权益**：新普通用户注册后必须先选择权益包；零价包即时激活并加入权益分组，付费包生成待确认订单，管理员确认后生效。开放注册前须存在启用的零价包，开放期间不能停用或删除最后一个此类套餐。
+- **个人应用管理**：`GET /api/apps/mine` 返回归属者的 HTML/Python 托管包；上传后刷新列表；删除走 `DELETE /api/apps/:id`，要求归属者并通过步升身份验证，删除时清理包目录、持久进程及应用凭据。
 
 ## 8. 分发（deploy/）
 
@@ -117,7 +123,7 @@ client = OpenAI(base_url="http://<host>:8080/v1", api_key="aapk_…")
 - 单位指纹零进入：`X-Office-*`、校名/校色不进本仓库。
 - 契约变更：`packages/shared` 为单一来源；`.asp-app` 接口面变更必须升版 `app-develop.skill` 并同步 internal skill。
 - 审计：账号/应用/网关/计费的关键动作全部落 `audit_logs`（保留期可配，分批清理）。
-- **沙箱隔离现状**：`.asp-app` Python 进程的受控出网通道是平台 egress 代理（manifest 白名单 + IP 黑名单**逐跳**校验，`routes/aap.ts`）；runner 内置 **Python 层出站守卫**（`connect` 仅放行 `AAP_PLATFORM`，直连其余地址/Unix socket 报错，`AAP_NET_GUARD=0` 关闭）；子进程环境变量走白名单（`lib/sandbox.ts` 的 `SANDBOX_ENV_KEYS`）；invoked 执行有全局并发上限（`SANDBOX_MAX_CONCURRENT_RUNS`，默认 8，超出排队防进程炸弹）；persistent 有全局进程数上限（`SANDBOX_MAX_PERSISTENT`，默认 12，超限回收最久未用进程——任务状态应落 aap.db，重拉无损）；**persistent 空闲回收时长可配**（`SANDBOX_IDLE_RECYCLE_SECONDS`，默认 300s，最小 30s，管理端改完即时生效）；沙箱以预建的 aap 用户（10001）**默认降权运行**（compose `SANDBOX_UID`/`SANDBOX_GID` 已默认启用；存量部署升级时需一次性迁移数据卷属主 `chown -R 10001:10001 <data>/appsites`，新上传包目录由平台自动放宽权限）。**开放注册 + 允许用户上传包的部署必须保持降权**，否则任意注册用户可读全站凭据哈希与 master.key（二轮渗透实测）。配套收紧：平台库 `app.db/-wal/-shm` 由 initDb 即时收紧为 0600 并挂周期兜底（checkpoint 重建后仍保持），`master.key` 0600——沙箱 uid 对两者均不可读。**进程级禁网、CPU/内存限额与 ns/cgroups 硬隔离仍未实装**（Python 层守卫属纵深防御，非硬保证），第三方包必须先经审核流（G3）再放开可见性。
+- **沙箱隔离现状**：`.asp-app` Python 进程的受控出网通道是平台 egress 代理（manifest 白名单 + IP 黑名单**逐跳**校验，`routes/aap.ts`）；runner 内置 **Python 层出站守卫**（`connect` 仅放行 `AAP_PLATFORM`，直连其余地址/Unix socket 报错，`AAP_NET_GUARD=0` 关闭）；子进程环境变量走白名单（`lib/sandbox.ts` 的 `SANDBOX_ENV_KEYS`）；invoked 执行有全局并发上限（`SANDBOX_MAX_CONCURRENT_RUNS`，默认 8，超出排队防进程炸弹）；persistent 有全局进程数上限（`SANDBOX_MAX_PERSISTENT`，默认 12，超限回收最久未用进程——任务状态应落 aap.db，重拉无损）；**persistent 空闲回收时长可配**（`SANDBOX_IDLE_RECYCLE_SECONDS`，默认 300s，最小 30s，管理端改完即时生效）；沙箱以预建的 aap 用户（10001）**默认降权运行**（compose `SANDBOX_UID`/`SANDBOX_GID` 已默认启用；存量部署升级时需一次性迁移数据卷属主 `chown -R 10001:10001 <data>/appsites`，新上传包目录由平台自动放宽权限）。**开放注册 + 允许用户上传包的部署必须保持降权**，否则任意注册用户可读全站凭据哈希与 master.key（二轮渗透实测）。配套收紧：平台库 `app.db/-wal/-shm` 由 initDb 即时收紧为 0600 并挂周期兜底（checkpoint 重建后仍保持），`master.key` 0600——沙箱 uid 对两者均不可读。**进程级禁网、CPU/内存限额与 ns/cgroups 硬隔离仍未实装**（Python 层守卫属纵深防御，非硬保证）；第三方包须通过上传阶段的包结构、manifest、签名完整性与依赖校验，公开发布按订阅名额限制。
 - **应用环境变量 / 机密（G6）**：包在 manifest `env` 声明变量（required/secret/pattern/default，保留名黑名单防劫持 `AAP_*`/`PORT`/代理变量等平台注入面，`parseEnvSpec`），归属者/管理员经 `GET/PUT /api/apps/:id/env` 填值（`app_env_vars` 表 AES-256-GCM 加密落盘，secret 只写不读仅回尾 4 位 hint，审计只记名不记值）。除机密外，env 亦是**应用级默认配置**的承载（如 llm-proofread 的 `PROOFREAD_PROMPT`/`COHERENCE_PROMPT`：归属者配置对所有用户生效，用户个人设置可覆盖）；`baseEnv()` 在 invoked/persistent 沙箱启动时注入（未配置非机密变量回退声明 default）；必填缺配在执行（400 ENV_MISSING）/拉起（503 错误页）时明确拦截；persistent 配置变更后自动重启进程。入口：管理后台·应用管理与用户中心·我的应用的「环境变量」弹窗。规范见 `./app-develop.skill-v0.2.md` §1.1。
 - 包上传安全语义：用户提交（`POST /api/apps/submit`）与执行（`/api/apps/:id/run`）均要求登录；正式目录的写入/删除一律在归属校验与同名查重之后（admin 上传 409 不触碰既有站点目录）；临时目录按请求唯一命名；15MB 包体 JSON 在鉴权之后解析（匿名大包 DoS 面收敛）。
 - **python 包第三方依赖（skill v0.2.6 声明制）**：manifest `requirements` 声明（`parseRequirements` 仅收「名称[extras]+版本约束」，拒 URL/本地路径/-r，上限 32 条），**上传/更新时服务端 `pip install --only-binary=:all: --target <appsites>/<id>/.deps`**（`lib/pydeps.ts`，超时 300s；失败=上传被拒并清理正式目录，不带病上线）；沙箱 `baseEnv` 注入 `PYTHONPATH=.deps`（native/FPK `start.sh` 自检补装的预置框架目录经 `AAP_PREINSTALLED_PYTHONPATH` 前置——docker 镜像预装 py3-flask 无此环节）。安装源走「应用网关 → pip 索引源」设置（`PIP_INDEX_URL`，默认官方 PyPI）；新版本不再声明的依赖更新时自动清除；`.deps` 在数据卷应用目录下，容器重建/升级不丢。审核预览页照单展示依赖清单。
@@ -128,4 +134,3 @@ client = OpenAI(base_url="http://<host>:8080/v1", api_key="aapk_…")
 - **身份头（X-AAP-Identity）**：验签强制 exp 存在且未过期；jti 一次性（TTL 窗口内防重放；平台内部归因 `allowReplay` 豁免）。`/api/admin/redeem/*` 显式挂 `requireAdmin`（不再依赖挂载顺序偶然保护）。`AAP_PLATFORM`/沙箱平台地址一律取明文 HTTP 环回口（`loopbackPlatformPort`：HTTP 到达取 `req.socket.localPort`，**TLS 口到达回落 `config.port`**——第二轮渗透 NEW-2，8443 是 TLS 监听、明文调用必断），绝不信客户端 Host。
 - 包签名信任链（G4，Ed25519）：包内可选 `signature.json`；上传时四态判定（`verified`/`untrusted`/`unsigned`/`invalid`，invalid 硬拒），状态落 `apps.signature_status`。**信任公钥命中 → 免审**（上传即 approved、submit-review 自动通过）。信任列表管理：`/api/admin/signing-keys` CRUD + 内置官方公钥（环境变量 `AAP_OFFICIAL_SIGN_PUBKEY`）。签名工具 `packages/aap-sdk/sign-aap.mjs`（keygen/sign/verify），机制详见 `packages/aap-sdk/SIGNING.md`。
 - OIDC 管理面板：「安全」页展示 OIDC 配置组，并在顶部按当前访问地址自动生成**回调地址（一键复制）**——在 IdP 登记的重定向 URI 即该地址；Issuer/ClientId/Secret 修改后需重启生效。
-

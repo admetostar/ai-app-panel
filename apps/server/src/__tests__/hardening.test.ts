@@ -4,7 +4,7 @@
  *  - 托管应用路径越界（../ 兄弟目录读文件）
  *  - storePackageFiles 压缩包路径逃逸
  *  - egress：IP 字面量拒绝 + 私网段判定 + DNS 失败不泄露 fetch 错误
- *  - 审核门禁：pending/rejected 对非归属者拒绝；公开应用推未审新版先下线
+ *  - 公开发布：应用可见性按策略控制；公开更新无需人工审核
  *  - LLM 无归因调用默认拒绝（ATTRIBUTION_REQUIRED）
  *  - 沙箱 invoked 身份环境变量可验签（M4 归因链）
  *  - admin 包上传：同名 409 不触碰既有站点目录
@@ -29,6 +29,7 @@ import { baseEnv, identityEnv, loopbackPlatformPort, packageEntryPath } from '..
 import { installPyDeps } from '../lib/pydeps.js';
 import { handleUpgrade } from '../gateway/wsproxy.js';
 import { issueCode, verifyCode } from '../lib/verification.js';
+import { createSession } from '../lib/session.js';
 import { signIdentity, verifyIdentity } from '../gateway/identity.js';
 import { hasLeadingZeroBits } from '../lib/pow.js';
 import { appendLedger, cachedBalance, createAppToken, grantTokens, precheck, recomputeBalance, settleEstimate } from '../lib/llm.js';
@@ -270,8 +271,39 @@ describe('egress 出站代理（P0-3）', () => {
   });
 });
 
-describe('审核门禁（P1-6）', () => {
-  it('pending/rejected：非归属者与匿名拒绝；归属者可用；approve 恢复', async () => {
+describe('公开可见性与发布', () => {
+  it('删除托管应用：要求步升认证且仅归属者可删', async () => {
+    writeHtmlApp('delete-owned-app', '<h1>DELETE-ME</h1>');
+    getDb().insert(apps).values({
+      id: 'delete-owned-app', name: 'Delete me', visibility: 'private', kind: 'html', upstream: '',
+      ownerUserId: ownerId, createdAt: Date.now(), updatedAt: Date.now(),
+    }).run();
+
+    let staleToken = '';
+    createSession({ cookie: (_name: string, value: string) => { staleToken = value; } } as never, { id: ownerId }, { grantStepUp: false });
+    const stale = await fetch(`${base}/api/apps/delete-owned-app`, {
+      method: 'DELETE',
+      headers: { origin: base, cookie: `aap_sid=${staleToken}` },
+    });
+    expect(stale.status).toBe(403);
+    expect(await stale.json()).toMatchObject({ error: { code: 'STEP_UP_REQUIRED' } });
+
+    const other = await fetch(`${base}/api/apps/delete-owned-app`, {
+      method: 'DELETE',
+      headers: { origin: base, cookie: otherCookie },
+    });
+    expect(other.status).toBe(403);
+
+    const owner = await fetch(`${base}/api/apps/delete-owned-app`, {
+      method: 'DELETE',
+      headers: { origin: base, cookie: ownerCookie },
+    });
+    expect(owner.status).toBe(200);
+    expect(getDb().select().from(apps).where(eq(apps.id, 'delete-owned-app')).get()).toBeUndefined();
+    expect(fs.existsSync(appSiteDir('delete-owned-app'))).toBe(false);
+  });
+
+  it('公开应用不受历史审核状态影响', async () => {
     writeHtmlApp('rev-app', '<h1>REV</h1>');
     getDb().insert(apps).values({
       id: 'rev-app', name: 'Rev', visibility: 'public', kind: 'html', upstream: '',
@@ -280,18 +312,24 @@ describe('审核门禁（P1-6）', () => {
     expect((await fetch(`${base}/app/rev-app/`, { headers: { cookie: otherCookie } })).status).toBe(200);
 
     getDb().update(apps).set({ reviewStatus: 'pending' }).where(eq(apps.id, 'rev-app')).run();
-    expect((await fetch(`${base}/app/rev-app/`, { headers: { cookie: otherCookie } })).status).toBe(403);
-    expect((await fetch(`${base}/app/rev-app/`)).status).toBe(403);
+    expect((await fetch(`${base}/app/rev-app/`, { headers: { cookie: otherCookie } })).status).toBe(200);
+    expect((await fetch(`${base}/app/rev-app/`)).status).toBe(200);
     expect((await fetch(`${base}/app/rev-app/`, { headers: { cookie: ownerCookie } })).status).toBe(200);
 
-    // 执行元数据端点同门禁
-    expect((await fetch(`${base}/api/apps/rev-app/meta`, { headers: { cookie: otherCookie } })).status).toBe(404);
-
-    getDb().update(apps).set({ reviewStatus: 'approved' }).where(eq(apps.id, 'rev-app')).run();
-    expect((await fetch(`${base}/app/rev-app/`, { headers: { cookie: otherCookie } })).status).toBe(200);
+    expect((await fetch(`${base}/api/apps/rev-app/meta`, { headers: { cookie: otherCookie } })).status).toBe(200);
   });
 
-  it('已公开应用推未审新版：先下线（enabled=false）待审，approve 后恢复', async () => {
+  it('已公开应用更新后保持在线，无需管理员审核', async () => {
+    writeHtmlApp('rev-app', '<h1>REV</h1>');
+    const app = getDb().select().from(apps).where(eq(apps.id, 'rev-app')).get();
+    if (app) {
+      getDb().update(apps).set({ ownerUserId: ownerId, visibility: 'public', enabled: true }).where(eq(apps.id, 'rev-app')).run();
+    } else {
+      getDb().insert(apps).values({
+        id: 'rev-app', name: 'Rev', visibility: 'public', kind: 'html', upstream: '', ownerUserId: ownerId,
+        reviewStatus: 'approved', createdAt: Date.now(), updatedAt: Date.now(),
+      }).run();
+    }
     const res = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: ownerCookie },
@@ -302,21 +340,38 @@ describe('审核门禁（P1-6）', () => {
     });
     expect(res.status).toBe(200);
     const row = getDb().select().from(apps).where(eq(apps.id, 'rev-app')).get();
-    expect(row?.reviewStatus).toBe('pending');
-    expect(row?.enabled).toBe(false);
-    // 匿名不可达（enabled=false → 网关 404；即便 enabled 也会被审核门禁 403）
-    expect((await fetch(`${base}/app/rev-app/`)).status).toBe(404);
-
-    // 管理员批准 → enabled 恢复
-    const ok = await fetch(`${base}/api/admin/review/rev-app/approve`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ visibility: 'public' }),
+    expect(row?.enabled).toBe(true);
+    expect(row?.visibility).toBe('public');
+    const mineResponse = await fetch(`${base}/api/apps/mine`, { headers: { cookie: ownerCookie } });
+    const mineBody = (await mineResponse.json()) as {
+      apps: Array<{
+        id: string;
+        kind: string;
+        name: string;
+        description: string;
+        icon: string | null;
+        category: string;
+        visibility: string;
+        status: string;
+        sort: number;
+        accessible: boolean;
+        enabled: boolean;
+      }>;
+    };
+    expect(mineBody.apps.find((item) => item.id === 'rev-app')).toMatchObject({
+      id: 'rev-app',
+      kind: 'html',
+      name: 'Rev',
+      description: expect.any(String),
+      icon: null,
+      category: expect.any(String),
+      visibility: 'public',
+      status: expect.any(String),
+      sort: expect.any(Number),
+      accessible: true,
+      enabled: true,
     });
-    expect(ok.status).toBe(200);
-    const after = getDb().select().from(apps).where(eq(apps.id, 'rev-app')).get();
-    expect(after?.enabled).toBe(true);
-    expect(after?.reviewStatus).toBe('approved');
+    expect((await fetch(`${base}/app/rev-app/`)).status).toBe(200);
   });
 });
 
@@ -606,7 +661,7 @@ describe('身份头验签（P3-16：exp 强制 + jti 一次性）', () => {
       id: ownerId, kind: 'local' as const, subject: 'local:pkgowner', username: 'pkgowner', email: null,
       phone: null, name: 'pkgowner', role: 'user' as const, status: 'active', sessionId: 't',
       authState: 'full' as const, stepUpUntil: null, plan: 'free' as const, mfaEnabled: false,
-      mustChangePassword: false,
+      mustChangePassword: false, membershipSelectionRequired: false,
     };
     const idn = signIdentity(su, 'aud-app')!;
     expect(verifyIdentity(idn.payload, idn.sig, secret, 'aud-app').ok).toBe(true);

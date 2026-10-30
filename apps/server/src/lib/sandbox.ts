@@ -4,8 +4,8 @@
  *  - persistent：首次访问拉起长驻进程（注入 PORT），空闲回收、崩溃重启一次
  * 隔离现状：SDK 出网的受控通道 = 平台 egress 代理（白名单/IP 黑名单逐跳校验，
  * 见 routes/aap.ts）。注意：**进程级隔离（禁直连网络、CPU/内存限额、ns/cgroups）
- * 尚未实装**——包代码仍可自行出网、读取同用户可访问的文件系统，因此第三方包
- * 必须先经审核流（G3）再放开可见性；完整隔离按 PRD G2 在容器形态补齐。
+ * 尚未实装**——包代码仍可自行出网、读取同用户可访问的文件系统；上传阶段会执行包结构、manifest、
+ * 签名完整性与依赖校验，公开发布按订阅名额控制；完整隔离按 PRD G2 在容器形态补齐。
  * 子进程环境变量走白名单（见 SANDBOX_ENV_KEYS），宿主敏感配置不进沙箱。
  */
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -155,6 +155,7 @@ export function identityEnv(appId: string, userId: number | null): Record<string
     plan: u.plan === 'member' ? 'member' : 'free',
     mfaEnabled: Boolean(u.mfaEnabled),
     mustChangePassword: Boolean(u.mustChangePassword),
+    membershipSelectionRequired: Boolean(u.membershipSelectionRequired),
   };
   const idn = signIdentity(su, appId);
   if (!idn) return {};

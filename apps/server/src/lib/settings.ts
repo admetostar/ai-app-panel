@@ -63,18 +63,6 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   LOGO: {
     label: 'Logo 图片',
     group: '站点与品牌', type: 'string', desc: 'Logo 图片（data URI 或 /uploads 路径，留空用站名文字）', initial: () => '', defaultsWork: true },
-  THEME_ID: {
-    label: '默认主题',
-    group: '站点与品牌',
-    type: 'string',
-    choiceLabels: { ocean: '海雾蓝', aurora: '极光青', forest: '松林绿', sunset: '暖阳橙', sakura: '樱粉', graphite: '石墨（暗色）' },
-    desc: '站点默认主题（用户可在个人中心个性化覆盖）',
-    initial: () => 'ocean',
-    defaultsWork: true,
-  },
-  ACCENT_COLOR: {
-    label: '默认强调色',
-    group: '站点与品牌', type: 'string', desc: '自定义强调色（#RRGGBB，留空用主题默认）', initial: () => '', defaultsWork: true },
   FOOTER_TEXT: {
     label: '页脚文案',
     group: '站点与品牌', type: 'string', desc: '页脚文案', initial: () => '', defaultsWork: true },
@@ -217,10 +205,15 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     label: '用户限流（次/分）',
     group: '应用网关', type: 'int', desc: '应用网关限流：每用户请求/分', initial: () => String(config.rateUserPerMin), defaultsWork: true, advanced: true },
   SHOW_TOPUP_PANEL: {
-    label: '显示充值面板',
+    label: '显示额度充值卡片',
     group: '计费', type: 'bool',
     desc: '用户中心是否显示「额度充值」面板（关闭后用户只能使用兑换码/管理员发放）',
-    initial: () => 'true', defaultsWork: true },
+    initial: () => 'false', defaultsWork: true },
+  SHOW_ORDERS_PANEL: {
+    label: '显示我的订单卡片',
+    group: '计费', type: 'bool',
+    desc: '用户中心是否显示「我的订单」面板',
+    initial: () => 'false', defaultsWork: true },
   LLM_UNATTRIBUTED_POLICY: {
     label: '无归因 LLM 调用',
     group: '计费', type: 'string',
@@ -402,4 +395,3 @@ export function updateSettingFromAdmin(key: string, value: string): void {
   if (def.secret && (value === '' || value === '********')) return;
   setSetting(key, value);
 }
-

@@ -16,6 +16,15 @@ export const requireAuth: RequestHandler = (req, res, next) => {
     res.status(403).json({ error: { code: 'MFA_REQUIRED', message: '需要完成多因子认证', action: 'mfa' } });
     return;
   }
+  if (
+    req.user.membershipSelectionRequired &&
+    !['/api/auth/me', '/api/auth/logout', '/api/user/membership/select-plan'].includes(req.originalUrl.split('?')[0] ?? '')
+  ) {
+    res.status(403).json({
+      error: { code: 'MEMBERSHIP_SELECTION_REQUIRED', message: '请先选择权益计划', action: 'membership-selection' },
+    });
+    return;
+  }
   next();
 };
 

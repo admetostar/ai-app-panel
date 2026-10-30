@@ -30,6 +30,8 @@ export interface SessionUser {
   mfaEnabled: boolean;
   /** 强制改密标记（首始 F3 / 管理员重置后） */
   mustChangePassword: boolean;
+  /** 尚未完成首次权益选择 */
+  membershipSelectionRequired: boolean;
 }
 
 declare global {

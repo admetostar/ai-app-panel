@@ -6,16 +6,22 @@ import { setupTestDb, teardownTestDb } from './testkit.js';
 import { closeDb } from '../db/index.js';
 import { seedSettings, setSetting } from '../lib/settings.js';
 import { getDb } from '../db/index.js';
-import { inviteCodes, registrations, users } from '../db/schema.js';
+import { inviteCodes, registrations, topupOrders, users } from '../db/schema.js';
 import { and, eq, gt, sql } from 'drizzle-orm';
 import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
 import { hasLeadingZeroBits } from '../lib/pow.js';
+import { createGroup } from '../lib/groups.js';
+import { createPlan, deletePlan } from '../lib/billing.js';
+import { sessionCookieFor } from './testkit.js';
 
 let server: Server;
 let base: string;
 let dir: string;
 let logSpy: ReturnType<typeof vi.spyOn>;
+let freePlanId = 0;
+let paidPlanId = 0;
+let groupId = 0;
 
 /** 客户端 PoW 解题 + 换 token（模拟浏览器 WebCrypto 流程） */
 async function solvePow(): Promise<string> {
@@ -81,6 +87,23 @@ describe('W3 注册（A2）', () => {
   });
 
   it('开放注册：无 PoW 拒绝；带 PoW 发码；首账号自动 admin', async () => {
+    groupId = createGroup('registration-benefits', 'Registration test plans');
+    freePlanId = createPlan({
+      name: '免费权益包',
+      groupId,
+      durationDays: 30,
+      priceFen: 0,
+      tier: 0,
+      publicAppLimit: 2,
+    });
+    paidPlanId = createPlan({
+      name: '付费权益包',
+      groupId,
+      durationDays: 30,
+      priceFen: 990,
+      tier: 1,
+      publicAppLimit: 10,
+    });
     setSetting('REGISTRATION_MODE', 'open');
 
     // 无 PoW → 403 POW_REQUIRED（响应附带新挑战）
@@ -123,9 +146,12 @@ describe('W3 注册（A2）', () => {
       body: JSON.stringify({ registrationId: started.registrationId, code }),
     });
     expect(ok.status).toBe(200);
-    const done = (await ok.json()) as { user: { username: string; role: string } };
+    const done = (await ok.json()) as {
+      user: { username: string; role: string; membershipSelectionRequired: boolean };
+    };
     expect(done.user.username).toBe('neo');
     expect(done.user.role).toBe('admin'); // 首账号自动 admin
+    expect(done.user.membershipSelectionRequired).toBe(false); // 首管理员可先配置套餐
 
     // 会话可用
     const me = await fetch(`${base}/api/auth/me`, { headers: { cookie: cookieOf(ok) } });
@@ -133,6 +159,100 @@ describe('W3 注册（A2）', () => {
     const info = (await me.json()) as { user: { username: string }; mustEnrollMfa: boolean };
     expect(info.user.username).toBe('neo');
     expect(info.mustEnrollMfa).toBe(true); // admin 强制 MFA（W4 落地绑定流程）
+
+  });
+
+  it('开放注册必须有启用的零价权益包；选套餐前限制账户功能', async () => {
+    setSetting('REGISTRATION_MODE', 'closed');
+    deletePlan(freePlanId);
+    const gateAdminId = Number(
+      getDb()
+        .insert(users)
+        .values({
+          kind: 'local',
+          username: 'benefitadmin',
+          role: 'admin',
+          mfaEnabled: true,
+          createdAt: Date.now(),
+        })
+        .run().lastInsertRowid,
+    );
+    const gateAdminCookie = sessionCookieFor(gateAdminId);
+
+    const blockedOpen = await fetch(`${base}/api/admin/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie: gateAdminCookie, origin: base },
+      body: JSON.stringify({ REGISTRATION_MODE: 'open' }),
+    });
+    expect(blockedOpen.status).toBe(409);
+    expect(((await blockedOpen.json()) as { error: { code: string } }).error.code).toBe('FREE_PLAN_REQUIRED');
+
+    setSetting('REGISTRATION_MODE', 'open');
+    const blockedRegistration = await fetch(`${base}/api/auth/register/start`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'no-benefit-plan', password: 'password123', email: 'no-plan@example.com' }),
+    });
+    expect(blockedRegistration.status).toBe(503);
+    expect(((await blockedRegistration.json()) as { error: { code: string } }).error.code).toBe('FREE_PLAN_REQUIRED');
+    setSetting('REGISTRATION_MODE', 'closed');
+
+    freePlanId = createPlan({
+      name: '免费权益包',
+      groupId,
+      durationDays: 30,
+      priceFen: 0,
+      tier: 0,
+      publicAppLimit: 2,
+    });
+    const allowedOpen = await fetch(`${base}/api/admin/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie: gateAdminCookie, origin: base },
+      body: JSON.stringify({ REGISTRATION_MODE: 'open' }),
+    });
+    expect(allowedOpen.status).toBe(200);
+
+    const freeUser = Number(
+      getDb()
+        .insert(users)
+        .values({ kind: 'local', username: 'freechoice', membershipSelectionRequired: true, createdAt: Date.now() })
+        .run().lastInsertRowid,
+    );
+    const freeCookie = sessionCookieFor(freeUser);
+    const blockedProfile = await fetch(`${base}/api/user/profile`, { headers: { cookie: freeCookie } });
+    expect(blockedProfile.status).toBe(403);
+    expect(((await blockedProfile.json()) as { error: { action: string } }).error.action).toBe('membership-selection');
+
+    const freeSelection = await fetch(`${base}/api/user/membership/select-plan`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: freeCookie },
+      body: JSON.stringify({ planId: freePlanId }),
+    });
+    expect(freeSelection.status).toBe(200);
+    expect(((await freeSelection.json()) as { activated: boolean }).activated).toBe(true);
+    const freeUserAfter = getDb().select().from(users).where(eq(users.id, freeUser)).get();
+    expect(freeUserAfter?.membershipSelectionRequired).toBe(false);
+    expect(freeUserAfter?.membershipPlanId).toBe(freePlanId);
+    expect((await fetch(`${base}/api/user/profile`, { headers: { cookie: freeCookie } })).status).toBe(200);
+
+    const paidUser = Number(
+      getDb()
+        .insert(users)
+        .values({ kind: 'local', username: 'paidchoice', membershipSelectionRequired: true, createdAt: Date.now() })
+        .run().lastInsertRowid,
+    );
+    const paidCookie = sessionCookieFor(paidUser);
+    const paidSelection = await fetch(`${base}/api/user/membership/select-plan`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: paidCookie },
+      body: JSON.stringify({ planId: paidPlanId }),
+    });
+    expect(paidSelection.status).toBe(200);
+    const paidResult = (await paidSelection.json()) as { activated: boolean; orderId: string };
+    expect(paidResult.activated).toBe(false);
+    const order = getDb().select().from(topupOrders).where(eq(topupOrders.id, paidResult.orderId)).get();
+    expect(order?.status).toBe('pending');
+    expect(getDb().select().from(users).where(eq(users.id, paidUser)).get()?.membershipSelectionRequired).toBe(false);
   });
 
   it('60s 重发限流：注册路径占用校验（409）先于发码限流，无枚举面；找回路径的限流已静默化（P1-4 用例覆盖）', () => {

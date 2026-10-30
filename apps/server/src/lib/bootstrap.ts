@@ -13,6 +13,7 @@ import { getDb } from '../db/index.js';
 import { localCredentials, trustedSigningKeys, users } from '../db/schema.js';
 import { generatePassword, hashPassword } from './passwords.js';
 import { audit } from './audit.js';
+import { defaultAvatarForUser } from './userAvatar.js';
 
 export const CREDENTIALS_FILE = 'admin-credentials.txt';
 
@@ -52,7 +53,9 @@ export async function ensureInitialAdmin(): Promise<void> {
       createdAt: Date.now(),
     })
     .run();
-  await writeLocalCredentials(Number(info.lastInsertRowid), password);
+  const userId = Number(info.lastInsertRowid);
+  getDb().update(users).set({ avatar: defaultAvatarForUser(userId) }).where(eq(users.id, userId)).run();
+  await writeLocalCredentials(userId, password);
 
   // 凭据落盘（0600）+ 打印日志
   const content = [
