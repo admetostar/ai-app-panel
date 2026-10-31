@@ -198,7 +198,7 @@ export function apply(): HttpsServer | null {
 }
 
 /** 上传 PEM 并立即生效 */
-export function installManual(certPem: string, keyPem: string): CertInfo {
+export async function installManual(certPem: string, keyPem: string): Promise<CertInfo> {
   const info = validate(certPem, keyPem);
   fs.mkdirSync(TLS_DIR, { recursive: true });
   // 先写临时文件再原子替换，避免半写状态
@@ -209,12 +209,12 @@ export function installManual(certPem: string, keyPem: string): CertInfo {
   fs.renameSync(tmpCert, CERT_FILE);
   fs.renameSync(tmpKey, KEY_FILE);
   apply();
-  audit('system', null, 'tls.cert.installed', { subject: info.subject, daysRemaining: info.daysRemaining });
+  await audit('system', null, 'tls.cert.installed', { subject: info.subject, daysRemaining: info.daysRemaining });
   return info;
 }
 
 /** 删除证书并停止 HTTPS 服务 */
-export function remove(): void {
+export async function remove(): Promise<void> {
   try {
     fs.rmSync(CERT_FILE, { force: true });
   } catch {
@@ -237,7 +237,7 @@ export function remove(): void {
   }
   setSecureCookie(false);
   disableHsts();
-  audit('system', null, 'tls.cert.removed', {});
+  await audit('system', null, 'tls.cert.removed', {});
 }
 
 // ---------- ACME（acme-client v5，HTTP-01） ----------
@@ -307,7 +307,7 @@ export async function acmeIssue(domain: string, email: string): Promise<CertInfo
     const info = validate(certPem, keyPem);
     apply();
     lastAcmeSuccessAt = Date.now();
-    audit('system', null, 'tls.cert.issued', { domain, staging, daysRemaining: info.daysRemaining });
+    await audit('system', null, 'tls.cert.issued', { domain, staging, daysRemaining: info.daysRemaining });
     return info;
   } catch (err) {
     lastAcmeError = err instanceof Error ? err.message : String(err);
@@ -320,7 +320,7 @@ export async function acmeIssue(domain: string, email: string): Promise<CertInfo
 
 /** 续期循环：每日检查，ACME 模式且剩余 <30 天时重签 */
 export function startRenewalLoop(): void {
-  const run = (): void => {
+  const run = async (): Promise<void> => {
     if (tlsMode() !== 'acme') return;
     const stored = readStored();
     if (stored) {
@@ -348,4 +348,3 @@ export function restore(): void {
     console.error('[tls] 证书恢复失败（HTTPS 未启用）:', err instanceof Error ? err.message : err);
   }
 }
-

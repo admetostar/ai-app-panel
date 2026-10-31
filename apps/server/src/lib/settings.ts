@@ -4,7 +4,6 @@
  * 管理端展示用 SETTING_DEFS 的 desc（E2：一句话说明）与 advanced（高级项折叠）。
  */
 import { randomBytes } from 'node:crypto';
-import { eq } from 'drizzle-orm';
 import { config } from '../config/index.js';
 import { getDb } from '../db/index.js';
 import { settings } from '../db/schema.js';
@@ -85,6 +84,14 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   },
   MAX_ACCOUNTS_PER_IP_24H: {
     label: '同 IP 注册上限（24h）', group: '注册与账号', type: 'int', desc: '同一 IP 24 小时内最多注册账号数', initial: () => '5', defaultsWork: true },
+  REGISTRATION_POINTS_GIFT: {
+    label: '注册赠送积分',
+    group: '注册与账号',
+    type: 'int',
+    desc: '每个新注册账号首次创建时获得的积分；已有账号不会追溯赠送',
+    initial: () => '0',
+    defaultsWork: true,
+  },
   CODE_SEND_DAILY_LIMIT: {
     label: '验证码日限额',
     group: '注册与账号',
@@ -332,21 +339,23 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     initial: () => '', defaultsWork: true },
 };
 
-/** 首启把全部默认值种入 settings（INSERT OR IGNORE，env 只作初值不覆盖已存值；secret 型加密落盘） */
-export function seedSettings(): void {
+const settingCache = new Map<string, string>();
+
+/** 首启把全部默认值种入 settings（冲突时不覆盖已有值；secret 型加密落盘） */
+export async function seedSettings(): Promise<void> {
   const db = getDb();
   const now = Date.now();
-  for (const [key, def] of Object.entries(SETTING_DEFS)) {
-    db.insert(settings)
-      .values({ key, value: storeValue(key, def.initial()), updatedAt: now })
-      .onConflictDoNothing()
-      .run();
-  }
+  await db
+    .insert(settings)
+    .values(Object.entries(SETTING_DEFS).map(([key, def]) => ({ key, value: storeValue(key, def.initial()), updatedAt: now })))
+    .onConflictDoNothing();
+  const rows = await db.select().from(settings);
+  settingCache.clear();
+  for (const row of rows) settingCache.set(row.key, row.value);
 }
 
 export function getSetting(key: string): string | null {
-  const row = getDb().select().from(settings).where(eq(settings.key, key)).get();
-  const value = row?.value ?? null;
+  const value = settingCache.get(key) ?? null;
   if (value !== null && value.startsWith(ENC_PREFIX)) {
     try {
       return decryptSecret(value.slice(ENC_PREFIX.length));
@@ -371,12 +380,13 @@ export function getSettingBool(key: string, fallback: boolean): boolean {
   return ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase());
 }
 
-export function setSetting(key: string, value: string): void {
-  getDb()
+export async function setSetting(key: string, value: string): Promise<void> {
+  const storedValue = storeValue(key, value);
+  await getDb()
     .insert(settings)
-    .values({ key, value: storeValue(key, value), updatedAt: Date.now() })
-    .onConflictDoUpdate({ target: settings.key, set: { value: storeValue(key, value), updatedAt: Date.now() } })
-    .run();
+    .values({ key, value: storedValue, updatedAt: Date.now() })
+    .onConflictDoUpdate({ target: settings.key, set: { value: storedValue, updatedAt: Date.now() } });
+  settingCache.set(key, storedValue);
 }
 
 /** 管理端列表视图：secret 回显掩码（只写不读） */
@@ -389,9 +399,9 @@ export function listSettingsForAdmin(): Array<{ key: string; value: string; def:
 }
 
 /** 管理端写入：空值或掩码 = 不修改（secret 只写不读） */
-export function updateSettingFromAdmin(key: string, value: string): void {
+export async function updateSettingFromAdmin(key: string, value: string): Promise<void> {
   const def = SETTING_DEFS[key];
   if (!def) throw new Error(`未知配置项: ${key}`);
   if (def.secret && (value === '' || value === '********')) return;
-  setSetting(key, value);
+  await setSetting(key, value);
 }

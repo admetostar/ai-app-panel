@@ -51,11 +51,10 @@ async function setupUserWithTotp(): Promise<{
 }> {
   const n = ++seq;
   const username = `mfauser${n}`;
-  const info = getDb()
+  const [info] = await getDb()
     .insert(users)
-    .values({ kind: 'local', username, name: username, role: 'user', createdAt: Date.now() })
-    .run();
-  const userId = Number(info.lastInsertRowid);
+    .values({ kind: 'local', username, name: username, role: 'user', createdAt: Date.now() }).returning({ id: users.id });
+  const userId = Number(info!.id);
   await writeLocalCredentials(userId, 'password123');
 
   const login = await jsonPost('/api/auth/login', { username, password: 'password123' });
@@ -68,7 +67,7 @@ async function setupUserWithTotp(): Promise<{
 
   const confirm = await jsonPost('/api/auth/mfa/totp/confirm', { token: await tokenFor(secret, -1) }, cookie);
   expect(confirm.status).toBe(200);
-  return { userId, username, secret, token: (delta) => tokenFor(secret, delta), fullCookie: cookie };
+  return { userId, username, secret, token: async (delta) => await tokenFor(secret, delta), fullCookie: cookie };
 }
 
 async function tokenFor(secret: string, delta: number): Promise<string> {
@@ -87,8 +86,8 @@ async function fullLogin(username: string, secret: string): Promise<string> {
 }
 
 beforeAll(async () => {
-  ({ dir } = setupTestDb());
-  seedSettings();
+  ({ dir } = await setupTestDb());
+  await seedSettings();
   const cfg = { ...loadConfig({}), webDist: null };
   server = createApp(cfg).listen(0);
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -96,14 +95,14 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  closeDb();
-  teardownTestDb(dir);
+  await closeDb();
+  await teardownTestDb(dir);
 });
 
 describe('W4 MFA（TOTP + 状态机 + 恢复码 + 步升）', () => {
   it('绑定：enroll → confirm（发恢复码）→ mfaEnabled=true', async () => {
     const { userId, fullCookie } = await setupUserWithTotp();
-    expect(remainingRecoveryCodes(userId)).toBe(10);
+    expect(await remainingRecoveryCodes(userId)).toBe(10);
 
     // enroll 前的完整会话仍是 full（confirm 不降级），/me 可见 mfaEnabled
     const me = await fetch(`${base}/api/auth/me`, { headers: { cookie: fullCookie } });
@@ -181,7 +180,7 @@ describe('W4 MFA（TOTP + 状态机 + 恢复码 + 步升）', () => {
 
     // 登录即授予步升窗口（新语义，强制绑 MFA 依赖它）；清零以模拟陈旧会话
     const { sessions } = await import('../db/schema.js');
-    getDb().update(sessions).set({ stepUpUntil: null }).run();
+    await getDb().update(sessions).set({ stepUpUntil: null });
 
     // 未步升 → regenerate 被拒
     const noStep = await jsonPost('/api/auth/mfa/recovery/regenerate', {}, cookie);
@@ -211,7 +210,7 @@ describe('W4 MFA（TOTP + 状态机 + 恢复码 + 步升）', () => {
 
   it('admin 强制 MFA：解绑最后一个因子被拒', async () => {
     const { userId, username, secret, token } = await setupUserWithTotp();
-    getDb().update(users).set({ role: 'admin' }).where(eq(users.id, userId)).run();
+    await getDb().update(users).set({ role: 'admin' }).where(eq(users.id, userId));
     const cookie = await fullLogin(username, secret);
     const step = await jsonPost('/api/auth/step-up/totp', { token: await token(1) }, cookie);
     expect(step.status).toBe(200);
@@ -252,7 +251,7 @@ describe('W4 MFA（TOTP + 状态机 + 恢复码 + 步升）', () => {
       expect((await jsonPost('/api/auth/mfa/login/totp', { token: '000000' }, cb)).status).toBe(400);
     }
     // 计数持久化在 login_attempts（user_key = mfa:<userId> 命名空间）
-    expect(mfaFailuresInWindow(`mfa:${userId}`)).toBe(5);
+    expect(await mfaFailuresInWindow(`mfa:${userId}`)).toBe(5);
 
     // 全新会话 C：第一次尝试（即便持正确码）预检即 429
     const lc = await jsonPost('/api/auth/login', { username, password: 'password123' });
@@ -269,12 +268,12 @@ describe('W4 MFA（TOTP + 状态机 + 恢复码 + 步升）', () => {
     for (let i = 0; i < 4; i++) {
       expect((await jsonPost('/api/auth/mfa/login/totp', { token: '000000' }, c1)).status).toBe(400);
     }
-    expect(mfaFailuresInWindow(`mfa:${userId}`)).toBe(4);
+    expect(await mfaFailuresInWindow(`mfa:${userId}`)).toBe(4);
 
     // 成功一次（0 窗，confirm 消耗的是 -1 窗）→ 账号计数清零
     const ok = await jsonPost('/api/auth/mfa/login/totp', { token: await token(0) }, c1);
     expect(ok.status).toBe(200);
-    expect(mfaFailuresInWindow(`mfa:${userId}`)).toBe(0);
+    expect(await mfaFailuresInWindow(`mfa:${userId}`)).toBe(0);
 
     // 再错 4 次：均为普通 TOTP_INVALID，不触发账号级 429（若未清零此时已累计 8 次）
     const c2 = cookieOf(await jsonPost('/api/auth/login', { username, password: 'password123' }));

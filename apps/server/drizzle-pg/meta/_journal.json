@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1793428603811,
+      "tag": "0000_lonely_titanium_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793443117964,
+      "tag": "0001_graceful_black_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793445783000,
+      "tag": "0002_initial_admin_points",
+      "breakpoints": true
+    }
+  ]
+}

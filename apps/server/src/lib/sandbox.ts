@@ -90,8 +90,8 @@ function sandboxSpawnUser(): { uid?: number; gid?: number } {
   return out;
 }
 
-export function baseEnv(appId: string, extra: Record<string, string> = {}): Record<string, string> {
-  const provision = getAppLlmProvision(appId);
+export async function baseEnv(appId: string, extra: Record<string, string> = {}): Promise<Record<string, string>> {
+  const provision = await getAppLlmProvision(appId);
   const env: Record<string, string> = {};
   for (const k of SANDBOX_ENV_KEYS) {
     const v = process.env[k];
@@ -100,11 +100,10 @@ export function baseEnv(appId: string, extra: Record<string, string> = {}): Reco
   // passUser 应用本地验签密钥（app-develop.skill §三：应用可自行校验代理注入的
   // x-aap-identity 头按用户隔离数据）。AAP_ 前缀保留名上传时已拒声明，包覆盖不了；
   // 轮换/开关 passUser 后由管理端 stopPersistentFor/stopAllPersistent 触发重启生效。
-  const passUser = getDb()
+  const passUser = await (await getDb()
     .select({ passUser: apps.passUser })
     .from(apps)
-    .where(eq(apps.id, appId))
-    .get()?.passUser;
+    .where(eq(apps.id, appId)))[0]?.passUser;
   const signSecret = passUser ? getSetting('AAP_SIGN_SECRET') : null;
   // 包第三方依赖（声明制 v0.2.6，上传时装入 .deps）+ native/FPK 启动自检补装的
   // 预置框架目录（AAP_PREINSTALLED_PYTHONPATH，start.sh 导出）：包进程 sys.path 前置，
@@ -135,9 +134,9 @@ export function baseEnv(appId: string, extra: Record<string, string> = {}): Reco
  * （10 分钟 TTL 覆盖 30s 执行窗口绰绰有余）；persistent 为多用户长驻，
  * 归因走代理逐请求注入的身份头（见 proxyToSandbox），不放进程环境。
  */
-export function identityEnv(appId: string, userId: number | null): Record<string, string> {
+export async function identityEnv(appId: string, userId: number | null): Promise<Record<string, string>> {
   if (userId === null) return {};
-  const u = getDb().select().from(users).where(eq(users.id, userId)).get();
+  const u = (await getDb().select().from(users).where(eq(users.id, userId)))[0];
   if (!u) return {};
   const su: SessionUser = {
     id: u.id,
@@ -180,20 +179,20 @@ function runInvokedOnce(
 ): Promise<InvokedResult> {
   const started = Date.now();
   const timeoutMs = opts.timeoutMs ?? 30_000;
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     const child = spawn(
       PYTHON_BIN,
       [RUNNER, 'run'],
       {
         cwd: appSiteDir(appId),
-        env: baseEnv(appId, {
+        env: await baseEnv(appId, {
           AAP_MODE: 'run',
           AAP_MOD_PATH: packageEntryPath(appId, entry),
           AAP_RUN_ID: randomId(),
           AAP_USER_ID: opts.userId !== null ? String(opts.userId) : '',
           AAP_DEBUG: '0',
           ...(opts.platformBase ? { AAP_PLATFORM: opts.platformBase } : {}),
-          ...identityEnv(appId, opts.userId),
+          ...await identityEnv(appId, opts.userId),
         }),
         stdio: ['pipe', 'pipe', 'pipe'],
         ...sandboxSpawnUser(),
@@ -223,27 +222,27 @@ function runInvokedOnce(
       }
       resolve(r);
     };
-    const killer = setTimeout(() => finish({ status: 'timeout', logs, durationMs: Date.now() - started }), timeoutMs);
+    const killer = setTimeout(async () => await finish({ status: 'timeout', logs, durationMs: Date.now() - started }), timeoutMs);
 
-    child.on('error', (err) => {
+    child.on('error', async (err) => {
       clearTimeout(killer);
       // 全量进服务端日志；对外只给状态（err.message 含容器内路径，防泄露）
       console.error(`[sandbox] invoked 进程启动失败 (${appId}):`, err.message);
-      finish({ status: 'error', error: '沙箱进程启动失败（运行时不可用）', logs, durationMs: Date.now() - started });
+      await finish({ status: 'error', error: '沙箱进程启动失败（运行时不可用）', logs, durationMs: Date.now() - started });
     });
-    child.on('close', (code) => {
+    child.on('close', async (code) => {
       clearTimeout(killer);
       if (code === 0) {
         try {
           // stdout 可能多行（包内 print），取最后一行合法 JSON
           const lines = stdout.trim().split('\n');
-          finish({ status: 'ok', result: JSON.parse(lines[lines.length - 1] ?? 'null'), logs, durationMs: Date.now() - started });
+          await finish({ status: 'ok', result: JSON.parse(lines[lines.length - 1] ?? 'null'), logs, durationMs: Date.now() - started });
         } catch {
-          finish({ status: 'error', error: '输出不是合法 JSON（包内请不要 print 非 JSON 内容）', logs, durationMs: Date.now() - started });
+          await finish({ status: 'error', error: '输出不是合法 JSON（包内请不要 print 非 JSON 内容）', logs, durationMs: Date.now() - started });
         }
       } else {
         const errLine = logs.trim().split('\n').filter((l) => !l.startsWith('{')).pop();
-        finish({
+        await finish({
           status: 'error',
           error: errLine?.slice(0, 500) || `进程退出码 ${code}`,
           logs,
@@ -396,7 +395,7 @@ export async function ensurePersistent(
     [RUNNER, 'serve'],
     {
       cwd: appSiteDir(appId),
-      env: baseEnv(appId, {
+      env: await baseEnv(appId, {
         AAP_MODE: 'serve',
         AAP_MOD_PATH: packageEntryPath(appId, entry),
         AAP_RUN_ID: randomId(),

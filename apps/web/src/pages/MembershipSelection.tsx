@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Alert, Button, Card, Col, Row, Space, Typography, message } from 'antd';
+import { Alert, Button, Card, Col, Empty, Row, Spin, Typography, message } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import type { MembershipPlanSummary } from '@aap/shared';
+import type { MembershipPlanSummary, UserMembershipData } from '@aap/shared';
 import { api } from '../api/client';
 import { TierBadge } from '../components/TierBadge';
 import { useSession } from '../state/session';
+import { formatMembershipPlanPrice, isFreeMembershipPlan } from '../lib/membershipPricing';
 
 interface PlanSelectionResult {
   activated: boolean;
@@ -21,7 +22,13 @@ export function MembershipSelectionPage() {
     queryKey: ['portal-plans'],
     queryFn: () => api<{ plans: MembershipPlanSummary[] }>('/api/portal/plans'),
   });
+  const membership = useQuery({
+    queryKey: ['membership'],
+    queryFn: () => api<UserMembershipData>('/api/user/membership'),
+    enabled: Boolean(me?.user.membershipSelectionRequired),
+  });
   const [selectingPlan, setSelectingPlan] = useState<number | null>(null);
+  const [skippingSelection, setSkippingSelection] = useState(false);
 
   useEffect(() => {
     if (me && !me.user.membershipSelectionRequired) navigate('/account', { replace: true });
@@ -50,6 +57,20 @@ export function MembershipSelectionPage() {
     }
   }
 
+  async function skipSelection(): Promise<void> {
+    setSkippingSelection(true);
+    try {
+      await api('/api/user/membership/skip-selection', { method: 'POST' });
+      await queryClient.invalidateQueries({ queryKey: ['me'] });
+      navigate('/account', { replace: true });
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '暂时无法跳过权益选择');
+      await plans.refetch();
+    } finally {
+      setSkippingSelection(false);
+    }
+  }
+
   const enabledPlans = plans.data?.plans ?? [];
 
   if (sessionLoading) {
@@ -69,60 +90,92 @@ export function MembershipSelectionPage() {
   }
 
   return (
-    <div style={{ maxWidth: 1040, margin: '48px auto', padding: '0 20px' }}>
-      <Typography.Text type="secondary" style={{ letterSpacing: 2 }}>MEMBERSHIP</Typography.Text>
-      <Typography.Title level={2} style={{ marginTop: 8 }}>选择你的权益包</Typography.Title>
-      <Typography.Paragraph style={{ maxWidth: 720, color: 'var(--aap-text-secondary)' }}>
-        选择适合你的权益，开启应用创作。零价权益包选择后立即生效；付费权益包会创建待确认订单，管理员确认后开通。
-      </Typography.Paragraph>
+    <div className="aap-home-page aap-membership-selection-page">
+      <section className="aap-home-section aap-home-rights">
+        <div className="aap-home-section__inner">
+          <span className="aap-home-section__eyebrow">MEMBERSHIP</span>
+          <Typography.Title level={2}>选择你的权益包</Typography.Title>
+          <Typography.Paragraph className="aap-home-section__lead">
+            选择适合你的权益，开启应用创作。零价权益包立即生效；人民币和美元套餐由管理员确认到账后开通；积分套餐足额扣分后立即开通。
+          </Typography.Paragraph>
+          <div className="aap-membership-selection-page__balance">
+            <span>当前积分</span>
+            {membership.isLoading ? (
+              <Spin size="small" />
+            ) : membership.isError ? (
+              <Typography.Text type="danger">加载失败</Typography.Text>
+            ) : (
+              <strong>{(membership.data?.pointsBalance ?? 0).toLocaleString()} 分</strong>
+            )}
+          </div>
+          {membership.isError ? (
+            <Alert
+              type="error"
+              showIcon
+              message="积分余额加载失败"
+              description={membership.error instanceof Error ? membership.error.message : '请重试后再兑换积分套餐'}
+              action={<Button size="small" onClick={() => void membership.refetch()}>重试</Button>}
+              style={{ marginBottom: 20 }}
+            />
+          ) : null}
 
-      {plans.isError ? (
-        <Alert type="error" showIcon message="权益包暂时无法加载" description="请刷新页面重试；如果问题持续，请联系管理员。" />
-      ) : plans.isLoading ? (
-        <Typography.Text type="secondary">正在加载可选权益包…</Typography.Text>
-      ) : enabledPlans.length === 0 ? (
-        <Alert
-          type="warning"
-          showIcon
-          message="当前没有可选择的权益包"
-          description="请联系管理员配置并启用权益包后再继续。"
-        />
-      ) : (
-        <Row gutter={[18, 18]} style={{ marginTop: 28 }}>
-          {enabledPlans.map((plan) => (
-            <Col key={plan.id} xs={24} sm={12} lg={8}>
-              <Card
-                style={{ height: '100%', borderColor: '#e5e7eb', background: '#fff' }}
-                styles={{ body: { display: 'flex', flexDirection: 'column', minHeight: 250 } }}
-              >
-                <Space align="center" size={10}>
-                  <TierBadge tier={plan.tier} size={30} showTierLabel={false} />
-                  <Typography.Title level={4} style={{ margin: 0 }}>{plan.name}</Typography.Title>
-                </Space>
-                <Typography.Title level={2} style={{ margin: '24px 0 8px' }}>
-                  {plan.priceFen === 0 ? '免费' : `¥${(plan.priceFen / 100).toFixed(2)}`}
-                </Typography.Title>
-                <Typography.Text type="secondary">{plan.durationDays} 天有效期</Typography.Text>
-                <div style={{ marginTop: 18, display: 'grid', gap: 8, color: 'var(--aap-text-secondary)' }}>
-                  <span>权益等级：{plan.tier}</span>
-                  <span>应用发布：{plan.publicAppLimit} 个</span>
-                  {plan.tokenGrant > 0 ? <span>包含额度：{plan.tokenGrant.toLocaleString()}</span> : null}
-                </div>
-                <Button
-                  type="primary"
-                  block
-                  style={{ marginTop: 'auto', paddingTop: 22 }}
-                  loading={selectingPlan === plan.id}
-                  disabled={selectingPlan !== null}
-                  onClick={() => void selectPlan(plan)}
-                >
-                  {plan.priceFen === 0 ? '获取' : '选择并创建待确认订单'}
-                </Button>
-              </Card>
-            </Col>
-          ))}
-        </Row>
-      )}
+          {plans.isError ? (
+            <Alert type="error" showIcon message="权益包加载失败" description={plans.error instanceof Error ? plans.error.message : '请刷新页面重试'} />
+          ) : plans.isLoading ? (
+            <div className="aap-home-loading"><Spin /></div>
+          ) : enabledPlans.length === 0 ? (
+            <Empty description="暂无可选择的权益包">
+              <Button type="primary" loading={skippingSelection} onClick={() => void skipSelection()}>
+                继续前往个人中心
+              </Button>
+            </Empty>
+          ) : (
+            <div className="aap-home-plan-grid">
+              {enabledPlans.map((plan) => {
+                const pointsInsufficient =
+                  plan.priceCurrency === 'POINTS' &&
+                  (membership.data?.pointsBalance ?? 0) < plan.pricePoints;
+                return (
+                  <Card key={plan.id} className="aap-home-plan-card" bordered>
+                    <span className="aap-home-plan-card__duration">
+                      {plan.durationDays >= 100_000 ? '长期权益' : `${plan.durationDays} 天有效期`}
+                    </span>
+                    <div className="aap-home-plan-card__name">
+                      <TierBadge tier={plan.tier} size={26} />
+                      <Typography.Title level={3}>{plan.name}</Typography.Title>
+                    </div>
+                    <div className="aap-home-plan-card__price">
+                      {formatMembershipPlanPrice(plan)}
+                      <span> / 套</span>
+                    </div>
+                    <div className="aap-home-plan-card__features">
+                      <div><span>权益等级</span><strong>{plan.tier}</strong></div>
+                      <div><span>权益分组</span><strong>{plan.groupName}</strong></div>
+                      <div><span>应用发布</span><strong>{plan.publicAppLimit} 个</strong></div>
+                      <div><span>赠送额度</span><strong>{plan.tokenGrant.toLocaleString()}</strong></div>
+                    </div>
+                    <Button
+                      type="primary"
+                      block
+                      loading={selectingPlan === plan.id}
+                      disabled={selectingPlan !== null || pointsInsufficient || (plan.priceCurrency === 'POINTS' && membership.isError)}
+                      onClick={() => void selectPlan(plan)}
+                    >
+                      {pointsInsufficient
+                        ? '积分不足'
+                        : isFreeMembershipPlan(plan)
+                          ? '获取'
+                          : plan.priceCurrency === 'POINTS'
+                            ? '立即兑换'
+                            : '选择并创建待确认订单'}
+                    </Button>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 }

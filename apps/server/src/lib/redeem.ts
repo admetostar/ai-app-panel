@@ -64,7 +64,7 @@ export interface BatchSpec {
 }
 
 /** 按批次生成卡券码（count ≤ 500/批） */
-export function generateBatch(spec: BatchSpec): { batchId: string; codes: string[] } {
+export async function generateBatch(spec: BatchSpec): Promise<{ batchId: string; codes: string[] }> {
   const count = Math.min(500, Math.max(1, Math.trunc(spec.count) || 1));
   if (spec.kind === 'tokens' && (!spec.tokens || spec.tokens <= 0)) {
     throw new HttpError(400, 'INVALID_INPUT', '额度码必须指定大于 0 的 token 数量');
@@ -80,10 +80,10 @@ export function generateBatch(spec: BatchSpec): { batchId: string; codes: string
   for (let i = 0; i < count; i++) {
     let code = newCode();
     // 碰撞重试（80bit 空间，实际不会发生，防御性处理）
-    while (db.select({ c: redeemCodes.code }).from(redeemCodes).where(eq(redeemCodes.code, code)).get()) {
+    while ((await db.select({ c: redeemCodes.code }).from(redeemCodes).where(eq(redeemCodes.code, code)))[0]) {
       code = newCode();
     }
-    db.insert(redeemCodes)
+    await db.insert(redeemCodes)
       .values({
         code,
         batchId,
@@ -95,20 +95,19 @@ export function generateBatch(spec: BatchSpec): { batchId: string; codes: string
         expiresAt,
         createdBy: spec.byUserId,
         createdAt: now,
-      })
-      .run();
+      });
     codes.push(code);
   }
-  audit(`admin:${spec.byUserId}`, null, 'redeem.batch.create', { batchId, kind: spec.kind, count });
+  await audit(`admin:${spec.byUserId}`, null, 'redeem.batch.create', { batchId, kind: spec.kind, count });
   return { batchId, codes };
 }
 
-export function listCodes(opts: { batchId?: string; status?: RedeemStatus | 'all'; limit?: number }): RedeemCodeRow[] {
+export async function listCodes(opts: { batchId?: string; status?: RedeemStatus | 'all'; limit?: number }): Promise<RedeemCodeRow[]> {
   const limit = Math.min(500, Math.max(1, opts.limit ?? 100));
   let q = getDb().select().from(redeemCodes).$dynamic();
   if (opts.batchId) q = q.where(eq(redeemCodes.batchId, opts.batchId));
   if (opts.status && opts.status !== 'all') q = q.where(eq(redeemCodes.status, opts.status));
-  return q.orderBy(sql`id DESC`).limit(limit).all() as RedeemCodeRow[];
+  return await q.orderBy(sql`id DESC`).limit(limit) as RedeemCodeRow[];
 }
 
 export interface BatchSummary {
@@ -123,8 +122,8 @@ export interface BatchSummary {
   createdAt: number;
 }
 
-export function batchSummaries(): BatchSummary[] {
-  return getDb()
+export async function batchSummaries(): Promise<BatchSummary[]> {
+  const rows = await getDb()
     .select({
       batchId: redeemCodes.batchId,
       kind: redeemCodes.kind,
@@ -139,9 +138,8 @@ export function batchSummaries(): BatchSummary[] {
     .from(redeemCodes)
     .groupBy(redeemCodes.batchId)
     .orderBy(sql`min(created_at) DESC`)
-    .limit(100)
-    .all()
-    .map((r) => ({
+    .limit(100);
+  return rows.map((r) => ({
       batchId: r.batchId,
       kind: r.kind as RedeemKind,
       total: Number(r.total),
@@ -154,13 +152,13 @@ export function batchSummaries(): BatchSummary[] {
     }));
 }
 
-export function disableCode(code: string): void {
-  const res = getDb()
+export async function disableCode(code: string): Promise<void> {
+  const res = await getDb()
     .update(redeemCodes)
     .set({ status: 'disabled' })
     .where(and(eq(redeemCodes.code, code), eq(redeemCodes.status, 'unused')))
-    .run();
-  if (res.changes === 0) throw new HttpError(400, 'CODE_STATE', '码不存在或已被使用/作废');
+    .returning({ code: redeemCodes.code });
+  if (res.length === 0) throw new HttpError(400, 'CODE_STATE', '码不存在或已被使用/作废');
 }
 
 export interface RedeemResult {
@@ -170,33 +168,36 @@ export interface RedeemResult {
 }
 
 /** 兑换：单事务内「原子置已用 → 入账」，入账失败整体回滚（码回到未用态） */
-export function redeem(userId: number, rawCode: string, ip: string | null): RedeemResult {
+export async function redeem(userId: number, rawCode: string, ip: string | null): Promise<RedeemResult> {
   const code = normalizeCode(rawCode);
   const db = getDb();
-  const row = db.select().from(redeemCodes).where(eq(redeemCodes.code, code)).get() as RedeemCodeRow | undefined;
+  const row = (await db.select().from(redeemCodes).where(eq(redeemCodes.code, code)))[0] as RedeemCodeRow | undefined;
   // 不存在与状态异常统一措辞（存在性 oracle 价值低，但避免为枚举者确认码格式有效）
   if (!row) throw new HttpError(404, 'CODE_NOT_FOUND', '兑换码无效，请检查输入');
   if (row.status === 'used') throw new HttpError(400, 'CODE_USED', '该兑换码已被使用');
   if (row.status === 'disabled') throw new HttpError(400, 'CODE_DISABLED', '该兑换码已作废');
   if (row.expiresAt && row.expiresAt <= Date.now()) throw new HttpError(400, 'CODE_EXPIRED', '该兑换码已过期');
 
-  return db.transaction(() => {
+  const result = await db.transaction(async (tx) => {
     // 原子消费：仅 unused 状态可置 used（防并发双花）
-    const res = db
+    const res = await tx
       .update(redeemCodes)
       .set({ status: 'used', usedBy: userId, usedAt: Date.now() })
       .where(and(eq(redeemCodes.code, code), eq(redeemCodes.status, 'unused')))
-      .run();
-    if (res.changes === 0) throw new HttpError(400, 'CODE_USED', '该兑换码已被使用');
+      .returning({ code: redeemCodes.code });
+    if (res.length === 0) throw new HttpError(400, 'CODE_USED', '该兑换码已被使用');
 
     if (row.kind === 'tokens') {
-      grantTokens(userId, row.tokens ?? 0, `兑换码 ${code}`, userId);
-      audit(`user:${userId}`, ip, 'redeem.tokens', { code, tokens: row.tokens });
+      await grantTokens(userId, row.tokens ?? 0, `兑换码 ${code}`, userId, tx);
       return { kind: 'tokens' as const, tokens: row.tokens ?? 0 };
     }
     // 会员码：开通/续费套餐（activateMembership 内含赠送额度入账）
-    const planName = activateMembership(userId, row.planId!);
-    audit(`user:${userId}`, ip, 'redeem.membership', { code, planId: row.planId });
+    const planName = await activateMembership(userId, row.planId!, tx);
     return { kind: 'membership' as const, planName };
   });
+  await audit(`user:${userId}`, ip, result.kind === 'tokens' ? 'redeem.tokens' : 'redeem.membership', {
+    code,
+    ...(result.kind === 'tokens' ? { tokens: result.tokens } : { planId: row.planId }),
+  });
+  return result;
 }

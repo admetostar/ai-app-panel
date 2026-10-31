@@ -6,14 +6,14 @@
  *   node sign-aap.mjs sign pkg.asp-app --key mykey.secret --signer your-name
  *   node sign-aap.mjs verify pkg.asp-app               # 发行前自检（不查信任列表）
  *
- * 签名格式（包内 signature.json，可选文件）：
+ * 签名格式（包内 signature.json；平台接收必需）：
  *   { alg: "ed25519", payload_sha256, signature(b64), signer: { id, key_id, public_key(b64) } }
  * 规范化摘要：对除 signature.json 外的全部条目，按「文件名 UTF-8 字节序」排序，
  * sha256( name_utf8 + 0x00 + sha256(content) ) 逐项拼接后再 sha256 → hex。
  * 与 zip 时间戳/压缩参数/条目物理顺序无关：内容一致则摘要一致。
  *
- * 平台侧验证：签名不符（篡改）→ 拒绝上传；签名者 key_id 在平台信任列表 →
- * verified（官方签名免审）；否则 untrusted（照常走审核）。算法用 Node 内置
+ * 平台侧验证：签名无效或签名者公钥未受信任 → 拒绝上传；只有有效且受信任
+ * 的签名包才可接收，上传后默认安装为私有应用。算法用 Node 内置
  * crypto（OpenSSL，RFC 8032 Ed25519），密钥为 32 字节原始种子/公钥的 base64。
  */
 import fs from 'node:fs';
@@ -146,7 +146,7 @@ async function cmdSign(argv) {
   zip.writeZip(file);
   console.log(`已签名: ${file}`);
   console.log(`key_id: ${sig.signer.key_id}   payload_sha256: ${sig.payload_sha256}`);
-  console.log('提示：平台管理员需把该 public_key 加入信任列表，方可获得 verified（官方签名免审）。');
+  console.log('提示：平台管理员必须先把对应公钥加入信任列表，否则平台会拒绝接收此包。');
 }
 
 async function cmdVerify(argv) {
@@ -157,13 +157,13 @@ async function cmdVerify(argv) {
   }
   const { entries, signature } = await loadZipEntries(file);
   if (!signature) {
-    console.log('unsigned（未签名）');
-    return;
+    console.error('unsigned（未签名；平台拒绝接收）');
+    process.exit(1);
   }
   const r = verifyPackageSignature(entries, signature);
   if (r.ok) {
-    console.log(`verified（签名有效）  key_id=${r.keyId}`);
-    console.log('注：是否「可信」由平台信任列表判定，本命令只验证完整性。');
+    console.log(`签名有效（仅完整性校验）  key_id=${r.keyId}`);
+    console.log('注：是否「受信任」由平台信任列表判定；未受信任的签名包仍会被平台拒绝。');
   } else {
     console.error(`invalid（签名无效）: ${r.reason}`);
     process.exit(1);

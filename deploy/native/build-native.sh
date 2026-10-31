@@ -5,9 +5,8 @@
 # 用法：./build-native.sh linux/arm64|linux/amd64
 # 产物：dist/ai-app-portal-native_<版本>_linux_<arch>.tar.gz
 #
-# 原理：在 node:22-bookworm（glibc Debian）容器内构建产物——
-#   better-sqlite3 等原生模块必须按目标平台的 C 库编译，不能复用
-#   alpine（musl）镜像产物；Node 二进制取自同一镜像（ABI 一致）。
+# 原理：在 node:22-bookworm（glibc Debian）容器内构建产物；
+#   Node 二进制取自同一镜像，包内 JavaScript 依赖无需原生数据库模块。
 #   包内自含 Node，飞牛/Debian 主机解压即跑，无需安装 Node。
 # ============================================================
 set -euo pipefail
@@ -58,7 +57,7 @@ cp "$DIST/node-$ARCH" "$BUNDLE/bin/node" && chmod +x "$BUNDLE/bin/node"
 cp -R "$DIST/out-$ARCH/out/node_modules" "$BUNDLE/node_modules"
 cp "$DIST/out-$ARCH/out/package.json" "$BUNDLE/package.json"
 cp -R "$SRC/apps/server/dist" "$BUNDLE/dist"
-cp -R "$SRC/apps/server/drizzle" "$BUNDLE/drizzle"
+cp -R "$SRC/apps/server/drizzle-pg" "$BUNDLE/drizzle-pg"
 cp -R "$SRC/apps/web/dist" "$BUNDLE/public"
 cp -R "$SRC/packages/aap-sdk" "$BUNDLE/aap-sdk"
 cp "$ROOT/deploy/native/start.sh" "$BUNDLE/start.sh" && chmod +x "$BUNDLE/start.sh"

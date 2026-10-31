@@ -13,10 +13,9 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
-import { closeDb, initDb } from '../db/index.js';
-import { seedSettings } from '../lib/settings.js';
 import { stripGatewayPrefix } from '../lib/gatewayPrefix.js';
 import { idConflictsWithGatewayPrefix } from '../gateway/registry.js';
+import { setupTestDb, teardownTestDb } from './testkit.js';
 
 const PREFIX = '/app/AI-SuperPanel';
 
@@ -75,6 +74,7 @@ describe('统一网关集成（前缀剥离 + TCP/Unix Socket 双监听）', () 
   let socketPath: string;
   let tcpUrl: string;
   let tmpDir: string;
+  let dbSchema: string;
 
   /** 与 server.ts 同构：入口层剥前缀 → Express；TCP 与 Socket 两个实例共享 handler */
   function makeServers(): void {
@@ -103,11 +103,7 @@ describe('统一网关集成（前缀剥离 + TCP/Unix Socket 双监听）', () 
 
   beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aap-gw-'));
-    initDb({
-      file: path.join(tmpDir, 't.db'),
-      migrationsDir: path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '../../drizzle'),
-    });
-    seedSettings();
+    ({ dir: dbSchema } = await setupTestDb());
     makeServers();
     await new Promise<void>((r) => tcp.listen(0, '127.0.0.1', r));
     await new Promise<void>((r) => sock.listen(socketPath, r));
@@ -119,7 +115,7 @@ describe('统一网关集成（前缀剥离 + TCP/Unix Socket 双监听）', () 
       new Promise<void>((r) => tcp.close(() => r())),
       new Promise<void>((r) => sock.close(() => r())),
     ]);
-    closeDb();
+    await teardownTestDb(dbSchema);
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -145,4 +141,3 @@ describe('统一网关集成（前缀剥离 + TCP/Unix Socket 双监听）', () 
     expect(res.status).not.toBe(200);
   });
 });
-

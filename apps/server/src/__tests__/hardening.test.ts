@@ -18,8 +18,9 @@ import AdmZip from 'adm-zip';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { eq } from 'drizzle-orm';
-import { sessionCookieFor, setupTestDb, teardownTestDb } from './testkit.js';
-import { closeDb, getDb, getSqlite } from '../db/index.js';
+import { sessionCookieFor, setupTestDb, testPackage, teardownTestDb } from './testkit.js';
+import { closeDb, getDb } from '../db/index.js';
+import { loginAttempts, sessions, settings, users } from '../db/schema.js';
 import { getSetting, seedSettings, setSetting } from '../lib/settings.js';
 import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
@@ -34,7 +35,7 @@ import { signIdentity, verifyIdentity } from '../gateway/identity.js';
 import { hasLeadingZeroBits } from '../lib/pow.js';
 import { appendLedger, cachedBalance, createAppToken, grantTokens, precheck, recomputeBalance, settleEstimate } from '../lib/llm.js';
 import { HttpError } from '../lib/httpError.js';
-import { apps, inviteCodes, users, verificationCodes } from '../db/schema.js';
+import { apps, inviteCodes, verificationCodes } from '../db/schema.js';
 import { writeLocalCredentials } from '../lib/bootstrap.js';
 
 let server: Server;
@@ -46,9 +47,7 @@ let otherCookie = '';
 let ownerId = 0;
 
 function zipPkg(files: Record<string, string>): Buffer {
-  const zip = new AdmZip();
-  for (const [name, content] of Object.entries(files)) zip.addFile(name, Buffer.from(content));
-  return zip.toBuffer();
+  return testPackage(files);
 }
 
 function cookieOf(res: Response): string {
@@ -69,8 +68,8 @@ async function login(username: string, password: string): Promise<string> {
 }
 
 beforeAll(async () => {
-  ({ dir } = setupTestDb());
-  seedSettings();
+  ({ dir } = await setupTestDb());
+  await seedSettings();
 
   const cfg = { ...loadConfig({}), webDist: null };
   server = http.createServer(createApp(cfg));
@@ -82,22 +81,22 @@ beforeAll(async () => {
   // admin / owner / other 三用户
   // mfaEnabled: true——本文件用例与强制绑 MFA 门禁（forceFlowGate）无关，置位避免误拦；
   // 相应 HTTP 登录只会得到半登录态，故 admin 会话直建 full 态（见 testkit.sessionCookieFor）
-  const a = getDb().insert(users).values({ kind: 'local', username: 'admin', role: 'admin', mfaEnabled: true, createdAt: Date.now() }).run();
-  const o = getDb().insert(users).values({ kind: 'local', username: 'pkgowner', role: 'user', createdAt: Date.now() }).run();
-  ownerId = Number(o.lastInsertRowid);
+  const [a] = await getDb().insert(users).values({ kind: 'local', username: 'admin', role: 'admin', mfaEnabled: true, createdAt: Date.now() }).returning({ id: users.id });
+  const [o] = await getDb().insert(users).values({ kind: 'local', username: 'pkgowner', role: 'user', createdAt: Date.now() }).returning({ id: users.id });
+  ownerId = Number(o!.id);
   await writeLocalCredentials(ownerId, 'owner-password');
-  const t = getDb().insert(users).values({ kind: 'local', username: 'other', role: 'user', createdAt: Date.now() }).run();
-  await writeLocalCredentials(Number(t.lastInsertRowid), 'other-password');
+  const [t] = await getDb().insert(users).values({ kind: 'local', username: 'other', role: 'user', createdAt: Date.now() }).returning({ id: users.id });
+  await writeLocalCredentials(t!.id, 'other-password');
 
-  adminCookie = sessionCookieFor(Number(a.lastInsertRowid));
+  adminCookie = await sessionCookieFor(Number(a!.id));
   ownerCookie = await login('pkgowner', 'owner-password');
   otherCookie = await login('other', 'other-password');
 }, 30_000);
 
 afterAll(async () => {
   await new Promise<void>((r) => server.close(() => r()));
-  closeDb();
-  teardownTestDb(dir);
+  await closeDb();
+  await teardownTestDb(dir);
 });
 
 describe('错误页 XSS（P0-1/P0-2）', () => {
@@ -111,10 +110,10 @@ describe('错误页 XSS（P0-1/P0-2）', () => {
 
   it('错误页插值内容 HTML 转义（应用名含 HTML 时）', async () => {
     // 管理端建的 login 应用（匿名 → 403 分支插值 app.name）
-    getDb().insert(apps).values({
+    await getDb().insert(apps).values({
       id: 'esc-app', name: '<b>bold</b>&"q', visibility: 'login', kind: 'html', upstream: '',
       ownerUserId: ownerId, createdAt: Date.now(), updatedAt: Date.now(),
-    }).run();
+    });
     const res = await fetch(`${base}/app/esc-app/`);
     expect(res.status).toBe(403);
     const body = await res.text();
@@ -173,10 +172,10 @@ describe('托管应用路径越界（P1-4）', () => {
     writeHtmlApp('trav-a', '<h1>trav-a</h1>');
     fs.mkdirSync(appSiteDir('trav-b'), { recursive: true });
     fs.writeFileSync(path.join(appSiteDir('trav-b'), 'secret.html'), 'TOPSECRET');
-    getDb().insert(apps).values({
+    await getDb().insert(apps).values({
       id: 'trav-a', name: 'TravA', visibility: 'public', kind: 'html', upstream: '',
       ownerUserId: ownerId, createdAt: Date.now(), updatedAt: Date.now(),
-    }).run();
+    });
     const res = await fetch(`${base}/app/trav-a/raw/..%2Ftrav-b%2Fsecret.html`);
     expect(res.status).toBe(400);
   });
@@ -193,10 +192,10 @@ describe('托管应用路径越界（P1-4）', () => {
 describe('用户包 iframe 沙箱（PRD G1 / 批二）', () => {
   it('用户上传 html：入口是外壳页（iframe sandbox + raw 指针）；raw 通道无 chrome、无同源 cookie 面', async () => {
     writeHtmlApp('sbx-app', '<h1 id="m">SBX-MARKER</h1><a href="/page2">inner</a>');
-    getDb().insert(apps).values({
+    await getDb().insert(apps).values({
       id: 'sbx-app', name: 'Sbx', visibility: 'public', kind: 'html', upstream: '',
       ownerUserId: ownerId, createdAt: Date.now(), updatedAt: Date.now(),
-    }).run();
+    });
 
     const entry = await fetch(`${base}/app/sbx-app/`);
     expect(entry.status).toBe(200);
@@ -226,7 +225,7 @@ describe('用户包 iframe 沙箱（PRD G1 / 批二）', () => {
 
 describe('egress 出站代理（P0-3）', () => {
   it('IP 字面量直连一律拒绝', async () => {
-    const token = createAppToken('eg-app1', 'egress-test', null);
+    const token = await createAppToken('eg-app1', 'egress-test', null);
     const res = await fetch(`${base}/api/aap/egress`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-aap-token': token },
@@ -245,12 +244,12 @@ describe('egress 出站代理（P0-3）', () => {
   });
 
   it('白名单外域名拒绝；白名单内但 DNS 失败 → 拦截且不泄露 fetch 错误', async () => {
-    const token = createAppToken('eg-app2', 'egress-test', null);
-    getDb().insert(apps).values({
+    const token = await createAppToken('eg-app2', 'egress-test', null);
+    await getDb().insert(apps).values({
       id: 'eg-app2', name: 'EG2', visibility: 'private', kind: 'package', upstream: '',
       manifestJson: JSON.stringify({ capabilities: [], network: ['definitely-not-a-real-host.test'] }),
       ownerUserId: ownerId, createdAt: Date.now(), updatedAt: Date.now(),
-    }).run();
+    });
 
     const outside = await fetch(`${base}/api/aap/egress`, {
       method: 'POST',
@@ -274,13 +273,13 @@ describe('egress 出站代理（P0-3）', () => {
 describe('公开可见性与发布', () => {
   it('删除托管应用：要求步升认证且仅归属者可删', async () => {
     writeHtmlApp('delete-owned-app', '<h1>DELETE-ME</h1>');
-    getDb().insert(apps).values({
+    await getDb().insert(apps).values({
       id: 'delete-owned-app', name: 'Delete me', visibility: 'private', kind: 'html', upstream: '',
       ownerUserId: ownerId, createdAt: Date.now(), updatedAt: Date.now(),
-    }).run();
+    });
 
     let staleToken = '';
-    createSession({ cookie: (_name: string, value: string) => { staleToken = value; } } as never, { id: ownerId }, { grantStepUp: false });
+    await createSession({ cookie: (_name: string, value: string) => { staleToken = value; } } as never, { id: ownerId }, { grantStepUp: false });
     const stale = await fetch(`${base}/api/apps/delete-owned-app`, {
       method: 'DELETE',
       headers: { origin: base, cookie: `aap_sid=${staleToken}` },
@@ -299,19 +298,19 @@ describe('公开可见性与发布', () => {
       headers: { origin: base, cookie: ownerCookie },
     });
     expect(owner.status).toBe(200);
-    expect(getDb().select().from(apps).where(eq(apps.id, 'delete-owned-app')).get()).toBeUndefined();
+    expect((await getDb().select().from(apps).where(eq(apps.id, 'delete-owned-app')))[0]).toBeUndefined();
     expect(fs.existsSync(appSiteDir('delete-owned-app'))).toBe(false);
   });
 
   it('公开应用不受历史审核状态影响', async () => {
     writeHtmlApp('rev-app', '<h1>REV</h1>');
-    getDb().insert(apps).values({
+    await getDb().insert(apps).values({
       id: 'rev-app', name: 'Rev', visibility: 'public', kind: 'html', upstream: '',
       reviewStatus: 'approved', ownerUserId: ownerId, createdAt: Date.now(), updatedAt: Date.now(),
-    }).run();
+    });
     expect((await fetch(`${base}/app/rev-app/`, { headers: { cookie: otherCookie } })).status).toBe(200);
 
-    getDb().update(apps).set({ reviewStatus: 'pending' }).where(eq(apps.id, 'rev-app')).run();
+    await getDb().update(apps).set({ reviewStatus: 'pending' }).where(eq(apps.id, 'rev-app'));
     expect((await fetch(`${base}/app/rev-app/`, { headers: { cookie: otherCookie } })).status).toBe(200);
     expect((await fetch(`${base}/app/rev-app/`)).status).toBe(200);
     expect((await fetch(`${base}/app/rev-app/`, { headers: { cookie: ownerCookie } })).status).toBe(200);
@@ -321,25 +320,33 @@ describe('公开可见性与发布', () => {
 
   it('已公开应用更新后保持在线，无需管理员审核', async () => {
     writeHtmlApp('rev-app', '<h1>REV</h1>');
-    const app = getDb().select().from(apps).where(eq(apps.id, 'rev-app')).get();
+    const app = (await getDb().select().from(apps).where(eq(apps.id, 'rev-app')))[0];
     if (app) {
-      getDb().update(apps).set({ ownerUserId: ownerId, visibility: 'public', enabled: true }).where(eq(apps.id, 'rev-app')).run();
+      await getDb().update(apps).set({ ownerUserId: ownerId, visibility: 'public', enabled: true }).where(eq(apps.id, 'rev-app'));
     } else {
-      getDb().insert(apps).values({
+      await getDb().insert(apps).values({
         id: 'rev-app', name: 'Rev', visibility: 'public', kind: 'html', upstream: '', ownerUserId: ownerId,
         reviewStatus: 'approved', createdAt: Date.now(), updatedAt: Date.now(),
-      }).run();
+      });
     }
     const res = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: ownerCookie },
       body: JSON.stringify({
         filename: 'pkg.asp-app',
-        dataBase64: zipPkg({ 'manifest.json': JSON.stringify({ name: 'rev-app', display_name: 'Rev', type: 'html', version: '2.0.0' }), 'index.html': '<h1>v2</h1>' }).toString('base64'),
+        dataBase64: zipPkg({
+          'manifest.json': JSON.stringify({
+            name: 'rev-app',
+            display_name: 'Rev',
+            type: 'html',
+            version: '2.0.0',
+          }),
+          'index.html': '<h1>v2</h1>',
+        }).toString('base64'),
       }),
     });
     expect(res.status).toBe(200);
-    const row = getDb().select().from(apps).where(eq(apps.id, 'rev-app')).get();
+    const row = (await getDb().select().from(apps).where(eq(apps.id, 'rev-app')))[0];
     expect(row?.enabled).toBe(true);
     expect(row?.visibility).toBe('public');
     const mineResponse = await fetch(`${base}/api/apps/mine`, { headers: { cookie: ownerCookie } });
@@ -376,51 +383,89 @@ describe('公开可见性与发布', () => {
 });
 
 describe('LLM 归因强制（P1-5）', () => {
-  it('无归因调用默认拒绝（ATTRIBUTION_REQUIRED）；allow 档放行', () => {
+  it('无归因调用默认拒绝（ATTRIBUTION_REQUIRED）；allow 档放行', async () => {
     try {
-      precheck(null, 100);
+      await precheck(null, 100);
       expect.unreachable('precheck 应拒绝');
     } catch (err) {
       expect(err).toBeInstanceOf(HttpError);
       expect((err as HttpError).status).toBe(403);
       expect((err as HttpError).code).toBe('ATTRIBUTION_REQUIRED');
     }
-    setSetting('LLM_UNATTRIBUTED_POLICY', 'allow');
-    expect(() => precheck(null, 100)).not.toThrow();
-    setSetting('LLM_UNATTRIBUTED_POLICY', 'reject');
+    await setSetting('LLM_UNATTRIBUTED_POLICY', 'allow');
+    await expect(precheck(null, 100)).resolves.toBeUndefined();
+    await setSetting('LLM_UNATTRIBUTED_POLICY', 'reject');
   });
 
-  it('invoked 身份环境变量：平台签名可验签且 uid 正确（M4 归因链）', () => {
-    const env = identityEnv('some-app', ownerId);
+  it('invoked 身份环境变量：平台签名可验签且 uid 正确（M4 归因链）', async () => {
+    const env = await identityEnv('some-app', ownerId);
     expect(env.AAP_IDENTITY_PAYLOAD).toBeTruthy();
     const secret = getSetting('AAP_SIGN_SECRET')!;
     const v = verifyIdentity(env.AAP_IDENTITY_PAYLOAD!, env.AAP_IDENTITY_SIG!, secret, 'some-app');
     expect(v.ok).toBe(true);
     if (v.ok) expect(v.payload.uid).toBe(String(ownerId));
-    expect(identityEnv('some-app', null).AAP_IDENTITY_PAYLOAD).toBeUndefined();
+    expect((await identityEnv('some-app', null)).AAP_IDENTITY_PAYLOAD).toBeUndefined();
   });
 });
 
 describe('passUser 沙箱 env 注入 AAP_SIGN_SECRET', () => {
-  function insertApp(id: string, passUser: boolean): void {
-    getDb().insert(apps).values({
+  async function insertApp(id: string, passUser: boolean): Promise<void> {
+    await getDb().insert(apps).values({
       id, name: id, visibility: 'private', kind: 'package', upstream: '',
       ownerUserId: ownerId, passUser, createdAt: Date.now(), updatedAt: Date.now(),
-    }).run();
+    });
   }
 
-  it('passUser 开启 → env 携带 AAP_SIGN_SECRET 且与平台设置一致；关闭 → 不注入', () => {
-    insertApp('env-pu-on', true);
-    insertApp('env-pu-off', false);
-    expect(baseEnv('env-pu-on').AAP_SIGN_SECRET).toBe(getSetting('AAP_SIGN_SECRET'));
-    expect(baseEnv('env-pu-off').AAP_SIGN_SECRET).toBeUndefined();
+  it('passUser 开启 → env 携带 AAP_SIGN_SECRET 且与平台设置一致；关闭 → 不注入', async () => {
+    await insertApp('env-pu-on', true);
+    await insertApp('env-pu-off', false);
+    expect((await baseEnv('env-pu-on')).AAP_SIGN_SECRET).toBe(getSetting('AAP_SIGN_SECRET'));
+    expect((await baseEnv('env-pu-off')).AAP_SIGN_SECRET).toBeUndefined();
   });
 
-  it('管理端应用列表返回 signSecret 供上游应用复制（仅 admin 路由可达）', async () => {
-    const res = await fetch(`${base}/api/admin/apps`, { headers: { cookie: adminCookie } });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { signSecret?: string };
-    expect(body.signSecret).toBe(getSetting('AAP_SIGN_SECRET'));
+  it('管理端应用列表返回完整字段与 signSecret（仅 admin 路由可达）', async () => {
+    await getDb().insert(apps).values({
+      id: 'admin-list-shape',
+      name: '管理列表回归应用',
+      description: '确保异步 ACL 查询后的列表字段完整',
+      visibility: 'login',
+      kind: 'upstream',
+      upstream: 'http://127.0.0.1:8080',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    try {
+      const res = await fetch(`${base}/api/admin/apps`, { headers: { cookie: adminCookie } });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        signSecret?: string;
+        apps: Array<{ id: string; name: string; description: string; upstream: string; allowGroupIds: number[]; allowUserIds: number[] }>;
+      };
+      expect(body.signSecret).toBe(getSetting('AAP_SIGN_SECRET'));
+      expect(body.apps.find((app) => app.id === 'admin-list-shape')).toMatchObject({
+        id: 'admin-list-shape',
+        name: '管理列表回归应用',
+        description: '确保异步 ACL 查询后的列表字段完整',
+        upstream: 'http://127.0.0.1:8080',
+        allowGroupIds: [],
+        allowUserIds: [],
+      });
+    } finally {
+      await getDb().delete(apps).where(eq(apps.id, 'admin-list-shape'));
+    }
+  });
+
+  it('运营面板订单与卡券码列表返回已解析的数组', async () => {
+    const [orders, codes] = await Promise.all([
+      fetch(`${base}/api/admin/billing/orders?status=pending`, { headers: { cookie: adminCookie } }),
+      fetch(`${base}/api/admin/redeem/codes?limit=1`, { headers: { cookie: adminCookie } }),
+    ]);
+
+    expect(orders.status).toBe(200);
+    expect(codes.status).toBe(200);
+    expect(Array.isArray(((await orders.json()) as { orders: unknown }).orders)).toBe(true);
+    expect(Array.isArray(((await codes.json()) as { codes: unknown }).codes)).toBe(true);
   });
 
   it('PUT 切换 passUser 即时生效且不报错（persistent 停起路径）', async () => {
@@ -430,9 +475,9 @@ describe('passUser 沙箱 env 注入 AAP_SIGN_SECRET', () => {
       body: JSON.stringify({ passUser: false }),
     });
     expect(res.status).toBe(200);
-    expect(baseEnv('env-pu-on').AAP_SIGN_SECRET).toBeUndefined();
-    getDb().delete(apps).where(eq(apps.id, 'env-pu-on')).run();
-    getDb().delete(apps).where(eq(apps.id, 'env-pu-off')).run();
+    expect((await baseEnv('env-pu-on')).AAP_SIGN_SECRET).toBeUndefined();
+    await getDb().delete(apps).where(eq(apps.id, 'env-pu-on'));
+    await getDb().delete(apps).where(eq(apps.id, 'env-pu-off'));
   });
 });
 
@@ -476,7 +521,7 @@ describe('python 包声明制依赖（skill v0.2.6）', () => {
     expect(args).toContain('.deps-requirements.txt');
 
     process.env.PYTHON_BIN = writeStub('echo pip boom >&2\nexit 1\n');
-    await expect(installPyDeps('deps-app', ['flask'])).rejects.toMatchObject({ status: 400, code: 'PIP_INSTALL_FAILED' });
+    await expect(await installPyDeps('deps-app', ['flask'])).rejects.toMatchObject({ status: 400, code: 'PIP_INSTALL_FAILED' });
 
     fs.mkdirSync(path.join(appSiteDir('deps-app'), '.deps'), { recursive: true });
     const callsBefore = fs.existsSync(stubOut) ? fs.readFileSync(stubOut, 'utf8') : '';
@@ -485,11 +530,11 @@ describe('python 包声明制依赖（skill v0.2.6）', () => {
     expect(fs.readFileSync(stubOut, 'utf8')).toBe(callsBefore);
   });
 
-  it('baseEnv：PYTHONPATH 前置 AAP_PREINSTALLED_PYTHONPATH 且含 .deps', () => {
+  it('baseEnv：PYTHONPATH 前置 AAP_PREINSTALLED_PYTHONPATH 且含 .deps', async () => {
     process.env.PYTHON_BIN = savedBin;
     process.env.AAP_PREINSTALLED_PYTHONPATH = '/opt/py-libs';
     try {
-      const p = baseEnv('env-pu-on').PYTHONPATH ?? '';
+      const p = (await baseEnv('env-pu-on')).PYTHONPATH ?? '';
       expect(p.startsWith('/opt/py-libs:')).toBe(true);
       expect(p.endsWith(path.join(appSiteDir('env-pu-on'), '.deps'))).toBe(true);
     } finally {
@@ -517,7 +562,7 @@ describe('python 包声明制依赖（skill v0.2.6）', () => {
     expect(res.status).toBe(200);
     const args = fs.readFileSync(stubOut, 'utf8');
     expect(args).toContain(path.join(appSiteDir('deps-app-up'), '.deps'));
-    getDb().delete(apps).where(eq(apps.id, 'deps-app-up')).run();
+    await getDb().delete(apps).where(eq(apps.id, 'deps-app-up'));
     fs.rmSync(appSiteDir('deps-app-up'), { recursive: true, force: true });
   });
 });
@@ -525,10 +570,10 @@ describe('python 包声明制依赖（skill v0.2.6）', () => {
 describe('admin 包上传顺序（P3-14）', () => {
   it('同名 409：既有站点目录不被触碰，临时目录清理', async () => {
     writeHtmlApp('exist-up', '<h1>ORIGINAL-MARKER</h1>');
-    getDb().insert(apps).values({
+    await getDb().insert(apps).values({
       id: 'exist-up', name: 'ExistUp', visibility: 'private', kind: 'html', upstream: '',
       ownerUserId: ownerId, createdAt: Date.now(), updatedAt: Date.now(),
-    }).run();
+    });
     const res = await fetch(`${base}/api/admin/apps/package`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
@@ -565,16 +610,20 @@ async function solvePow(): Promise<string> {
   return ((await vRes.json()) as { token: string }).token;
 }
 
-function rawSessionCookie(userId: number, stepUp: number | null): string {
+async function rawSessionCookie(userId: number, stepUp: number | null): Promise<string> {
   const token = `rawtok-${createHash('sha256').update(String(userId)).digest('hex').slice(0, 24)}`;
   const tokenHash = createHash('sha256').update(token).digest('hex');
   const now = Date.now();
-  getSqlite()
-    .prepare(
-      `INSERT OR REPLACE INTO sessions(token_hash, user_id, auth_state, step_up_until, created_at, last_seen_at, expires_at, ip, user_agent)
-       VALUES (?, ?, 'full', ?, ?, ?, ?, NULL, 'test')`,
-    )
-    .run(tokenHash, userId, stepUp, now, now, now + 3600_000);
+  await getDb().insert(sessions).values({
+    tokenHash,
+    userId,
+    authState: 'full',
+    stepUpUntil: stepUp,
+    createdAt: now,
+    lastSeenAt: now,
+    expiresAt: now + 3600_000,
+    userAgent: 'test',
+  }).onConflictDoUpdate({ target: sessions.tokenHash, set: { userId, stepUpUntil: stepUp, createdAt: now, lastSeenAt: now, expiresAt: now + 3600_000 } });
   return `aap_sid=${token}`;
 }
 
@@ -588,8 +637,8 @@ describe('MFA 绑定步升（P2-9）', () => {
   });
 
   it('无步升窗口的陈旧会话：enroll/confirm 403 STEP_UP_REQUIRED（防劫持会话绑新因子）', async () => {
-    const otherRow = getDb().select().from(users).where(eq(users.username, 'other')).get();
-    const cookie = rawSessionCookie(otherRow!.id, null);
+    const otherRow = (await getDb().select().from(users).where(eq(users.username, 'other')))[0];
+    const cookie = await rawSessionCookie(otherRow!.id, null);
     const res = await fetch(`${base}/api/auth/mfa/totp/enroll`, { method: 'POST', headers: { cookie } });
     expect(res.status).toBe(403);
     expect(((await res.json()) as { error?: { code?: string } }).error?.code).toBe('STEP_UP_REQUIRED');
@@ -627,20 +676,20 @@ describe('HTTPS 跳转 Host 白名单（P2-11）', () => {
   }
 
   it('非配置域名不反射：跳到 ACME_DOMAIN；命中域名正常跳转', async () => {
-    setSetting('HTTPS_REDIRECT', 'true');
-    setSetting('ACME_DOMAIN', 'regtest.example.com');
+    await setSetting('HTTPS_REDIRECT', 'true');
+    await setSetting('ACME_DOMAIN', 'regtest.example.com');
     try {
       expect(await get('evil.example.com')).toBe('https://regtest.example.com/');
       expect(await get('regtest.example.com')).toBe('https://regtest.example.com/');
     } finally {
-      setSetting('HTTPS_REDIRECT', 'false');
-      setSetting('ACME_DOMAIN', '');
+      await setSetting('HTTPS_REDIRECT', 'false');
+      await setSetting('ACME_DOMAIN', '');
     }
   });
 
   it('loopback Host 豁免：平台内部调用（沙箱 egress/LLM、健康检查）不被 302——否则 302 会让 urllib 把 POST 降级为 GET 打挂沙箱出站（ip-analyzer 实测）', async () => {
-    setSetting('HTTPS_REDIRECT', 'true');
-    setSetting('ACME_DOMAIN', 'regtest.example.com');
+    await setSetting('HTTPS_REDIRECT', 'true');
+    await setSetting('ACME_DOMAIN', 'regtest.example.com');
     try {
       for (const host of ['127.0.0.1', 'localhost']) {
         const r = await get(host);
@@ -648,8 +697,8 @@ describe('HTTPS 跳转 Host 白名单（P2-11）', () => {
         expect(String(r)).not.toContain('https://');
       }
     } finally {
-      setSetting('HTTPS_REDIRECT', 'false');
-      setSetting('ACME_DOMAIN', '');
+      await setSetting('HTTPS_REDIRECT', 'false');
+      await setSetting('ACME_DOMAIN', '');
     }
   });
 });
@@ -686,8 +735,8 @@ describe('身份头验签（P3-16：exp 强制 + jti 一次性）', () => {
 
 describe('邀请码并发双花（批二⑧）', () => {
   it('verify 消费带 usedBy IS NULL 条件：码已被占用 → 409 且不建号', async () => {
-    getDb().insert(inviteCodes).values({ code: 'HARD-CODE-01', createdBy: 1, createdAt: Date.now() }).run();
-    setSetting('REGISTRATION_MODE', 'invite');
+    await getDb().insert(inviteCodes).values({ code: 'HARD-CODE-01', createdBy: 1, createdAt: Date.now() });
+    await setSetting('REGISTRATION_MODE', 'invite');
     try {
       const powToken = await solvePow();
       const start = await fetch(`${base}/api/auth/register/start`, {
@@ -700,13 +749,13 @@ describe('邀请码并发双花（批二⑧）', () => {
 
       // 直插一个未消费验证码（已知 code=654321、salt=hardensalt）
       const now = Date.now();
-      getDb().insert(verificationCodes).values({
+      await getDb().insert(verificationCodes).values({
         channel: 'email', target: 'harden1@example.com', purpose: 'register',
         codeHash: `hardensalt:${createHash('sha256').update('hardensalt:654321').digest('hex')}`,
         ip: null, createdAt: now, expiresAt: now + 5 * 60_000,
-      }).run();
+      });
       // 邀请码被「另一个注册」抢先消费
-      getDb().update(inviteCodes).set({ usedBy: 9999, usedAt: now }).where(eq(inviteCodes.code, 'HARD-CODE-01')).run();
+      await getDb().update(inviteCodes).set({ usedBy: 9999, usedAt: now }).where(eq(inviteCodes.code, 'HARD-CODE-01'));
 
       const verify = await fetch(`${base}/api/auth/register/verify`, {
         method: 'POST',
@@ -716,17 +765,17 @@ describe('邀请码并发双花（批二⑧）', () => {
       expect(verify.status).toBe(409);
       expect(((await verify.json()) as { error?: { code?: string } }).error?.code).toBe('INVITE_CODE_USED');
       // 回滚：用户未创建
-      expect(getDb().select().from(users).where(eq(users.username, 'harden1')).get()).toBeUndefined();
+      expect((await getDb().select().from(users).where(eq(users.username, 'harden1')))[0]).toBeUndefined();
     } finally {
-      setSetting('REGISTRATION_MODE', 'closed');
+      await setSetting('REGISTRATION_MODE', 'closed');
     }
   });
 });
 
 describe('用户角色管理（指定/取消管理员）', () => {
   it('可设为/取消管理员；不能改自己的角色；最后一名管理员不可降级', async () => {
-    const a = getDb().insert(users).values({ kind: 'local', username: 'roleu1', role: 'user', createdAt: Date.now() }).run();
-    const uid = Number(a.lastInsertRowid);
+    const [a] = await getDb().insert(users).values({ kind: 'local', username: 'roleu1', role: 'user', createdAt: Date.now() }).returning({ id: users.id });
+    const uid = Number(a!.id);
     const put = (id: number, json: Record<string, unknown>): Promise<{ status: number; body: { error?: { code?: string } } }> =>
       fetch(`${base}/api/admin/users/${id}`, {
         method: 'PUT',
@@ -736,19 +785,19 @@ describe('用户角色管理（指定/取消管理员）', () => {
 
     // 设为管理员
     expect((await put(uid, { role: 'admin' })).status).toBe(200);
-    expect(getDb().select().from(users).where(eq(users.id, uid)).get()?.role).toBe('admin');
+    expect(await (await getDb().select().from(users).where(eq(users.id, uid)))[0]?.role).toBe('admin');
 
     // 改自己的角色 → 400（防自锁；adminCookie 对应 admin 账号）。
     // 注：LAST_ADMIN（至少保留一名管理员）为并发竞态纵深防御——API 路径上
     // 操作者必是管理员，单人管理员的降级必然是改自己而先被防自锁拦截。
-    const adminId = getDb().select().from(users).where(eq(users.username, 'admin')).get()!.id;
+    const adminId = await (await getDb().select().from(users).where(eq(users.username, 'admin')))[0]!.id;
     const self = await put(adminId, { role: 'user' });
     expect(self.status).toBe(400);
     expect(self.body.error?.code).toBe('CANNOT_MODIFY_SELF_ROLE');
 
     // 正常取消（此时有两名管理员）
     expect((await put(uid, { role: 'user' })).status).toBe(200);
-    expect(getDb().select().from(users).where(eq(users.id, uid)).get()?.role).toBe('user');
+    expect(await (await getDb().select().from(users).where(eq(users.id, uid)))[0]?.role).toBe('user');
 
     // 非法角色值 → 400
     expect((await put(uid, { role: 'root' })).status).toBe(400);
@@ -758,10 +807,10 @@ describe('用户角色管理（指定/取消管理员）', () => {
 describe('HTML 页面内容编辑（编辑弹窗数据面）', () => {
   it('GET 读取当前页面；PUT 更新落盘保存即生效；空内容 400；非 html 应用 400', async () => {
     writeHtmlApp('edit-html', '<h1>V1</h1>');
-    getDb().insert(apps).values({
+    await getDb().insert(apps).values({
       id: 'edit-html', name: 'EditHtml', visibility: 'public', kind: 'html', upstream: '',
       ownerUserId: ownerId, enabled: true, createdAt: Date.now(), updatedAt: Date.now(),
-    }).run();
+    });
 
     const read = await fetch(`${base}/api/admin/apps/edit-html/html`, { headers: { cookie: adminCookie } });
     expect(read.status).toBe(200);
@@ -795,7 +844,7 @@ describe('.asp-app 包预解析（上传前预览）', () => {
     }).then(async (r) => ({ status: r.status, body: (await r.json()) as Record<string, unknown> }));
   }
 
-  it('返回 manifest 解析结果与签名状态，不创建应用、不落正式目录', async () => {
+  it('返回 manifest 解析结果与可信签名状态，不创建应用、不落正式目录', async () => {
     const res = await preview(
       zipPkg({
         'manifest.json': JSON.stringify({ name: 'preview-pkg', display_name: '预览包', type: 'html', version: '1.0.0', capabilities: ['llm'], network: ['example.com'] }),
@@ -805,9 +854,9 @@ describe('.asp-app 包预解析（上传前预览）', () => {
     expect(res.status).toBe(200);
     expect(res.body.id).toBe('preview-pkg');
     expect(res.body.displayName).toBe('预览包');
-    expect(res.body.signature).toBe('unsigned');
+    expect(res.body.signature).toBe('verified');
     expect(res.body.exists).toBe(false);
-    expect(getDb().select().from(apps).where(eq(apps.id, 'preview-pkg')).get()).toBeUndefined();
+    expect((await getDb().select().from(apps).where(eq(apps.id, 'preview-pkg')))[0]).toBeUndefined();
     const dataRoot = path.dirname(appSiteDir('x'));
     expect(fs.readdirSync(dataRoot).filter((n) => n.startsWith('preview_tmp_'))).toHaveLength(0);
   });
@@ -848,19 +897,19 @@ describe('内网出站白名单（EGRESS_INTRANET_ALLOWLIST）', () => {
 
 describe('托管应用健康探测（批：html/package 无 upstream 不再恒「异常」）', () => {
   it('html 应用探测记 ok；persistent 未拉起记 unknown；测试按钮对托管应用返回 ok', async () => {
-    getDb().insert(apps).values({
+    await getDb().insert(apps).values({
       id: 'health-html', name: 'HtmlApp', visibility: 'public', kind: 'html', upstream: '',
       ownerUserId: ownerId, enabled: true, createdAt: Date.now(), updatedAt: Date.now(),
-    }).run();
-    getDb().insert(apps).values({
+    });
+    await getDb().insert(apps).values({
       id: 'health-sbx', name: 'SbxApp', visibility: 'private', kind: 'package', upstream: '',
       runtimeMode: 'persistent', ownerUserId: ownerId, enabled: true, createdAt: Date.now(), updatedAt: Date.now(),
-    }).run();
+    });
 
     const { probeAll } = await import('../gateway/health.js');
     await probeAll();
 
-    const rows = getDb().select().from(apps).all();
+    const rows = await getDb().select().from(apps);
     expect(rows.find((r) => r.id === 'health-html')?.healthState).toBe('ok');
     expect(rows.find((r) => r.id === 'health-sbx')?.healthState).toBe('unknown');
 
@@ -910,35 +959,35 @@ describe('登录 401 信息泄露收敛（P2-12）', () => {
 // ---------- 批三：正确性/并发/健壮性 ----------
 
 describe('对账在途保护（批三①）', () => {
-  it('预检占用期间重算/对账保留在途扣减；结算后与账本一致', () => {
+  it('预检占用期间重算/对账保留在途扣减；结算后与账本一致', async () => {
     const uid = 7001;
-    grantTokens(uid, 1000, 'seed', 1);
-    precheck(uid, 100);
-    expect(cachedBalance(uid)).toBe(900);
+    await grantTokens(uid, 1000, 'seed', 1);
+    await precheck(uid, 100);
+    expect(await cachedBalance(uid)).toBe(900);
     // 结算循环重算：在途 100 不被抹掉
-    expect(recomputeBalance(uid)).toBe(900);
+    expect(await recomputeBalance(uid)).toBe(900);
     // 请求进行中管理员发放 → 重算仍保留在途扣减
-    grantTokens(uid, 500, 'mid-flight', 1);
-    expect(cachedBalance(uid)).toBe(1400);
+    await grantTokens(uid, 500, 'mid-flight', 1);
+    expect(await cachedBalance(uid)).toBe(1400);
     // 请求结束：实际 40，释放预估 100（补回差值 60），账本补记实际用量
-    settleEstimate(uid, 100, 40);
-    expect(cachedBalance(uid)).toBe(1460);
-    appendLedger({ kind: 'usage', delta: -40, userId: uid, appId: 't', model: 'm' });
-    expect(recomputeBalance(uid)).toBe(1460);
-    expect(cachedBalance(uid)).toBe(1460);
+    await settleEstimate(uid, 100, 40);
+    expect(await cachedBalance(uid)).toBe(1460);
+    await appendLedger({ kind: 'usage', delta: -40, userId: uid, appId: 't', model: 'm' });
+    expect(await recomputeBalance(uid)).toBe(1460);
+    expect(await cachedBalance(uid)).toBe(1460);
   });
 });
 
 describe('settings secret 加密落盘（批三③）', () => {
-  it('secret 配置密文入库、读取透明解密；非 secret 项仍明文', () => {
-    setSetting('SMTP_PASS', 'supersecret-pass');
-    const raw = getSqlite().prepare("SELECT value FROM settings WHERE key = 'SMTP_PASS'").get() as { value: string };
+  it('secret 配置密文入库、读取透明解密；非 secret 项仍明文', async () => {
+    await setSetting('SMTP_PASS', 'supersecret-pass');
+    const raw = (await getDb().select({ value: settings.value }).from(settings).where(eq(settings.key, 'SMTP_PASS')))[0]!;
     expect(raw.value.startsWith('enc:')).toBe(true);
     expect(raw.value).not.toContain('supersecret-pass');
     expect(getSetting('SMTP_PASS')).toBe('supersecret-pass');
 
-    setSetting('SITE_NAME', '明文名称站点');
-    const raw2 = getSqlite().prepare("SELECT value FROM settings WHERE key = 'SITE_NAME'").get() as { value: string };
+    await setSetting('SITE_NAME', '明文名称站点');
+    const raw2 = (await getDb().select({ value: settings.value }).from(settings).where(eq(settings.key, 'SITE_NAME')))[0]!;
     expect(raw2.value).toBe('明文名称站点');
   });
 });
@@ -947,9 +996,9 @@ describe('账号维度登录节流（批三⑤）', () => {
   it('同账号失败超阈值后：即使换正确密码也要求 PoW', async () => {
     // 清空失败计数：让阈值在本用例内从零累计（否则全局 IP 计数会提前触发 PoW，
     // 吞掉失败记录，账号维度计数不满 5）
-    getSqlite().prepare('DELETE FROM login_attempts').run();
-    const a = getDb().insert(users).values({ kind: 'local', username: 'acct1', role: 'user', createdAt: Date.now() }).run();
-    await writeLocalCredentials(Number(a.lastInsertRowid), 'acct1-correct-pass');
+    await getDb().delete(loginAttempts);
+    const [a] = await getDb().insert(users).values({ kind: 'local', username: 'acct1', role: 'user', createdAt: Date.now() }).returning({ id: users.id });
+    await writeLocalCredentials(a!.id, 'acct1-correct-pass');
     // 跨 IP 语义在单进程测试里退化为同 IP 连续失败：账号维度独立计数被验证
     for (let i = 0; i < 5; i++) {
       const r = await fetch(`${base}/api/auth/login`, {
@@ -963,9 +1012,9 @@ describe('账号维度登录节流（批三⑤）', () => {
     // 全部落在同一 IP；此处账号维度阈值与 IP 维度同达，无法单证账号维度——
     // 直接断言 needsPow 语义）
     const { needsPow, accountFailuresInWindow } = await import('../lib/security.js');
-    expect(accountFailuresInWindow('local:acct1')).toBeGreaterThanOrEqual(5);
-    expect(needsPow('203.0.113.77', 'local:acct1')).toBe(true); // 全新 IP 也要求 PoW
-    expect(needsPow('203.0.113.77', 'local:nobody-else')).toBe(false);
+    expect(await accountFailuresInWindow('local:acct1')).toBeGreaterThanOrEqual(5);
+    expect(await needsPow('203.0.113.77', 'local:acct1')).toBe(true); // 全新 IP 也要求 PoW
+    expect(await needsPow('203.0.113.77', 'local:nobody-else')).toBe(false);
     // 正确密码从全新 IP 登录 → 403 POW_REQUIRED（无 token）
     const res = await fetch(`${base}/api/auth/login`, {
       method: 'POST',
@@ -1008,10 +1057,10 @@ describe('WS 握手 Origin 校验（生产评审 6.1① CSWSH）', () => {
 
   it('跨站 Origin 403；同源/无 Origin（非浏览器）放行到后续门禁', async () => {
     writeHtmlApp('wsapp-origin', '<h1>ws</h1>');
-    getDb().insert(apps).values({
+    await getDb().insert(apps).values({
       id: 'wsapp-origin', name: 'WsApp', visibility: 'public', kind: 'html', upstream: '',
       ownerUserId: ownerId, createdAt: Date.now(), updatedAt: Date.now(),
-    }).run();
+    });
     const evil = await upgrade('https://evil.example.com');
     expect(evil.upgraded).toBe(false);
     expect(evil.status).toBe(403);
@@ -1055,7 +1104,7 @@ describe('zip 解压上限（生产评审 6.1② zip 炸弹）', () => {
 
 describe('上传限频与磁盘水位（生产评审 6.2①）', () => {
   it('数据卷水位超限时上传 503 DISK_ALMOST_FULL；恢复后正常', async () => {
-    setSetting('UPLOAD_MIN_FREE_MB', String(10 ** 9)); // 必然高于真实剩余空间
+    await setSetting('UPLOAD_MIN_FREE_MB', String(10 ** 9)); // 必然高于真实剩余空间
     const res = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie: ownerCookie, origin: base },
@@ -1066,7 +1115,7 @@ describe('上传限频与磁盘水位（生产评审 6.2①）', () => {
     });
     expect(res.status).toBe(503);
     expect(((await res.json()) as { error?: { code?: string } }).error?.code).toBe('DISK_ALMOST_FULL');
-    setSetting('UPLOAD_MIN_FREE_MB', '512');
+    await setSetting('UPLOAD_MIN_FREE_MB', '512');
   });
 
   it('同用户每日第 21 次上传 429 UPLOAD_RATE_LIMITED（默认 20/天）', async () => {
@@ -1102,8 +1151,8 @@ describe('验证码条件消费（生产评审 6.3.1 纵深）', () => {
     const line = logs.find((l) => l.includes('once-a@test.local') && l.includes('code='));
     const code = /code=(\d{6})/.exec(line ?? '')?.[1];
     expect(code).toBeTruthy();
-    expect(verifyCode('email', 'once-a@test.local', 'register', code!).ok).toBe(true);
-    const second = verifyCode('email', 'once-a@test.local', 'register', code!);
+    expect((await verifyCode('email', 'once-a@test.local', 'register', code!)).ok).toBe(true);
+    const second = await verifyCode('email', 'once-a@test.local', 'register', code!);
     expect(second.ok).toBe(false);
   });
 });

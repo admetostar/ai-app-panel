@@ -30,7 +30,7 @@ async function probeOne(app: { id: string; upstream: string }): Promise<boolean>
 }
 
 export async function probeAll(): Promise<void> {
-  for (const app of listApps()) {
+  for (const app of await listApps()) {
     if (!app.enabled) continue;
     let state: 'ok' | 'down' | 'unknown';
     if (app.kind === 'upstream') {
@@ -42,11 +42,10 @@ export async function probeAll(): Promise<void> {
     } else {
       state = 'ok';
     }
-    getDb()
+    await getDb()
       .update(apps)
       .set({ healthState: state, lastProbeAt: Date.now() })
-      .where(eq(apps.id, app.id))
-      .run();
+      .where(eq(apps.id, app.id));
   }
 }
 
@@ -54,7 +53,7 @@ let timer: NodeJS.Timeout | null = null;
 
 export function startHealthLoop(): void {
   if (timer) return;
-  timer = setInterval(() => {
+  timer = setInterval(async () => {
     void probeAll().catch((err) => console.error('[health] probe failed:', err));
   }, PROBE_INTERVAL_MS);
   timer.unref();

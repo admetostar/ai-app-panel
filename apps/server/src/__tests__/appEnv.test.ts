@@ -7,9 +7,8 @@
 import { execSync } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import AdmZip from 'adm-zip';
 import { createServer, type Server as HttpServer } from 'node:http';
-import { sessionCookieFor, setupTestDb, teardownTestDb } from './testkit.js';
+import { sessionCookieFor, setupTestDb, testPackage, teardownTestDb } from './testkit.js';
 import { closeDb, getDb } from '../db/index.js';
 import { seedSettings, setSetting } from '../lib/settings.js';
 import { createApp } from '../app.js';
@@ -27,9 +26,7 @@ let userCookie = '';
 let pythonOk = true;
 
 function zipPkg(files: Record<string, string>): string {
-  const zip = new AdmZip();
-  for (const [name, content] of Object.entries(files)) zip.addFile(name, Buffer.from(content));
-  return zip.toBuffer().toString('base64');
+  return testPackage(files).toString('base64');
 }
 
 function cookieOf(res: Response): string {
@@ -65,8 +62,8 @@ const ENV_MANIFEST = {
 };
 
 beforeAll(async () => {
-  ({ dir } = setupTestDb());
-  seedSettings();
+  ({ dir } = await setupTestDb());
+  await seedSettings();
   try {
     execSync('python3 -c "print(1)"', { stdio: 'pipe' });
   } catch {
@@ -81,18 +78,16 @@ beforeAll(async () => {
   // 管理员（将作为包归属者）+ 普通用户（测越权）
   const { users } = await import('../db/schema.js');
   const { writeLocalCredentials } = await import('../lib/bootstrap.js');
-  getDb()
+  await getDb()
     .insert(users)
-    .values({ kind: 'local', username: 'admin', name: '管理员', role: 'admin', mfaEnabled: true, createdAt: Date.now() })
-    .run();
-  const adminId = getDb().select().from(users).get()!.id;
+    .values({ kind: 'local', username: 'admin', name: '管理员', role: 'admin', mfaEnabled: true, createdAt: Date.now() });
+  const adminId = await (await getDb().select().from(users))[0]!.id;
   // 直建 full 会话（mfaEnabled=true 时 HTTP 登录只给半登录态，过不了 requireAuth）
-  adminCookie = sessionCookieFor(adminId);
-  getDb()
+  adminCookie = await sessionCookieFor(adminId);
+  await getDb()
     .insert(users)
-    .values({ kind: 'local', username: 'bob', name: '路人', role: 'user', createdAt: Date.now() })
-    .run();
-  const bobId = getDb().select().from(users).where(eq(users.username, 'bob')).get()!.id;
+    .values({ kind: 'local', username: 'bob', name: '路人', role: 'user', createdAt: Date.now() });
+  const bobId = await (await getDb().select().from(users).where(eq(users.username, 'bob')))[0]!.id;
   await writeLocalCredentials(bobId, 'bob-password');
 
   const loginBob = await fetch(`${base}/api/auth/login`, {
@@ -103,11 +98,11 @@ beforeAll(async () => {
   userCookie = cookieOf(loginBob);
 });
 
-afterAll(() => {
+afterAll(async () => {
   stopAllPersistent();
   gw.close();
-  closeDb();
-  teardownTestDb(dir);
+  await closeDb();
+  await teardownTestDb(dir);
 });
 
 // ---------- manifest.env 声明校验（纯单元，不需要 python） ----------
@@ -345,7 +340,7 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
     await new Promise<void>((r) => upstream.listen(0, '127.0.0.1', r));
     const upstreamPort = (upstream.address() as AddressInfo).port;
 
-    setSetting('EGRESS_INTRANET_ALLOWLIST', '127.0.0.1');
+    await setSetting('EGRESS_INTRANET_ALLOWLIST', '127.0.0.1');
     try {
       const submit = await fetch(`${base}/api/apps/submit`, {
         method: 'POST',
@@ -382,7 +377,7 @@ def handle(input, aap):
       expect(rb.result.seen['host']).toBe(`127.0.0.1:${upstreamPort}`); // Host 不可被包改写
       // 注：connection/keep-alive 由传输层自行管理，包侧即使声明也不改变语义
     } finally {
-      setSetting('EGRESS_INTRANET_ALLOWLIST', '');
+      await setSetting('EGRESS_INTRANET_ALLOWLIST', '');
       upstream.close();
     }
   });

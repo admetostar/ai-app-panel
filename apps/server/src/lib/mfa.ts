@@ -15,27 +15,25 @@ import { audit } from './audit.js';
 const TOTP_STEP_SEC = 30;
 
 /** 生成 base32 TOTP 密钥 + otpauth URI（未确认态入库；前端把 URI 渲染成二维码） */
-export function enrollTotp(userId: number, siteName: string, username: string): {
+export async function enrollTotp(userId: number, siteName: string, username: string): Promise<{
   secret: string;
   otpauthUri: string;
-} {
-  const existing = getDb().select().from(totpSecrets).where(eq(totpSecrets.userId, userId)).get();
+}> {
+  const existing = (await getDb().select().from(totpSecrets).where(eq(totpSecrets.userId, userId)))[0];
   if (existing?.confirmed) {
     throw new HttpError(409, 'TOTP_ALREADY_ENROLLED', 'TOTP 已绑定；先解绑再重新绑定');
   }
   const secret = generateSecret();
   const otpauthUri = generateURI({ issuer: siteName, label: username, secret });
   if (existing) {
-    getDb()
+    await getDb()
       .update(totpSecrets)
       .set({ secretEnc: encryptSecret(secret), lastUsedCounter: -1, confirmed: false })
-      .where(eq(totpSecrets.userId, userId))
-      .run();
+      .where(eq(totpSecrets.userId, userId));
   } else {
-    getDb()
+    await getDb()
       .insert(totpSecrets)
-      .values({ userId, secretEnc: encryptSecret(secret), confirmed: false, createdAt: Date.now() })
-      .run();
+      .values({ userId, secretEnc: encryptSecret(secret), confirmed: false, createdAt: Date.now() });
   }
   return { secret, otpauthUri };
 }
@@ -64,7 +62,7 @@ export async function verifyTotpToken(secret: string, token: string, lastUsedCou
 
 /** 确认绑定：验证一次即时码 → confirmed + mfaEnabled + 发 10 枚恢复码 */
 export async function confirmTotp(userId: number, token: string): Promise<string[]> {
-  const row = getDb().select().from(totpSecrets).where(eq(totpSecrets.userId, userId)).get();
+  const row = (await getDb().select().from(totpSecrets).where(eq(totpSecrets.userId, userId)))[0];
   if (!row) throw new HttpError(404, 'TOTP_NOT_ENROLLED', '请先生成绑定密钥');
   if (row.confirmed) throw new HttpError(409, 'TOTP_ALREADY_ENROLLED', 'TOTP 已绑定');
   const secret = decryptSecret(row.secretEnc);
@@ -73,17 +71,17 @@ export async function confirmTotp(userId: number, token: string): Promise<string
 
   // 条件更新写回计数器（并发护栏）：await 校验期间可能有并发请求已消费同一码，
   // 仅当库内计数器仍落后于本次窗口才落库；changes=0 = 该码已被并发消费（重放）
-  const consumed = getDb()
+  const consumed = await getDb()
     .update(totpSecrets)
     .set({ confirmed: true, lastUsedCounter: v.counter })
     .where(and(eq(totpSecrets.userId, userId), lt(totpSecrets.lastUsedCounter, v.counter)))
-    .run();
-  if (consumed.changes === 0) {
+    .returning({ userId: totpSecrets.userId });
+  if (consumed.length === 0) {
     throw new HttpError(400, 'TOTP_REPLAYED', '验证码已被使用');
   }
-  getDb().update(users).set({ mfaEnabled: true }).where(eq(users.id, userId)).run();
-  const codes = generateRecoveryCodes(userId);
-  audit(`user:${userId}`, null, 'mfa.totp.confirmed', {});
+  await getDb().update(users).set({ mfaEnabled: true }).where(eq(users.id, userId));
+  const codes = await generateRecoveryCodes(userId);
+  await audit(`user:${userId}`, null, 'mfa.totp.confirmed', {});
   return codes;
 }
 
@@ -91,7 +89,7 @@ export async function confirmTotp(userId: number, token: string): Promise<string
 export async function verifyTotpForLogin(userId: number, token: string, ip: string | null): Promise<
   { viaRecovery: false } | { viaRecovery: true }
 > {
-  const row = getDb().select().from(totpSecrets).where(eq(totpSecrets.userId, userId)).get();
+  const row = (await getDb().select().from(totpSecrets).where(eq(totpSecrets.userId, userId)))[0];
   if (!row?.confirmed) throw new HttpError(400, 'TOTP_NOT_ENROLLED', 'TOTP 未绑定');
 
   const secret = decryptSecret(row.secretEnc);
@@ -100,21 +98,21 @@ export async function verifyTotpForLogin(userId: number, token: string, ip: stri
     // 条件更新写回（并发护栏）：读 lastUsedCounter 与写回之间隔着 await，
     // 并发请求可用同一枚动态码双双通过校验；带 lt 条件的 UPDATE 保证只有
     // 先到者落库（changes=1），后者 changes=0 → 按重放拒绝（码有效但已被消费）
-    const consumed = getDb()
+    const consumed = await getDb()
       .update(totpSecrets)
       .set({ lastUsedCounter: v.counter })
       .where(and(eq(totpSecrets.userId, userId), lt(totpSecrets.lastUsedCounter, v.counter)))
-      .run();
-    if (consumed.changes === 0) {
+      .returning({ userId: totpSecrets.userId });
+    if (consumed.length === 0) {
       throw new HttpError(400, 'TOTP_REPLAYED', '验证码已被使用，请等待下一个验证码');
     }
-    audit(`user:${userId}`, ip, 'mfa.totp.verify', { context: 'login' });
+    await audit(`user:${userId}`, ip, 'mfa.totp.verify', { context: 'login' });
     return { viaRecovery: false };
   }
   // 恢复码兜底（一枚一用）
-  const used = useRecoveryCode(userId, token.trim());
+  const used = await useRecoveryCode(userId, token.trim());
   if (used) {
-    audit(`user:${userId}`, ip, 'mfa.recovery.used', { context: 'login' });
+    await audit(`user:${userId}`, ip, 'mfa.recovery.used', { context: 'login' });
     return { viaRecovery: true };
   }
   // 两路皆失败：保留原始语义（TOTP_REPLAYED = 码有效但已被消费）
@@ -130,9 +128,9 @@ function recoveryHash(code: string): string {
 }
 
 /** 生成 10 枚恢复码（明文只出现一次；重生成 = 作废旧码） */
-export function generateRecoveryCodes(userId: number): string[] {
+export async function generateRecoveryCodes(userId: number): Promise<string[]> {
   const db = getDb();
-  db.delete(recoveryCodes).where(eq(recoveryCodes.userId, userId)).run();
+  await db.delete(recoveryCodes).where(eq(recoveryCodes.userId, userId));
   const codes: string[] = [];
   for (let i = 0; i < 10; i++) {
     // 格式 xxxx-xxxx（去易混淆字符）
@@ -142,62 +140,55 @@ export function generateRecoveryCodes(userId: number): string[] {
     for (let j = 0; j < 8; j++) body += alphabet[bytes[j]! % alphabet.length];
     const code = `${body.slice(0, 4)}-${body.slice(4)}`;
     codes.push(code);
-    db.insert(recoveryCodes)
-      .values({ userId, codeHash: recoveryHash(code), createdAt: Date.now() })
-      .run();
+    await db.insert(recoveryCodes)
+      .values({ userId, codeHash: recoveryHash(code), createdAt: Date.now() });
   }
   return codes;
 }
 
 /** 消费一枚恢复码（成功 = 用掉；返回是否命中） */
-export function useRecoveryCode(userId: number, code: string): boolean {
+export async function useRecoveryCode(userId: number, code: string): Promise<boolean> {
   const db = getDb();
   const hash = recoveryHash(code);
-  const row = db
+  const row = (await db
     .select()
     .from(recoveryCodes)
-    .where(and(eq(recoveryCodes.userId, userId), eq(recoveryCodes.codeHash, hash), isNull(recoveryCodes.usedAt)))
-    .get();
+    .where(and(eq(recoveryCodes.userId, userId), eq(recoveryCodes.codeHash, hash), isNull(recoveryCodes.usedAt))))[0];
   if (!row) return false;
-  db.update(recoveryCodes).set({ usedAt: Date.now() }).where(eq(recoveryCodes.id, row.id)).run();
+  await db.update(recoveryCodes).set({ usedAt: Date.now() }).where(eq(recoveryCodes.id, row.id));
   return true;
 }
 
 /** 剩余可用恢复码数（管理页展示） */
-export function remainingRecoveryCodes(userId: number): number {
-  return (
-    getDb()
-      .select({ n: sql<number>`count(*)` })
-      .from(recoveryCodes)
-      .where(and(eq(recoveryCodes.userId, userId), isNull(recoveryCodes.usedAt)))
-      .get()?.n ?? 0
-  );
+export async function remainingRecoveryCodes(userId: number): Promise<number> {
+  return Number((await getDb()
+    .select({ n: sql<number>`count(*)` })
+    .from(recoveryCodes)
+    .where(and(eq(recoveryCodes.userId, userId), isNull(recoveryCodes.usedAt))))[0]?.n ?? 0);
 }
 
-function passkeyCountFor(userId: number): number {
-  return (
-    getDb().select({ n: sql<number>`count(*)` }).from(passkeys).where(eq(passkeys.userId, userId)).get()?.n ?? 0
-  );
+async function passkeyCountFor(userId: number): Promise<number> {
+  return Number((await getDb().select({ n: sql<number>`count(*)` }).from(passkeys).where(eq(passkeys.userId, userId)))[0]?.n ?? 0);
 }
 
 /** 解绑 TOTP：admin 无其他因子（passkey）时拒绝（策略：admin 强制 MFA 不可关） */
-export function disableTotp(userId: number, isAdmin: boolean): void {
-  const row = getDb().select().from(totpSecrets).where(eq(totpSecrets.userId, userId)).get();
+export async function disableTotp(userId: number, isAdmin: boolean): Promise<void> {
+  const row = (await getDb().select().from(totpSecrets).where(eq(totpSecrets.userId, userId)))[0];
   if (!row) throw new HttpError(404, 'TOTP_NOT_ENROLLED', 'TOTP 未绑定');
-  const pkCount = passkeyCountFor(userId);
+  const pkCount = await passkeyCountFor(userId);
   if (isAdmin && pkCount === 0) {
     throw new HttpError(403, 'MFA_REQUIRED_FOR_ADMIN', '管理员必须保留至少一种多因子；请先绑定 Passkey 再解绑 TOTP');
   }
-  getDb().delete(totpSecrets).where(eq(totpSecrets.userId, userId)).run();
-  getDb().delete(recoveryCodes).where(eq(recoveryCodes.userId, userId)).run();
+  await getDb().delete(totpSecrets).where(eq(totpSecrets.userId, userId));
+  await getDb().delete(recoveryCodes).where(eq(recoveryCodes.userId, userId));
   if (pkCount === 0) {
-    getDb().update(users).set({ mfaEnabled: false }).where(eq(users.id, userId)).run();
+    await getDb().update(users).set({ mfaEnabled: false }).where(eq(users.id, userId));
   }
-  audit(`user:${userId}`, null, 'mfa.totp.disabled', {});
+  await audit(`user:${userId}`, null, 'mfa.totp.disabled', {});
 }
 
 /** 是否已绑定并确认 TOTP */
-export function totpConfirmed(userId: number): boolean {
-  const row = getDb().select({ c: totpSecrets.confirmed }).from(totpSecrets).where(eq(totpSecrets.userId, userId)).get();
+export async function totpConfirmed(userId: number): Promise<boolean> {
+  const row = (await getDb().select({ c: totpSecrets.confirmed }).from(totpSecrets).where(eq(totpSecrets.userId, userId)))[0];
   return row?.c === true;
 }

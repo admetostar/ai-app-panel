@@ -10,8 +10,8 @@ import { appEnvVars, apps } from '../db/schema.js';
 import { decryptSecret } from './cryptoSecrets.js';
 import { parseEnvSpec } from '../gateway/staticApp.js';
 
-function envSpecOf(appId: string): Record<string, import('../gateway/staticApp.js').ManifestEnvVar> {
-  const row = getDb().select({ manifestJson: apps.manifestJson }).from(apps).where(eq(apps.id, appId)).get();
+async function envSpecOf(appId: string): Promise<Record<string, import('../gateway/staticApp.js').ManifestEnvVar>> {
+  const row = (await getDb().select({ manifestJson: apps.manifestJson }).from(apps).where(eq(apps.id, appId)))[0];
   if (!row?.manifestJson) return {};
   try {
     const manifest = JSON.parse(row.manifestJson) as Record<string, unknown>;
@@ -21,23 +21,22 @@ function envSpecOf(appId: string): Record<string, import('../gateway/staticApp.j
   }
 }
 
-function storedEnvRows(appId: string): Array<{ name: string; valueEnc: string; isSecret: boolean }> {
-  return getDb()
+async function storedEnvRows(appId: string): Promise<Array<{ name: string; valueEnc: string; isSecret: boolean }>> {
+  return await getDb()
     .select({ name: appEnvVars.name, valueEnc: appEnvVars.valueEnc, isSecret: appEnvVars.isSecret })
     .from(appEnvVars)
-    .where(eq(appEnvVars.appId, appId))
-    .all();
+    .where(eq(appEnvVars.appId, appId));
 }
 
 /** 沙箱注入值：已配置的存储值（解密）优先，未配置的非机密回退声明默认值。
  *  解密失败的条目跳过（密文损坏不该拖垮整个应用启动）。 */
-export function envValues(appId: string): Record<string, string> {
-  const spec = envSpecOf(appId);
+export async function envValues(appId: string): Promise<Record<string, string>> {
+  const spec = await envSpecOf(appId);
   const out: Record<string, string> = {};
   for (const [name, s] of Object.entries(spec)) {
     if (s.default != null) out[name] = s.default;
   }
-  for (const r of storedEnvRows(appId)) {
+  for (const r of await storedEnvRows(appId)) {
     try {
       out[r.name] = decryptSecret(r.valueEnc);
     } catch {
@@ -48,10 +47,10 @@ export function envValues(appId: string): Record<string, string> {
 }
 
 /** 必填变量中尚未配置（且无 default）的名单 */
-export function missingRequiredEnv(appId: string): string[] {
+export async function missingRequiredEnv(appId: string): Promise<string[]> {
   const have = new Set<string>();
-  for (const r of storedEnvRows(appId)) have.add(r.name);
-  return Object.entries(envSpecOf(appId))
+  for (const r of await storedEnvRows(appId)) have.add(r.name);
+  return Object.entries(await envSpecOf(appId))
     .filter(([name, s]) => s.required && s.default == null && !have.has(name))
     .map(([name]) => name);
 }

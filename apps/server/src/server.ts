@@ -15,22 +15,18 @@ import { handleUpgrade } from './gateway/wsproxy.js';
 import * as tls from './gateway/tls.js';
 import { stopAllPersistent } from './lib/sandbox.js';
 import { stripGatewayPrefix } from './lib/gatewayPrefix.js';
-import { ensureInitialAdmin, seedOfficialSigningKey } from './lib/bootstrap.js';
+import { ensureInitialAdmin } from './lib/bootstrap.js';
 import { seedSettings } from './lib/settings.js';
 import { createApp } from './app.js';
 
 async function main(): Promise<void> {
-  if (config.databaseTarget.kind === 'mysql') {
-    console.error('[aap] MySQL 数据库方言将在 FPK 集成版本中启用，当前版本请使用 SQLite（默认）。');
-    process.exit(1);
-  }
-  initDb({ file: config.databaseTarget.file, migrationsDir: config.migrationsDir });
-  seedSettings();
-  seedOfficialSigningKey(); // G4：AAP_OFFICIAL_SIGN_PUBKEY 提供时内置信任官方签名公钥
+  if (!config.databaseUrl) throw new Error('DATABASE_URL is required');
+  await initDb({ url: config.databaseUrl, migrationsDir: config.migrationsDir });
+  await seedSettings();
   await ensureInitialAdmin(); // F3：users 为空时创建初始管理员（Docker 首启打印密码 + 一次性凭据文件）
   startPurgeLoop();
   startHealthLoop();
-  startBillingLoop();
+  await startBillingLoop();
 
   const app = createApp();
   // FPK 统一网关（GATEWAY_PREFIX + SOCKET_PATH，见 deploy/fpk）：在 Express 之前
@@ -80,16 +76,20 @@ async function main(): Promise<void> {
     // persistent 沙箱是本进程子进程：容器形态随容器消亡，原生/FPK 形态必须显式回收
     stopAllPersistent();
     tls.stop();
-    const finish = () => {
+    const finish = async () => {
       if (config.socketPath) fs.rmSync(config.socketPath, { force: true });
-      closeDb();
-      process.exit(0);
+      void closeDb()
+        .then(() => process.exit(0))
+        .catch((error: unknown) => {
+          console.error('[aap] database shutdown failed:', error);
+          process.exit(1);
+        });
     };
     const listeners = new Set<http.Server>([server, ...(socketServer ? [socketServer] : [])]);
     for (const s of listeners) {
-      s.close(() => {
+      s.close(async () => {
         listeners.delete(s);
-        if (listeners.size === 0) finish();
+        if (listeners.size === 0) await finish();
       });
     }
     // 兜底：10s 后强退（不再等长连接）
@@ -99,5 +99,7 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
-void main();
-
+void main().catch((error: unknown) => {
+  console.error('[aap] startup failed:', error);
+  process.exitCode = 1;
+});

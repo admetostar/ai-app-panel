@@ -1,37 +1,56 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import AdmZip from 'adm-zip';
+import { Pool } from 'pg';
 import { closeDb, initDb } from '../db/index.js';
+import { getDb } from '../db/index.js';
+import { userGroups, users } from '../db/schema.js';
 import { seedSettings } from '../lib/settings.js';
 import { createSession } from '../lib/session.js';
 
-const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../drizzle');
+const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../drizzle-pg');
+const TEST_DATABASE_URL =
+  process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgres://aap:aap@localhost:5432/ai_app_portal';
 
-/** 每个测试文件一次：临时库 + 迁移 + 默认种子（vitest forks 隔离模块图） */
-export function setupTestDb(opts?: { seed?: boolean }): { dir: string; file: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aap-t-'));
-  const file = path.join(dir, 't.db');
-  initDb({ file, migrationsDir: MIGRATIONS_DIR });
-  if (opts?.seed !== false) seedSettings();
-  return { dir, file };
+export function testPackage(files: Record<string, string>): Buffer {
+  const zip = new AdmZip();
+  for (const [name, content] of Object.entries(files)) zip.addFile(name, Buffer.from(content));
+  return zip.toBuffer();
 }
 
-export function teardownTestDb(dir: string): void {
-  closeDb();
-  fs.rmSync(dir, { recursive: true, force: true });
+function scopedUrl(schema: string): string {
+  const url = new URL(TEST_DATABASE_URL);
+  url.searchParams.set('options', `-c search_path=${schema}`);
+  return url.toString();
 }
 
-/**
- * 直建 full 态会话 cookie（fixture 用）。管理员 fixture 置 mfaEnabled=true 后，
- * HTTP 登录只给 password_ok 半登录态（过不了 requireAuth）；本助手等价于
- * 「登录 + 完成 MFA 验证」后的完整会话，并像登录一样授予步升窗口。
- * 供「业务功能测试需要管理员会话」的测试文件使用（认证状态机本身在
- * auth.test.ts / mfa.test.ts 覆盖）。
- */
-export function sessionCookieFor(userId: number): string {
+export async function setupTestDb(opts?: { seed?: boolean }): Promise<{ dir: string }> {
+  const dir = `aap_test_${randomBytes(8).toString('hex')}`;
+  const admin = new Pool({ connectionString: TEST_DATABASE_URL });
+  try {
+    await admin.query(`CREATE SCHEMA "${dir}"`);
+  } finally {
+    await admin.end();
+  }
+  await initDb({ url: scopedUrl(dir), migrationsDir: MIGRATIONS_DIR, migrationsSchema: dir });
+  if (opts?.seed !== false) await seedSettings();
+  return { dir };
+}
+
+export async function teardownTestDb(dir: string): Promise<void> {
+  await closeDb();
+  const admin = new Pool({ connectionString: TEST_DATABASE_URL });
+  try {
+    await admin.query(`DROP SCHEMA "${dir}" CASCADE`);
+  } finally {
+    await admin.end();
+  }
+}
+
+export async function sessionCookieFor(userId: number): Promise<string> {
   let token = '';
-  createSession(
+  await createSession(
     {
       cookie: (_name: string, value: string) => {
         token = value;
@@ -41,4 +60,16 @@ export function sessionCookieFor(userId: number): string {
     { grantStepUp: true },
   );
   return `aap_sid=${token}`;
+}
+
+export async function insertTestUser(values: typeof users.$inferInsert): Promise<number> {
+  const [user] = await getDb().insert(users).values(values).returning({ id: users.id });
+  if (!user) throw new Error('Failed to insert test user');
+  return user.id;
+}
+
+export async function insertTestGroup(values: typeof userGroups.$inferInsert): Promise<number> {
+  const [group] = await getDb().insert(userGroups).values(values).returning({ id: userGroups.id });
+  if (!group) throw new Error('Failed to insert test group');
+  return group.id;
 }

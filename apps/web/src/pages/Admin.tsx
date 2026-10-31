@@ -40,6 +40,7 @@ import { api } from '../api/client';
 import { useSession } from '../state/session';
 import { AppEnvModal } from '../components/AppEnvModal';
 import { TierBadge } from '../components/TierBadge';
+import { formatMembershipOrderPrice, formatMembershipPlanPrice } from '../lib/membershipPricing';
 import type { PublicUser } from '@aap/shared';
 
 // ---------- 类型 ----------
@@ -260,7 +261,11 @@ function renderControl(s: SettingRow, form?: { setFieldsValue: (v: Record<string
       </Space.Compact>
     );
   }
-  if (s.type === 'int') return <InputNumber style={{ width: 160 }} />;
+  if (s.type === 'int') {
+    return s.key === 'REGISTRATION_POINTS_GIFT'
+      ? <InputNumber min={0} max={2_147_483_647} precision={0} style={{ width: 160 }} />
+      : <InputNumber style={{ width: 160 }} />;
+  }
   return <Input placeholder={s.defaultsWork ? '（默认值即可）' : ''} />;
 }
 
@@ -288,10 +293,9 @@ export function AdminPage() {
   };
   const wizardDone = Boolean(
     c &&
-      c.adminPasswordChanged &&
-      c.adminMfaEnabled &&
-      c.freePlanConfigured &&
-      (c.httpsEnabled || skipCert) &&
+    c.adminPasswordChanged &&
+    c.adminMfaEnabled &&
+    (c.httpsEnabled || skipCert) &&
       c.appCount > 0 &&
       (c.registrationMode !== 'closed' || skipReg),
   );
@@ -353,8 +357,8 @@ export function AdminPage() {
                   ),
                 },
                 {
-                  title: '配置零价权益包',
-                  status: c.freePlanConfigured ? 'finish' : 'process',
+                  title: '可选：配置零价权益包',
+                  status: c.freePlanConfigured ? 'finish' : 'wait',
                   description: <a onClick={go('ops')}>{c.freePlanConfigured ? '查看权益包' : '去创建'}</a>,
                 },
                 {
@@ -489,7 +493,6 @@ interface PkgPreview {
   capabilities: string[];
   network: string[];
   requirements?: string[];
-  signature: string;
   exists: boolean;
   existingKind: string | null;
   env?: Array<{ name: string; required: boolean; secret: boolean; description: string }>;
@@ -783,10 +786,10 @@ function AppsTab(): ReactNode {
               ) : null}
               {pkgPreview ? (
                 <Alert
-                  type={pkgPreview.signature === 'invalid' ? 'error' : 'info'}
+                  type="info"
                   showIcon
                   style={{ marginTop: 8 }}
-                  message={`解析成功：${pkgPreview.displayName}（ID: ${pkgPreview.id}）v${pkgPreview.version} · ${pkgPreview.type === 'html' ? 'HTML 包' : `Python ${pkgPreview.runtime === 'persistent' ? '持久服务' : '按调用'}`}`}
+                  message={`包解析完成，可安装：${pkgPreview.displayName}（ID: ${pkgPreview.id}）v${pkgPreview.version} · ${pkgPreview.type === 'html' ? 'HTML 包' : `Python ${pkgPreview.runtime === 'persistent' ? '持久服务' : '按调用'}`}`}
                   description={
                     <div style={{ fontSize: 12 }}>
                       <div>能力：{pkgPreview.capabilities.length ? pkgPreview.capabilities.join('、') : '无'}；出网白名单：{pkgPreview.network.length ? pkgPreview.network.join('、') : '无'}</div>
@@ -798,10 +801,7 @@ function AppsTab(): ReactNode {
                           环境变量：{pkgPreview.env.map((v) => `${v.name}${v.secret ? '（密钥）' : ''}${v.required ? '' : '（可选）'}`).join('、')}——接入后在应用列表「环境变量」中配置
                         </div>
                       ) : null}
-                      <div>
-                        签名：
-                        {({ verified: '可信签名', untrusted: '未信任签名', unsigned: '未签名', invalid: '签名无效（接入将被拒）' } as Record<string, string>)[pkgPreview.signature] ?? pkgPreview.signature}
-                      </div>
+                      <div>包签名：不要求；上传时校验 ZIP 结构与 manifest。</div>
                       {pkgPreview.exists ? <div>同名应用已存在：接入将作为版本更新（仅归属者/管理员可提交）。</div> : null}
                     </div>
                   }
@@ -870,7 +870,7 @@ function AppsTab(): ReactNode {
           ) : null}
 
           {creating === 'package' ? (
-            <Button type="primary" htmlType="submit" block disabled={!pkgFile || previewing || pkgPreview?.signature === 'invalid'}>
+            <Button type="primary" htmlType="submit" block disabled={!pkgFile || previewing}>
               校验并接入
             </Button>
           ) : (
@@ -1037,8 +1037,8 @@ function UsersRegTab(): ReactNode {
       <Alert
         type="info"
         showIcon
-        message="开放注册前需先配置至少一个已启用的零价权益包"
-        description="新注册用户必须先选择权益包；零价包立即生效，付费包创建待确认订单。"
+        message="权益包为可选配置"
+        description="开放注册不要求预先配置零价权益包。没有可用权益包时，新用户以未订阅状态进入个人中心，初始积分按注册策略发放。"
       />
       <Card size="small" title="注册策略">
         <SettingsForm groups={['注册与账号']} />
@@ -1805,7 +1805,10 @@ interface PlanRowUI {
   groupId: number;
   groupName: string;
   durationDays: number;
+  priceCurrency: 'CNY' | 'USD' | 'POINTS';
   priceFen: number;
+  priceCents: number;
+  pricePoints: number;
   tokenGrant: number;
   tier: number;
   publicAppLimit: number;
@@ -1817,7 +1820,9 @@ interface OrderRowUI {
   kind: 'tokens' | 'membership';
   planId: number | null;
   tokens: number | null;
+  priceCurrency: 'CNY' | 'USD';
   priceFen: number;
+  priceCents: number;
   channel: string;
   status: 'pending' | 'paid' | 'cancelled';
   note: string | null;
@@ -1830,10 +1835,6 @@ interface OpsStatsUI {
   appHot: Array<{ appId: string; calls: number; tokens: number }>;
   revenue30d: number;
   cost30d: number;
-}
-
-function fen2yuan(fen: number): string {
-  return (fen / 100).toFixed(2);
 }
 
 const PLAN_DURATION_DAYS: Record<string, number> = { month: 30, quarter: 90, year: 365 };
@@ -1854,6 +1855,7 @@ function OpsTab(): ReactNode {
   const opsQ = useQuery({ queryKey: ['billing-ops'], queryFn: () => api<OpsStatsUI>('/api/admin/billing/ops') });
   const groupsQ = useQuery({ queryKey: ['admin-groups'], queryFn: () => api<{ groups: GroupRow[] }>('/api/admin/groups') });
   const [planForm] = Form.useForm();
+  const priceCurrency = Form.useWatch('priceCurrency', planForm) as PlanRowUI['priceCurrency'] | undefined;
   const [planModalOpen, setPlanModalOpen] = useState(false);
   const [planSaving, setPlanSaving] = useState(false);
 
@@ -1893,7 +1895,7 @@ function OpsTab(): ReactNode {
             { title: '可用时间', dataIndex: 'durationDays', width: 130, render: (v: number) => planDurationLabel(v) },
             { title: '可公开发布应用数', dataIndex: 'publicAppLimit', width: 150 },
             { title: 'Token 额度', dataIndex: 'tokenGrant', width: 120, render: (v: number) => v.toLocaleString() },
-            { title: '价格', dataIndex: 'priceFen', width: 90, render: (v: number) => `¥${fen2yuan(v)}` },
+            { title: '价格', width: 120, render: (_, r) => formatMembershipPlanPrice(r) },
             { title: '状态', width: 80, render: (_, r) => (r.enabled ? <Tag color="green">在售</Tag> : <Tag>停售</Tag>) },
             {
               title: '操作',
@@ -1937,7 +1939,7 @@ function OpsTab(): ReactNode {
         <Form
           form={planForm}
           layout="vertical"
-          initialValues={{ durationUnit: 'month', tier: 0, publicAppLimit: 10, tokenGrant: 0, priceYuan: 0 }}
+          initialValues={{ durationUnit: 'month', tier: 0, publicAppLimit: 10, tokenGrant: 0, priceCurrency: 'CNY', priceAmount: 0 }}
           onFinish={async (values) => {
             setPlanSaving(true);
             try {
@@ -1950,7 +1952,10 @@ function OpsTab(): ReactNode {
                   tier: Number(values.tier),
                   publicAppLimit: Number(values.publicAppLimit),
                   tokenGrant: Number(values.tokenGrant ?? 0),
-                  priceFen: Math.round(Number(values.priceYuan ?? 0) * 100),
+                  priceCurrency: values.priceCurrency,
+                  priceFen: values.priceCurrency === 'CNY' ? Math.round(Number(values.priceAmount ?? 0) * 100) : 0,
+                  priceCents: values.priceCurrency === 'USD' ? Math.round(Number(values.priceAmount ?? 0) * 100) : 0,
+                  pricePoints: values.priceCurrency === 'POINTS' ? Number(values.priceAmount ?? 0) : 0,
                 },
               });
               message.success('套餐已创建');
@@ -1987,8 +1992,24 @@ function OpsTab(): ReactNode {
           <Form.Item name="tokenGrant" label="Token 额度">
             <InputNumber min={0} precision={0} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="priceYuan" label="价格（元）" rules={[{ required: true }]}>
-            <InputNumber min={0} precision={2} style={{ width: '100%' }} />
+          <Form.Item name="priceCurrency" label="计价单位" rules={[{ required: true }]}>
+            <Select options={[
+              { value: 'CNY', label: '人民币' },
+              { value: 'USD', label: '美元' },
+              { value: 'POINTS', label: '积分' },
+            ]} />
+          </Form.Item>
+          <Form.Item
+            name="priceAmount"
+            label={`价格（${priceCurrency === 'USD' ? '美元' : priceCurrency === 'POINTS' ? '积分' : '人民币'}）`}
+            rules={[{ required: true, message: '请填写价格' }]}
+          >
+            <InputNumber
+              min={0}
+              max={priceCurrency === 'POINTS' ? 2_147_483_647 : 21_474_836.47}
+              precision={priceCurrency === 'POINTS' ? 0 : 2}
+              style={{ width: '100%' }}
+            />
           </Form.Item>
         </Form>
       </Modal>
@@ -2003,7 +2024,7 @@ function OpsTab(): ReactNode {
             { title: '订单号', dataIndex: 'id', width: 170 },
             { title: '用户', dataIndex: 'userId', width: 70 },
             { title: '类型', width: 90, render: (_, r) => (r.kind === 'membership' ? '订阅' : '额度') },
-            { title: '金额', width: 90, render: (_, r) => `¥${fen2yuan(r.priceFen)}` },
+            { title: '金额', width: 110, render: (_, r) => formatMembershipOrderPrice(r) },
             { title: '到账', width: 110, render: (_, r) => (r.kind === 'tokens' ? `${r.tokens?.toLocaleString()} 额度` : '订阅权益') },
             { title: '创建时间', width: 160, render: (_, r) => new Date(r.createdAt).toLocaleString() },
             {
@@ -2011,7 +2032,7 @@ function OpsTab(): ReactNode {
               width: 160,
               render: (_, r) => (
                 <Space size="small">
-                  <Popconfirm title={`确认已收到 ¥${fen2yuan(r.priceFen)}？确认后立即生效。`} onConfirm={async () => {
+                  <Popconfirm title={`确认已收到 ${formatMembershipOrderPrice(r)}？确认后立即生效。`} onConfirm={async () => {
                     await api(`/api/admin/billing/orders/${r.id}/confirm`, { method: 'POST' });
                     message.success('已确认到账');
                     void qc.invalidateQueries({ queryKey: ['billing-orders'] });

@@ -17,7 +17,11 @@ test('首页导航定位与登录注册分栏页面', async ({ page }) => {
   expect(plansResponse.ok()).toBe(true);
   expect((await plansResponse.json()).plans).toBeInstanceOf(Array);
   await expect(page.locator('.aap-home-title')).toBeVisible();
-  await expect(page.locator('.aap-home-kicker')).toHaveText('AI Super Panel');
+  await expect(page.locator('.aap-home-title')).toContainText('您好，欢迎来到 AI超级面板');
+  await expect(page.locator('.aap-home-description')).toContainText('AI超级面板（AI-SuperPanel）');
+  await expect(page.locator('.aap-home-description')).toContainText('上传到AI超级面板后');
+  await expect(page.locator('.aap-home-shell .aap-header')).toHaveCSS('backdrop-filter', 'blur(14px)');
+  await expect(page.locator('.aap-home-kicker')).toHaveText('AI超级面板');
   await expect(page.getByPlaceholder('搜索应用名称或介绍')).toBeVisible();
   await expect(page.locator('.aap-home-search .ant-input')).toHaveCSS('color', 'rgb(16, 24, 40)');
   expect(
@@ -71,12 +75,30 @@ test('首页导航定位与登录注册分栏页面', async ({ page }) => {
   await expect(page.locator('.aap-legal-shell')).toBeVisible();
   await expect(page.locator('.aap-legal-page .ant-card')).toHaveCount(0);
   await expect(page.locator('.aap-legal-shell .aap-header')).toHaveCSS('background-color', 'rgba(8, 24, 63, 0.48)');
+  await expect(page.locator('.aap-legal-shell .aap-header')).toHaveCSS('backdrop-filter', 'blur(14px)');
+  await page.goto('/guide');
+  await expect(page.locator('.aap-header')).toHaveCSS('backdrop-filter', 'blur(14px)');
   await page.goto('/login');
   await expect(page.locator('.aap-auth-art')).toBeHidden();
   await page.getByRole('link', { name: '注册账号' }).click();
   await expect(page).toHaveURL(/\/register$/);
   await expect(page.locator('.aap-auth-content')).toBeVisible();
   await expect(page.locator('.aap-auth-art')).toBeHidden();
+});
+
+test('首页品牌文案跟随站点名称设置', async ({ page }) => {
+  await page.route('**/api/portal/bootstrap', async (route) => {
+    const response = await route.fetch();
+    const bootstrap = await response.json() as { branding: { siteName: string } };
+    bootstrap.branding.siteName = '运营站点名称';
+    await route.fulfill({ response, json: bootstrap });
+  });
+
+  await page.goto('/');
+  await expect(page.locator('.aap-home-kicker')).toHaveText('运营站点名称');
+  await expect(page.locator('.aap-home-title')).toContainText('您好，欢迎来到 运营站点名称');
+  await expect(page.locator('.aap-home-description')).toContainText('运营站点名称（AI-SuperPanel）');
+  await expect(page.locator('.aap-home-description')).toContainText('上传到运营站点名称后');
 });
 
 /** M1 验收主链路①：F3 初始化——初始密码登录 → 强制改密 → 强制绑 MFA → 完成向导 */
@@ -176,6 +198,43 @@ test('操作导航可跳过并进入登录页面', async ({ page }) => {
   await expect(page.locator('.aap-guide-step')).toBeVisible();
   await page.getByRole('button', { name: '跳过' }).click();
   await expect(page).toHaveURL(/\/login$/);
+});
+
+test('操作导航按一至五分章展示且章节标题不重复标注步骤号', async ({ page }) => {
+  const chapters = [
+    '一、了解平台并做好准备',
+    '二、安装开发技能',
+    '三、让 agent 做出你的应用',
+    '四、上传到 AI超级面板',
+    '五、先试用然后发布',
+  ];
+
+  await page.goto('/guide');
+  for (const [index, title] of chapters.entries()) {
+    await expect(page.locator('.aap-guide-markdown h2')).toHaveText(title);
+    await expect(page.locator('.aap-guide-markdown')).not.toContainText('**');
+    await expect(page.locator('.aap-guide-step__topline')).toContainText(`章节 ${['一', '二', '三', '四', '五'][index]}`);
+    if (index < chapters.length - 1) {
+      await page.getByRole('button', { name: '下一步' }).click();
+    }
+  }
+});
+
+test('操作导航文案无裸露 Markdown 且按章节展示应用示例和配置说明', async ({ page }) => {
+  await page.goto('/guide');
+  const guideContent = page.locator('.aap-guide-markdown');
+
+  await expect(guideContent).not.toContainText('**');
+  await page.getByRole('button', { name: '下一步' }).click();
+  await page.getByRole('button', { name: '下一步' }).click();
+  await expect(guideContent.getByRole('heading', { name: '告诉agent你要一个什么应用' })).toBeVisible();
+  await expect(guideContent.getByText('帮我做一个全球时钟，显示主要城市的当前时间，并打包成 asp-app。')).toBeVisible();
+  await expect(guideContent).not.toContainText('环境变量');
+  await expect(guideContent).not.toContainText('入参');
+
+  await page.getByRole('button', { name: '下一步' }).click();
+  await expect(guideContent).toContainText('环境变量');
+  await expect(guideContent).toContainText('填写所需入参');
 });
 
 /** M1 验收主链路③：退出 → 新密码登录 → TOTP 挑战 → 完整会话 */
@@ -340,8 +399,28 @@ test('普通用户改密直达门户 + 绑定页跳过 + 个人中心 MFA 管理
   await expect(page.locator('.aap-account-modal .ant-modal-content')).toHaveCSS('background-color', 'rgb(248, 250, 252)');
   await expect(page.locator('.aap-account-modal .ant-modal-content')).toHaveCSS('border-radius', '0px');
   await page.locator('.aap-account-modal .ant-modal-close').click();
+
+  let failedMineRequest = false;
+  await page.route('**/api/apps/mine', async (route) => {
+    if (!failedMineRequest) {
+      failedMineRequest = true;
+      await page.waitForTimeout(300);
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'TEST_FAILURE', message: '模拟应用列表加载失败' } }),
+      });
+      return;
+    }
+    await route.continue();
+  });
   await page.getByRole('tab', { name: '应用管理' }).click();
   await expect(page.locator('#account-section-myapps')).toBeInViewport();
+  await expect(page.locator('#account-section-myapps .ant-spin-spinning')).toBeVisible();
+  await expect(page.getByText('应用列表加载失败')).toBeVisible();
+  await page.getByRole('button', { name: '重试' }).click();
+  await expect(page.getByText('应用列表加载失败')).toHaveCount(0);
+  await page.unroute('**/api/apps/mine');
   await expect(page.getByRole('button', { name: '选择文件' })).toHaveCSS('font-size', cancelAccountButtonFontSize);
   await page.locator('#account-section-profile').scrollIntoViewIfNeeded();
   await page.mouse.move(900, 600);

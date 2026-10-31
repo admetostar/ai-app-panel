@@ -34,8 +34,8 @@ function genSelfSigned(cn: string): { cert: string; key: string } {
 }
 
 beforeAll(async () => {
-  ({ dir } = setupTestDb());
-  seedSettings();
+  ({ dir } = await setupTestDb());
+  await seedSettings();
   try {
     pair1 = genSelfSigned('test1.example.com');
     pair2 = genSelfSigned('test2.example.com');
@@ -49,10 +49,10 @@ beforeAll(async () => {
   tls.restore();
 });
 
-afterAll(() => {
+afterAll(async () => {
   tls.stop();
-  closeDb();
-  teardownTestDb(dir);
+  await closeDb();
+  await teardownTestDb(dir);
 });
 
 describe('W6 证书校验与安装（B3）', () => {

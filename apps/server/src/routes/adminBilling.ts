@@ -9,7 +9,6 @@ import { membershipPlans, users } from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
 import { requireAdmin } from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
-import { getSetting } from '../lib/settings.js';
 import { normalizeCode } from '../lib/redeem.js';
 import {
   generateBatch,
@@ -38,24 +37,15 @@ adminBillingRouter.use('/admin/billing', requireAdmin);
 // 挂载顺序偶然保护（重构挪序即变成未鉴权的造码/列码接口，渗透测试 P2-10）
 adminBillingRouter.use('/admin/redeem', requireAdmin);
 
-function assertFreePlanRemainsWhenRegistrationIsOpen(excludingPlanId?: number): void {
-  if (
-    getSetting('REGISTRATION_MODE') === 'open' &&
-    !listPlans(true).some((plan) => plan.id !== excludingPlanId && plan.priceFen === 0)
-  ) {
-    throw new HttpError(409, 'FREE_PLAN_REQUIRED', '开放注册期间必须保留至少一个启用的零价权益包');
-  }
-}
-
 // ---------- 套餐 ----------
 
 adminBillingRouter.get(
   '/admin/billing/plans',
   h(async (_req, res) => {
     const { listGroups } = await import('../lib/groups.js');
-    const gname = new Map(listGroups().map((g) => [g.id, g.name]));
+    const gname = new Map(await (await listGroups()).map((g) => [g.id, g.name]));
     res.json({
-      plans: listPlans().map((p) => ({ ...p, groupName: gname.get(p.groupId) ?? `#${p.groupId}` })),
+      plans: await (await listPlans()).map((p) => ({ ...p, groupName: gname.get(p.groupId) ?? `#${p.groupId}` })),
     });
   }),
 );
@@ -63,7 +53,18 @@ adminBillingRouter.get(
 adminBillingRouter.post(
   '/admin/billing/plans',
   h(async (req, res) => {
-    const body = (req.body ?? {}) as { name?: string; groupId?: number; durationDays?: number; priceFen?: number; tokenGrant?: number; tier?: number; publicAppLimit?: number };
+    const body = (req.body ?? {}) as {
+      name?: string;
+      groupId?: number;
+      durationDays?: number;
+      priceCurrency?: 'CNY' | 'USD' | 'POINTS';
+      priceFen?: number;
+      priceCents?: number;
+      pricePoints?: number;
+      tokenGrant?: number;
+      tier?: number;
+      publicAppLimit?: number;
+    };
     if (!body.name?.trim() || !body.groupId || ![30, 90, 365].includes(Number(body.durationDays))) {
       throw new HttpError(400, 'INVALID_INPUT', '名称、分组和有效期必填');
     }
@@ -73,16 +74,19 @@ adminBillingRouter.post(
     if (!Number.isInteger(Number(body.tier)) || Number(body.tier) < 0 || Number(body.tier) > 5) {
       throw new HttpError(400, 'INVALID_INPUT', '权益等级必须是 0 到 5 的整数');
     }
-    const id = createPlan({
+    const id = await createPlan({
       name: body.name,
       groupId: Number(body.groupId),
       durationDays: Number(body.durationDays),
+      priceCurrency: body.priceCurrency ?? 'CNY',
       priceFen: Number(body.priceFen ?? 0),
+      priceCents: Number(body.priceCents ?? 0),
+      pricePoints: Number(body.pricePoints ?? 0),
       tokenGrant: Number(body.tokenGrant ?? 0),
       tier: Number(body.tier),
       publicAppLimit: Number(body.publicAppLimit),
     });
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'billing.plan.create', { id, name: body.name });
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'billing.plan.create', { id, name: body.name });
     res.json({ ok: true, id });
   }),
 );
@@ -90,20 +94,19 @@ adminBillingRouter.post(
 adminBillingRouter.put(
   '/admin/billing/plans/:id',
   h(async (req, res) => {
-    const body = (req.body ?? {}) as { name?: string; durationDays?: number; priceFen?: number; tokenGrant?: number; publicAppLimit?: number; enabled?: boolean };
-    const existing = listPlans().find((plan) => plan.id === Number(req.params.id));
-    if (existing && getSetting('REGISTRATION_MODE') === 'open') {
-      const keepsFreePlan = listPlans().some((plan) => {
-        const enabled = plan.id === existing.id ? body.enabled ?? plan.enabled : plan.enabled;
-        const priceFen = plan.id === existing.id ? body.priceFen ?? plan.priceFen : plan.priceFen;
-        return enabled && priceFen === 0;
-      });
-      if (!keepsFreePlan) {
-        throw new HttpError(409, 'FREE_PLAN_REQUIRED', '开放注册期间必须保留至少一个启用的零价权益包');
-      }
-    }
-    updatePlan(Number(req.params.id), body);
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'billing.plan.update', { id: Number(req.params.id) });
+    const body = (req.body ?? {}) as {
+      name?: string;
+      durationDays?: number;
+      priceCurrency?: 'CNY' | 'USD' | 'POINTS';
+      priceFen?: number;
+      priceCents?: number;
+      pricePoints?: number;
+      tokenGrant?: number;
+      publicAppLimit?: number;
+      enabled?: boolean;
+    };
+    await updatePlan(Number(req.params.id), body);
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'billing.plan.update', { id: Number(req.params.id) });
     res.json({ ok: true });
   }),
 );
@@ -112,15 +115,12 @@ adminBillingRouter.delete(
   '/admin/billing/plans/:id',
   h(async (req, res) => {
     const id = Number(req.params.id);
-    const plan = listPlans().find((item) => item.id === id);
-    if (plan?.enabled && plan.priceFen === 0) assertFreePlanRemainsWhenRegistrationIsOpen(id);
-    const active = getDb()
+    const active = (await getDb()
       .select({ id: users.id })
       .from(users)
-      .where(eq(users.membershipPlanId, id))
-      .get();
+      .where(eq(users.membershipPlanId, id)))[0];
     if (active) throw new HttpError(409, 'PLAN_IN_USE', '仍有生效订阅，先等到期降级或手动处理');
-    deletePlan(id);
+    await deletePlan(id);
     res.json({ ok: true });
   }),
 );
@@ -131,14 +131,14 @@ adminBillingRouter.get(
   '/admin/billing/orders',
   h(async (req, res) => {
     const status = (String(req.query.status ?? 'all') as OrderStatus | 'all') || 'all';
-    res.json({ orders: listOrders(status) });
+    res.json({ orders: await listOrders(status) });
   }),
 );
 
 adminBillingRouter.post(
   '/admin/billing/orders/:id/confirm',
   h(async (req, res) => {
-    const order = confirmOrder(String(req.params.id), req.user!.id);
+    const order = await confirmOrder(String(req.params.id), req.user!.id);
     res.json({ ok: true, order });
   }),
 );
@@ -146,7 +146,7 @@ adminBillingRouter.post(
 adminBillingRouter.post(
   '/admin/billing/orders/:id/cancel',
   h(async (req, res) => {
-    cancelOrder(String(req.params.id), req.user!.id, true);
+    await cancelOrder(String(req.params.id), req.user!.id, true);
     res.json({ ok: true });
   }),
 );
@@ -156,7 +156,7 @@ adminBillingRouter.post(
 adminBillingRouter.get(
   '/admin/redeem/batches',
   h(async (_req, res) => {
-    res.json({ batches: batchSummaries() });
+    res.json({ batches: await batchSummaries() });
   }),
 );
 
@@ -164,7 +164,7 @@ adminBillingRouter.get(
   '/admin/redeem/codes',
   h(async (req, res) => {
     const status = String(req.query.status ?? 'all') as RedeemStatus | 'all';
-    const codes = listCodes({
+    const codes = await listCodes({
       batchId: (req.query.batchId as string | undefined) || undefined,
       status,
       limit: Number(req.query.limit ?? 200),
@@ -184,7 +184,7 @@ adminBillingRouter.post(
       expiresInDays?: number | null;
       note?: string;
     };
-    const r = generateBatch({
+    const r = await generateBatch({
       kind: (body.kind as RedeemKind) ?? 'tokens',
       count: Number(body.count ?? 1),
       tokens: body.tokens != null ? Number(body.tokens) : null,
@@ -201,8 +201,8 @@ adminBillingRouter.post(
   '/admin/redeem/disable',
   h(async (req, res) => {
     const body = (req.body ?? {}) as { code?: string };
-    disableCode(normalizeCode(String(body.code ?? '')));
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'redeem.disable', { code: body.code });
+    await disableCode(normalizeCode(String(body.code ?? '')));
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'redeem.disable', { code: body.code });
     res.json({ ok: true });
   }),
 );
@@ -212,6 +212,6 @@ adminBillingRouter.post(
 adminBillingRouter.get(
   '/admin/billing/ops',
   h(async (_req, res) => {
-    res.json(opsStats());
+    res.json(await opsStats());
   }),
 );

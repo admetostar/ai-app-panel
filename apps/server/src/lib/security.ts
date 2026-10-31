@@ -1,58 +1,14 @@
-/**
- * 来源 IP、登录失败计数、IP 自动封禁（累犯时长倍增）、PoW token
- * ——移植自参考实现 lib/security.js，剥离单位指纹。
- * 关键语义：
- *  - getClientIp 依赖 express 的 trust proxy 设置：无前置代理置 false，
- *    防伪造 XFF 绕过封禁；有前置代理置 1 只信第一跳。
- *  - 封禁时长 = base * multiplier^repeat（累犯翻倍），上限 max。
- */
 import type { Request } from 'express';
-import type Database from 'better-sqlite3';
+import { and, eq, gt, lt, sql } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
-import { getSqlite } from '../db/index.js';
+import { getDb } from '../db/index.js';
+import { ipBans, loginAttempts, powTokens } from '../db/schema.js';
 import { getSettingInt, getSettingBool } from './settings.js';
 import { audit } from './audit.js';
 
-/** 提取客户端真实 IP（::ffff: 前缀剥离） */
 export function getClientIp(req: Request): string {
   return ((req.ip as string | undefined) || req.socket?.remoteAddress || '')
     .replace(/^::ffff:/, '') || 'unknown';
-}
-
-// ---- 惰性预编译语句（等 initDb 完成后再 prepare） ----
-interface Stmts {
-  countFailures: Database.Statement;
-  countAccountFailures: Database.Statement;
-  insertAttempt: Database.Statement;
-  getBan: Database.Statement;
-  upsertBan: Database.Statement;
-  deleteExpiredBan: Database.Statement;
-  insertPowToken: Database.Statement;
-  getPow: Database.Statement;
-  delPow: Database.Statement;
-}
-
-let stmts: Stmts | null = null;
-
-function S(): Stmts {
-  if (!stmts) {
-    const s = getSqlite();
-    stmts = {
-      countFailures: s.prepare('SELECT COUNT(*) AS n FROM login_attempts WHERE ip = ? AND success = 0 AND created_at > ?'),
-      countAccountFailures: s.prepare('SELECT COUNT(*) AS n FROM login_attempts WHERE user_key = ? AND success = 0 AND created_at > ?'),
-      insertAttempt: s.prepare('INSERT INTO login_attempts(ip, user_key, success, reason, created_at) VALUES (?, ?, ?, ?, ?)'),
-      getBan: s.prepare('SELECT * FROM ip_bans WHERE ip = ?'),
-      upsertBan: s.prepare(
-        `INSERT INTO ip_bans(ip, banned_until, repeat_count, created_at) VALUES (?, ?, 1, ?)
-         ON CONFLICT(ip) DO UPDATE SET banned_until = excluded.banned_until, repeat_count = ip_bans.repeat_count + 1`,
-      ),
-      deleteExpiredBan: s.prepare('DELETE FROM ip_bans WHERE ip = ? AND banned_until <= ?'),
-      insertPowToken: s.prepare('INSERT INTO pow_tokens(token, ip, created_at, expires_at) VALUES (?, ?, ?, ?)'),
-      getPow: s.prepare('SELECT * FROM pow_tokens WHERE token = ?'),
-      delPow: s.prepare('DELETE FROM pow_tokens WHERE token = ?'),
-    };
-  }
-  return stmts;
 }
 
 interface BanRow {
@@ -62,115 +18,135 @@ interface BanRow {
   created_at: number;
 }
 
-export function failuresInWindow(ip: string): number {
-  const window = getSettingInt('LOGIN_FAIL_WINDOW', 600);
-  const row = S().countFailures.get(ip, Date.now() - window * 1000) as { n: number } | undefined;
-  return row?.n ?? 0;
-}
-
-/** 账号维度失败计数（login_attempts.user_key）：IP 维度对分布式撞库无效，
- *  同一账号跨 IP 穷举也要进 PoW/封禁语义（终审 P1） */
-export function accountFailuresInWindow(userKey: string): number {
-  const window = getSettingInt('LOGIN_FAIL_WINDOW', 600);
-  const row = S().countAccountFailures.get(userKey, Date.now() - window * 1000) as { n: number } | undefined;
-  return row?.n ?? 0;
-}
-
-export function isBanned(ip: string): BanRow | null {
-  const ban = S().getBan.get(ip) as BanRow | undefined;
-  if (!ban) return null;
-  if (ban.banned_until > Date.now()) return ban;
-  // 已过期：返回未封禁。注意**不在这里删行**——repeat_count（累犯计数）
-  // 依赖旧行在重新封禁时自增；过期行由 purgeExpired 按 30 天保留期清理。
-  return null;
-}
-
 export interface FailureResult {
   banned: boolean;
   failures: number;
   bannedUntil?: number;
 }
 
-export function recordFailure(ip: string, subject: string | null, reason?: string): FailureResult {
-  S().insertAttempt.run(ip, subject ?? null, 0, reason ?? null, Date.now());
+async function failuresBy(column: 'ip' | 'userKey', value: string): Promise<number> {
+  const window = getSettingInt('LOGIN_FAIL_WINDOW', 600);
+  const field = column === 'ip' ? loginAttempts.ip : loginAttempts.userKey;
+  const row = (await getDb()
+    .select({ count: sql<number>`count(*)::int` })
+    .from(loginAttempts)
+    .where(and(eq(field, value), eq(loginAttempts.success, false), gt(loginAttempts.createdAt, Date.now() - window * 1000))))[0];
+  return Number(row?.count ?? 0);
+}
 
-  // 频率型自动封禁（累犯倍增）
+export async function failuresInWindow(ip: string): Promise<number> {
+  return await failuresBy('ip', ip);
+}
+
+export async function accountFailuresInWindow(userKey: string): Promise<number> {
+  return await failuresBy('userKey', userKey);
+}
+
+export async function isBanned(ip: string): Promise<BanRow | null> {
+  const row = (await getDb()
+    .select({
+      ip: ipBans.ip,
+      banned_until: ipBans.bannedUntil,
+      repeat_count: ipBans.repeatCount,
+      created_at: ipBans.createdAt,
+    })
+    .from(ipBans)
+    .where(eq(ipBans.ip, ip)))[0];
+  return row && row.banned_until > Date.now() ? row : null;
+}
+
+export async function recordFailure(ip: string, subject: string | null, reason?: string): Promise<FailureResult> {
+  await getDb().insert(loginAttempts).values({
+    ip,
+    userKey: subject ?? '',
+    success: false,
+    reason: reason ?? null,
+    createdAt: Date.now(),
+  });
+
   const threshold = getSettingInt('IP_BAN_THRESHOLD', 10);
-  const fails = failuresInWindow(ip);
-  const existing = S().getBan.get(ip) as BanRow | undefined;
-  if (fails >= threshold && (!existing || existing.banned_until <= Date.now())) {
+  const fails = await failuresInWindow(ip);
+  const existing = (await getDb().select().from(ipBans).where(eq(ipBans.ip, ip)))[0];
+  if (fails >= threshold && (!existing || existing.bannedUntil <= Date.now())) {
     const base = getSettingInt('IP_BAN_BASE_SECONDS', 3600);
     const max = getSettingInt('IP_BAN_MAX_SECONDS', 86400);
     const mult = getSettingInt('IP_BAN_MULTIPLIER', 2);
-    const repeat = existing ? existing.repeat_count : 0;
-    const dur = Math.min(base * Math.pow(mult, repeat), max);
-    const until = Date.now() + dur * 1000;
-    S().upsertBan.run(ip, until, Date.now());
-    audit(subject ?? ip, ip, 'ip.ban.auto', { reason, failures: fails, banned_until: until, duration_sec: dur });
+    const repeat = existing ? existing.repeatCount : 0;
+    const duration = Math.min(base * Math.pow(mult, repeat), max);
+    const until = Date.now() + duration * 1000;
+    await getDb()
+      .insert(ipBans)
+      .values({ ip, bannedUntil: until, repeatCount: 1, createdAt: Date.now() })
+      .onConflictDoUpdate({
+        target: ipBans.ip,
+        set: {
+          bannedUntil: until,
+          repeatCount: sql`${ipBans.repeatCount} + 1`,
+        },
+      });
+    void audit(subject ?? ip, ip, 'ip.ban.auto', { reason, failures: fails, banned_until: until, duration_sec: duration });
     return { banned: true, failures: fails, bannedUntil: until };
   }
   return { banned: false, failures: fails };
 }
 
-export function recordSuccess(ip: string, subject: string | null): void {
-  S().insertAttempt.run(ip, subject ?? null, 1, null, Date.now());
+export async function recordSuccess(ip: string, subject: string | null): Promise<void> {
+  await getDb().insert(loginAttempts).values({
+    ip,
+    userKey: subject ?? '',
+    success: true,
+    reason: null,
+    createdAt: Date.now(),
+  });
 }
 
-// ---------- MFA 第二因子错猜（账号维度持久节流；终审 P1-3） ----------
-// 复用 login_attempts 表（重启不丢计数），subject 用 'mfa:<userId>' 独立命名空间。
-// ip 列写哨兵 'mfa-guard' 而非真实 IP：第二因子错猜者是已持密码的半登录会话，
-// 不等于撞库——若计入 IP 维度，failuresInWindow/needsPow/IP 自动封禁会被
-// 正常用户的 MFA 手滑触发，误伤同出口地址的其他用户。真实 IP 由 audit 记录。
-
-/** 记录一次 MFA 错猜（只进账号维度，不触发 IP 封禁逻辑） */
-export function recordMfaFailure(userKey: string): void {
-  S().insertAttempt.run('mfa-guard', userKey, 0, 'totp-mismatch', Date.now());
+export async function recordMfaFailure(userKey: string): Promise<void> {
+  await getDb().insert(loginAttempts).values({
+    ip: 'mfa-guard',
+    userKey,
+    success: false,
+    reason: 'totp-mismatch',
+    createdAt: Date.now(),
+  });
 }
 
-/** 账号维度窗口内 MFA 错猜次数（窗口沿用 LOGIN_FAIL_WINDOW，默认 10 分钟） */
-export function mfaFailuresInWindow(userKey: string): number {
-  return accountFailuresInWindow(userKey);
+export async function mfaFailuresInWindow(userKey: string): Promise<number> {
+  return await accountFailuresInWindow(userKey);
 }
 
-/** 成功验证后清零账号计数（防正常用户被窗口内历史错猜误锁） */
-export function clearMfaFailures(userKey: string): void {
-  getSqlite().prepare('DELETE FROM login_attempts WHERE user_key = ? AND success = 0').run(userKey);
+export async function clearMfaFailures(userKey: string): Promise<void> {
+  await getDb()
+    .delete(loginAttempts)
+    .where(and(eq(loginAttempts.userKey, userKey), eq(loginAttempts.success, false)));
 }
 
-// ---------- PoW token（绑 IP、一次性、短时效） ----------
-
-export function issuePowToken(ip: string): string {
+export async function issuePowToken(ip: string): Promise<string> {
   const token = randomBytes(32).toString('hex');
-  const ttl = getSettingInt('POW_TOKEN_TTL', 300);
   const now = Date.now();
-  S().insertPowToken.run(token, ip, now, now + ttl * 1000);
+  const ttl = getSettingInt('POW_TOKEN_TTL', 300);
+  await getDb().insert(powTokens).values({ token, ip, createdAt: now, expiresAt: now + ttl * 1000 });
   return token;
 }
 
-/** 读后即删（一次性）；过期或 IP 不符均拒绝 */
-export function consumePowToken(token: string, ip: string): boolean {
-  const row = S().getPow.get(token) as { expires_at: number; ip: string } | undefined;
-  if (!row) return false;
-  S().delPow.run(token);
-  if (row.expires_at <= Date.now()) return false;
-  if (row.ip !== ip) return false;
-  return true;
+export async function consumePowToken(token: string, ip: string): Promise<boolean> {
+  const [row] = await getDb()
+    .delete(powTokens)
+    .where(eq(powTokens.token, token))
+    .returning({ expiresAt: powTokens.expiresAt, ip: powTokens.ip });
+  return Boolean(row && row.expiresAt > Date.now() && row.ip === ip);
 }
 
-/** 某 IP/账号当前登录是否需要 PoW（任一维度失败超阈值即要求） */
-export function needsPow(ip: string, userKey?: string | null): boolean {
+export async function needsPow(ip: string, userKey?: string | null): Promise<boolean> {
   if (!getSettingBool('POW_ENABLED', true)) return false;
   const threshold = getSettingInt('LOGIN_FAIL_THRESHOLD', 5);
-  if (failuresInWindow(ip) >= threshold) return true;
-  if (userKey && accountFailuresInWindow(userKey) >= threshold) return true;
-  return false;
+  if ((await failuresInWindow(ip)) >= threshold) return true;
+  return Boolean(userKey && (await accountFailuresInWindow(userKey)) >= threshold);
 }
 
-/** 根据 IP 失败次数计算 PoW 难度（前导零位数；保证浏览器可解） */
-export function powDifficulty(ip: string): number {
+export async function powDifficulty(ip: string): Promise<number> {
   const base = getSettingInt('POW_DIFFICULTY_BASE', 16);
   const step = getSettingInt('POW_DIFFICULTY_STEP', 2);
   const max = getSettingInt('POW_DIFFICULTY_MAX', 24);
-  const over = Math.max(0, failuresInWindow(ip) - getSettingInt('LOGIN_FAIL_THRESHOLD', 5));
+  const over = Math.max(0, (await failuresInWindow(ip)) - getSettingInt('LOGIN_FAIL_THRESHOLD', 5));
   return Math.min(base + over * step, max);
 }

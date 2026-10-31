@@ -1,29 +1,19 @@
-﻿import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { PortalBootstrap } from '@aap/shared';
 import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
-import { closeDb, initDb } from '../db/index.js';
-import { seedSettings } from '../lib/settings.js';
 import { createGroup } from '../lib/groups.js';
 import { createPlan, updatePlan } from '../lib/billing.js';
+import { setupTestDb, teardownTestDb } from './testkit.js';
 
 let server: Server;
 let baseUrl: string;
-let tmpDir: string;
+let dbSchema: string;
 
 beforeAll(async () => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aap-test-'));
-  initDb({
-    file: path.join(tmpDir, 'test.db'),
-    migrationsDir: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../drizzle'),
-  });
-  seedSettings();
+  ({ dir: dbSchema } = await setupTestDb());
   // 测试配置：默认值但关闭 webDist（测试环境无前端产物）
   const cfg = { ...loadConfig({}), webDist: null };
   const app = createApp(cfg);
@@ -33,8 +23,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  closeDb();
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  await teardownTestDb(dbSchema);
 });
 
 describe('W1 冒烟', () => {
@@ -57,10 +46,10 @@ describe('W1 冒烟', () => {
   });
 
   it('GET /api/portal/plans 匿名返回管理员启用的权益套餐', async () => {
-    const groupId = createGroup('公开套餐分组', '');
-    createPlan({ name: '可见权益包', groupId, durationDays: 30, priceFen: 1200, tokenGrant: 500, tier: 4, publicAppLimit: 2 });
-    const hiddenPlanId = createPlan({ name: '停售权益包', groupId, durationDays: 30, priceFen: 1000 });
-    updatePlan(hiddenPlanId, { enabled: false });
+    const groupId = await createGroup('公开套餐分组', '');
+    await createPlan({ name: '可见权益包', groupId, durationDays: 30, priceFen: 1200, tokenGrant: 500, tier: 4, publicAppLimit: 2 });
+    const hiddenPlanId = await createPlan({ name: '停售权益包', groupId, durationDays: 30, priceFen: 1000 });
+    await updatePlan(hiddenPlanId, { enabled: false });
 
     const res = await fetch(`${baseUrl}/api/portal/plans`);
     expect(res.status).toBe(200);

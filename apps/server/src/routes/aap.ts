@@ -20,16 +20,16 @@ import { getSetting, getSettingInt } from '../lib/settings.js';
 
 export const aapRouter = Router();
 
-function auth(req: Request): AppTokenRow {
+async function auth(req: Request): Promise<AppTokenRow> {
   const bearer = (req.headers['x-aap-token'] as string | undefined) ?? '';
-  const token = resolveAppToken(bearer);
+  const token = await resolveAppToken(bearer);
   if (!token) throw new HttpError(401, 'AAP_AUTH', '沙箱凭据无效');
   return token;
 }
 
-aapRouter.use((req: Request, res: Response, next: NextFunction): void => {
+aapRouter.use(async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    req.aapToken = auth(req);
+    req.aapToken = await auth(req);
     next();
   } catch (err) {
     const e = err as HttpError;
@@ -64,13 +64,13 @@ aapRouter.post(
       throw new HttpError(400, 'INVALID_INPUT', 'messages 必填');
     }
     // 能力声明校验（G1）：未声明 llm 的包不允许调用（与 /v1 网关同一判定，审计 F1）
-    if (!appLlmAllowed(token.appId)) {
+    if (!await appLlmAllowed(token.appId)) {
       throw new HttpError(403, 'CAPABILITY_NOT_DECLARED', '该应用 manifest 未声明 llm 能力');
     }
     // 规范 §3.1「不填用平台默认模型」：缺省取 LLM_DEFAULT_MODEL 设置，未设置取目录第一个
     let model = typeof body.model === 'string' ? body.model.trim() : '';
     if (!model) {
-      model = resolveDefaultModel() ?? '';
+      model = await resolveDefaultModel() ?? '';
       if (!model) {
         throw new HttpError(400, 'INVALID_INPUT', '未指定 model，且网关模型目录为空——请管理员先在「LLM 网关」配置模型路由（或在设置中指定沙箱默认模型）');
       }
@@ -102,7 +102,7 @@ aapRouter.post(
       authorization: `Bearer ${(req.headers['x-aap-token'] as string) ?? ''}`,
     };
     if (userId !== null) {
-      const user = getDb().select().from(users).where(eq(users.id, userId)).get();
+      const user = (await getDb().select().from(users).where(eq(users.id, userId)))[0];
       if (user) {
         const idn = signIdentity(
           {
@@ -303,11 +303,11 @@ aapRouter.post(
       for (const [k, v] of Object.entries(body.headers)) {
         if (Object.keys(fwdHeaders).length >= 16) break;
         if (!/^[A-Za-z0-9-]{1,64}$/.test(k) || HOP_BY_HOP.test(k)) continue;
-        fwdHeaders[k] = String(v).slice(0, 4096);
+        fwdHeaders[k] = (await String(v)).slice(0, 4096);
       }
       if (Object.keys(fwdHeaders).length === 0) fwdHeaders = undefined;
     }
-    const app = getDb().select().from(apps).where(eq(apps.id, token.appId)).get();
+    const app = (await getDb().select().from(apps).where(eq(apps.id, token.appId)))[0];
     let network: string[] = [];
     if (app?.manifestJson) {
       try {

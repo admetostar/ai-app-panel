@@ -1,7 +1,7 @@
 /**
  * 服务端 secrets 落盘加密：data/master.key（32B，0600，首次使用时生成）
  * + AES-256-GCM。用于 TOTP 密钥、应用 upstream urlSecret（W5）等
- * 不宜明文进 SQLite 的敏感值。
+ * 不宜明文存入数据库的敏感值。
  */
 import fs from 'node:fs';
 import path from 'node:path';

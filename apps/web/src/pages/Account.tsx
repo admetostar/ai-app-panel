@@ -30,6 +30,7 @@ import { registerNewPasskey } from '../lib/mfaClient';
 import { AppEnvModal } from '../components/AppEnvModal';
 import { TierBadge } from '../components/TierBadge';
 import type { MembershipOrderSummary, MembershipPlanSummary, UserMembershipData } from '@aap/shared';
+import { formatMembershipOrderPrice, formatMembershipPlanPrice, isFreeMembershipPlan } from '../lib/membershipPricing';
 
 // ---------- 主页面 ----------
 
@@ -368,7 +369,7 @@ export function AccountPage() {
             forceRender: true,
             children: (
               <div id="account-section-myapps" className="aap-account-section aap-account-section--myapps">
-                <MyAppsTab ensureStepUp={ensureStepUp} />
+                <MyAppsTab active={activeAccountTab === 'myapps'} ensureStepUp={ensureStepUp} />
               </div>
             ),
           },
@@ -657,6 +658,15 @@ interface TopupResult {
   priceFen: number;
 }
 
+interface MembershipSubscribeResult {
+  orderId: string | null;
+  activated: boolean;
+  planName: string;
+  priceCurrency?: 'CNY' | 'USD';
+  priceFen?: number;
+  priceCents?: number;
+}
+
 function yuan(fen: number): string {
   return `¥${(fen / 100).toFixed(2)}`;
 }
@@ -686,8 +696,12 @@ function MembershipTopupTab(): ReactNode {
   async function subscribe(planId: number): Promise<void> {
     setBusy(true);
     try {
-      const r = await api<TopupResult>('/api/user/membership/subscribe', { method: 'POST', json: { planId } });
-      message.info(`订单已创建（${yuan(r.priceFen)}），等待管理员确认到账后生效`);
+      const r = await api<MembershipSubscribeResult>('/api/user/membership/subscribe', { method: 'POST', json: { planId } });
+      if (r.activated) message.success(`已获取「${r.planName}」，权益立即生效`);
+      else {
+        const price = r.priceCurrency === 'USD' ? `$${((r.priceCents ?? 0) / 100).toFixed(2)}` : yuan(r.priceFen ?? 0);
+        message.info(`订单已创建（${price}），等待管理员确认到账后生效`);
+      }
       setSelectedPlan(null);
       void qc.invalidateQueries({ queryKey: ['membership'] });
     } catch (err) {
@@ -757,6 +771,12 @@ function MembershipTopupTab(): ReactNode {
                 {d?.tokenBalance?.toLocaleString() ?? '—'}
               </Tag>
             </div>
+            <div className="membership-current-plan__item">
+              <Typography.Text type="secondary">可用积分</Typography.Text>
+              <Tag color="blue" style={{ borderRadius: 999, marginInlineEnd: 0, width: 'fit-content' }}>
+                {d?.pointsBalance?.toLocaleString() ?? '—'}
+              </Tag>
+            </div>
           </div>
         </div>
       </Card>
@@ -784,7 +804,7 @@ function MembershipTopupTab(): ReactNode {
                   <div><Typography.Text type="secondary">Token 额度</Typography.Text><Typography.Text>{plan.tokenGrant.toLocaleString()}</Typography.Text></div>
                 </div>
                 <div className="membership-plan-option__footer">
-                  <Typography.Text strong style={{ color: 'var(--aap-primary)' }}>{yuan(plan.priceFen)}</Typography.Text>
+                  <Typography.Text strong style={{ color: 'var(--aap-primary)' }}>{formatMembershipPlanPrice(plan)}</Typography.Text>
                   <Button type="primary" disabled={!plan.enabled} onClick={() => setSelectedPlan(plan)}>获取</Button>
                 </div>
               </Card>
@@ -871,7 +891,7 @@ function MembershipTopupTab(): ReactNode {
           columns={[
             { title: '订单号', dataIndex: 'id', width: 170 },
             { title: '类型', width: 80, render: (_, r) => (r.kind === 'membership' ? '订阅' : '额度') },
-            { title: '金额', width: 90, render: (_, r) => yuan(r.priceFen) },
+            { title: '金额', width: 100, render: (_, r) => formatMembershipOrderPrice(r) },
             { title: '到账', width: 110, render: (_, r) => (r.kind === 'tokens' ? `${r.tokens?.toLocaleString()} 额度` : '订阅权益') },
             {
               title: '状态',
@@ -924,19 +944,34 @@ function MembershipTopupTab(): ReactNode {
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderTop: '1px solid var(--aap-border)', marginTop: 16, paddingTop: 14 }}>
                 <Typography.Text strong>应付总额</Typography.Text>
-                <Typography.Title level={3} style={{ margin: 0, color: 'var(--aap-primary)' }}>{yuan(selectedPlan.priceFen)}</Typography.Title>
+                <Typography.Title level={3} style={{ margin: 0, color: 'var(--aap-primary)' }}>{formatMembershipPlanPrice(selectedPlan)}</Typography.Title>
               </div>
             </div>
             <Alert
-              type="info"
+              type={selectedPlan.priceCurrency === 'POINTS' && (d?.pointsBalance ?? 0) < selectedPlan.pricePoints ? 'warning' : 'info'}
               showIcon
-              message="确认后为你保留这份订阅方案"
-              description="点击支付并提交订单后，请按平台指引完成付款。当前为人工确认到账，管理员确认后订阅权益自动生效。"
+              message={selectedPlan.priceCurrency === 'POINTS' ? '积分兑换' : '确认订阅方案'}
+              description={
+                selectedPlan.priceCurrency === 'POINTS'
+                  ? `兑换需要 ${selectedPlan.pricePoints.toLocaleString()} 积分，当前余额 ${(d?.pointsBalance ?? 0).toLocaleString()} 积分。积分足额后立即扣减并开通。`
+                  : isFreeMembershipPlan(selectedPlan)
+                    ? '这是零价权益包，确认后立即开通。'
+                    : '提交订单后请完成付款；当前由管理员人工确认到账，确认后订阅权益自动生效。'
+              }
             />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <Button onClick={() => setSelectedPlan(null)}>取消</Button>
-              <Button type="primary" loading={busy} onClick={() => void subscribe(selectedPlan.id)}>
-                支付并提交订单
+              <Button
+                type="primary"
+                loading={busy}
+                disabled={selectedPlan.priceCurrency === 'POINTS' && (d?.pointsBalance ?? 0) < selectedPlan.pricePoints}
+                onClick={() => void subscribe(selectedPlan.id)}
+              >
+                {selectedPlan.priceCurrency === 'POINTS'
+                  ? '立即兑换'
+                  : isFreeMembershipPlan(selectedPlan)
+                    ? '立即获取'
+                    : '支付并提交订单'}
               </Button>
             </div>
           </Space>
@@ -958,9 +993,13 @@ interface MyAppRow {
   updatedAt: number;
 }
 
-function MyAppsTab({ ensureStepUp }: { ensureStepUp: () => Promise<boolean> }): ReactNode {
+function MyAppsTab({ active, ensureStepUp }: { active: boolean; ensureStepUp: () => Promise<boolean> }): ReactNode {
   const qc = useQueryClient();
-  const mine = useQuery({ queryKey: ['my-apps'], queryFn: () => api<{ apps: MyAppRow[] }>('/api/apps/mine') });
+  const mine = useQuery({
+    queryKey: ['my-apps'],
+    queryFn: () => api<{ apps: MyAppRow[] }>('/api/apps/mine'),
+    enabled: active,
+  });
   const [uploading, setUploading] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [envApp, setEnvApp] = useState<MyAppRow | null>(null);
@@ -988,7 +1027,7 @@ function MyAppsTab({ ensureStepUp }: { ensureStepUp: () => Promise<boolean> }): 
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Card size="small" title="上传 .asp-app 包" extra={<Tag bordered={false} color="blue" style={{ fontSize: 11 }}>python 沙箱运行时已上线</Tag>}>
         <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-          上传后默认仅自己可见可用；发布为公开时，平台会检查当前订阅允许的公开应用数量。
+          无需签名，上传后默认仅自己可见可用；发布为公开时，平台会检查当前订阅允许的公开应用数量。
         </Typography.Paragraph>
         <Button danger disabled={uploading} onClick={() => fileInputRef.current?.click()}>
           选择文件
@@ -1006,67 +1045,78 @@ function MyAppsTab({ ensureStepUp }: { ensureStepUp: () => Promise<boolean> }): 
       </Card>
 
       <Card size="small" title="已创建应用">
-        <Table<MyAppRow>
-          rowKey="id"
-          size="small"
-          pagination={false}
-          dataSource={mine.data?.apps ?? []}
-          columns={[
-            { title: '应用', dataIndex: 'id', width: 160 },
-            { title: '运行', width: 110, render: (_, r) => r.kind === 'html' ? 'HTML 页面' : r.runtimeMode === 'invoked' ? '按调用' : r.runtimeMode === 'persistent' ? '持久服务' : '—' },
-            { title: '可见范围', width: 120, render: (_, r) => r.visibility === 'public' ? <Tag color="green">公开</Tag> : <Tag>仅自己</Tag> },
-            {
-              title: '操作',
-              width: 200,
-              render: (_, r) => (
-                <Space size="small" wrap>
-                  <Button size="small" onClick={() => setEnvApp(r)}>
-                    环境变量
-                  </Button>
-                  {r.visibility !== 'public' ? (
-                    <Button
-                      size="small"
-                      type="primary"
-                      onClick={async () => {
+        {mine.isError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="应用列表加载失败"
+            description={mine.error instanceof Error ? mine.error.message : '请重试'}
+            action={<Button size="small" onClick={() => void mine.refetch()}>重试</Button>}
+          />
+        ) : (
+          <Table<MyAppRow>
+            rowKey="id"
+            size="small"
+            pagination={false}
+            loading={mine.isLoading}
+            dataSource={mine.data?.apps ?? []}
+            columns={[
+              { title: '应用', dataIndex: 'id', width: 160 },
+              { title: '运行', width: 110, render: (_, r) => r.kind === 'html' ? 'HTML 页面' : r.runtimeMode === 'invoked' ? '按调用' : r.runtimeMode === 'persistent' ? '持久服务' : '—' },
+              { title: '可见范围', width: 120, render: (_, r) => r.visibility === 'public' ? <Tag color="green">公开</Tag> : <Tag>仅自己</Tag> },
+              {
+                title: '操作',
+                width: 200,
+                render: (_, r) => (
+                  <Space size="small" wrap>
+                    <Button size="small" onClick={() => setEnvApp(r)}>
+                      环境变量
+                    </Button>
+                    {r.visibility !== 'public' ? (
+                      <Button
+                        size="small"
+                        type="primary"
+                        onClick={async () => {
+                          try {
+                            await api(`/api/apps/${r.id}/publish`, { method: 'POST' });
+                            message.success('应用已公开发布');
+                            void qc.invalidateQueries({ queryKey: ['my-apps'] });
+                            void qc.invalidateQueries({ queryKey: ['apps'] });
+                          } catch (err) {
+                            message.error(err instanceof Error ? err.message : '发布失败');
+                          }
+                        }}
+                      >
+                        发布为公开
+                      </Button>
+                    ) : null}
+                    <Popconfirm
+                      title={`删除应用「${r.name}」？`}
+                      description="应用文件和运行数据将被永久删除。"
+                      okText="删除"
+                      cancelText="取消"
+                      okButtonProps={{ danger: true }}
+                      onConfirm={async () => {
+                        const verified = await ensureStepUp();
+                        if (!verified) return;
                         try {
-                          await api(`/api/apps/${r.id}/publish`, { method: 'POST' });
-                          message.success('应用已公开发布');
+                          await api(`/api/apps/${r.id}`, { method: 'DELETE' });
+                          message.success('应用已删除');
                           void qc.invalidateQueries({ queryKey: ['my-apps'] });
                           void qc.invalidateQueries({ queryKey: ['apps'] });
                         } catch (err) {
-                          message.error(err instanceof Error ? err.message : '发布失败');
+                          message.error(err instanceof Error ? err.message : '删除失败');
                         }
                       }}
                     >
-                      发布为公开
-                    </Button>
-                  ) : null}
-                  <Popconfirm
-                    title={`删除应用「${r.name}」？`}
-                    description="应用文件和运行数据将被永久删除。"
-                    okText="删除"
-                    cancelText="取消"
-                    okButtonProps={{ danger: true }}
-                    onConfirm={async () => {
-                      const verified = await ensureStepUp();
-                      if (!verified) return;
-                      try {
-                        await api(`/api/apps/${r.id}`, { method: 'DELETE' });
-                        message.success('应用已删除');
-                        void qc.invalidateQueries({ queryKey: ['my-apps'] });
-                        void qc.invalidateQueries({ queryKey: ['apps'] });
-                      } catch (err) {
-                        message.error(err instanceof Error ? err.message : '删除失败');
-                      }
-                    }}
-                  >
-                    <Button size="small" danger>删除</Button>
-                  </Popconfirm>
-                </Space>
-              ),
-            },
-          ]}
-        />
+                      <Button size="small" danger>删除</Button>
+                    </Popconfirm>
+                  </Space>
+                ),
+              },
+            ]}
+          />
+        )}
       </Card>
 
       <AppEnvModal appId={envApp?.id ?? ''} appName={envApp?.id ?? ''} open={envApp != null} onClose={() => setEnvApp(null)} />

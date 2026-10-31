@@ -1,6 +1,6 @@
 ﻿/**
- * 应用注册表（B4）：DB 为唯一事实源，SQLite 本地读足够快（无网络），
- * 每次读取即拿到最新数据 → 管理 CRUD「保存即生效」天然成立。
+ * 应用注册表（B4）：PostgreSQL 为唯一事实源，每次读取即拿到最新数据，
+ * 管理 CRUD「保存即生效」天然成立。
  * urlSecret AES-256-GCM 加密落盘，转发时才解密拼入，绝不下发浏览器。
  */
 import { eq } from 'drizzle-orm';
@@ -18,8 +18,8 @@ export interface AppAcl {
   allowUserIds: number[];
 }
 
-function aclOf(appId: string): AppAcl {
-  const row = getDb().select().from(appAcl).where(eq(appAcl.appId, appId)).get();
+async function aclOf(appId: string): Promise<AppAcl> {
+  const row = (await getDb().select().from(appAcl).where(eq(appAcl.appId, appId)))[0];
   const parse = (v: string): number[] => {
     try {
       const arr = JSON.parse(v) as unknown;
@@ -33,19 +33,18 @@ function aclOf(appId: string): AppAcl {
     : { allowGroupIds: [], allowUserIds: [] };
 }
 
-export function getAcl(appId: string): AppAcl {
-  return aclOf(appId);
+export async function getAcl(appId: string): Promise<AppAcl> {
+  return await aclOf(appId);
 }
 
-export function setAcl(appId: string, acl: AppAcl): void {
-  getDb()
+export async function setAcl(appId: string, acl: AppAcl): Promise<void> {
+  await getDb()
     .insert(appAcl)
     .values({ appId, allowGroupIds: JSON.stringify(acl.allowGroupIds), allowUserIds: JSON.stringify(acl.allowUserIds) })
     .onConflictDoUpdate({
       target: appAcl.appId,
       set: { allowGroupIds: JSON.stringify(acl.allowGroupIds), allowUserIds: JSON.stringify(acl.allowUserIds) },
-    })
-    .run();
+    });
 }
 
 export const PATH_SECRET_KEY = '__path__';
@@ -71,12 +70,12 @@ export function idConflictsWithGatewayPrefix(id: string, prefix = config.gateway
   return !!last && id.toLowerCase() === last.toLowerCase();
 }
 
-export function listApps(): AppRow[] {
-  return getDb().select().from(apps).orderBy(apps.sort, apps.id).all();
+export async function listApps(): Promise<AppRow[]> {
+  return await getDb().select().from(apps).orderBy(apps.sort, apps.id);
 }
 
-export function findApp(id: string): AppRow | null {
-  return getDb().select().from(apps).where(eq(apps.id, id)).get() ?? null;
+export async function findApp(id: string): Promise<AppRow | null> {
+  return (await getDb().select().from(apps).where(eq(apps.id, id)))[0] ?? null;
 }
 
 /** 解析 urlSecret 密文；未配置返回 null */
@@ -108,10 +107,10 @@ function isAdminUser(user: { role: string } | null | undefined): boolean {
  *  - restricted：登录 + 指定分组/指定账号任一命中；ACL 为空 = 全部登录用户；归属者与管理员始终可见
  *  - private：仅归属者（用户自建应用默认）
  */
-export function canAccess(
+export async function canAccess(
   app: AppRow,
   user: { id: number; authState: string; role: string } | null | undefined,
-): boolean {
+): Promise<boolean> {
   if (isAdminUser(user)) return true;
   switch (app.visibility) {
     case 'public':
@@ -123,10 +122,10 @@ export function canAccess(
     case 'restricted': {
       if (!user || user.authState !== 'full') return false;
       if (app.ownerUserId === user.id) return true;
-      const acl = aclOf(app.id);
+      const acl = await aclOf(app.id);
       if (acl.allowGroupIds.length === 0 && acl.allowUserIds.length === 0) return true;
       if (acl.allowUserIds.includes(user.id)) return true;
-      const groupIds = userGroupIds(user.id);
+      const groupIds = await userGroupIds(user.id);
       return acl.allowGroupIds.some((g) => groupIds.has(g));
     }
     default:
@@ -140,4 +139,3 @@ export function isVisibleInPortal(app: AppRow, user: { id: number; role: string 
   if (app.visibility !== 'private') return true;
   return Boolean(user && app.ownerUserId === user.id);
 }
-

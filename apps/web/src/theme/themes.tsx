@@ -1,5 +1,5 @@
 /**
- * 主题系统保留内置色板，门户全局默认使用石墨暗色；个人中心与我的应用可在页面会话内覆盖：
+ * 主题系统保留内置色板，门户全局默认使用海雾蓝浅色；个人中心与我的应用可在页面会话内覆盖：
  * 主题 = 一组 design token（CSS variables + AntD token 双写），
  * CSS 变量和 AntD token 由同一套颜色定义生成。
  * TS 是单一来源；CSS 变量由 ThemeProvider 写入 :root，自定义样式消费。
@@ -121,7 +121,7 @@ export const BUILTIN_THEMES: AapTheme[] = [
 ];
 
 export function getTheme(id: string | null | undefined): AapTheme {
-  return BUILTIN_THEMES.find((t) => t.id === id) ?? BUILTIN_THEMES.find((t) => t.id === 'graphite')!;
+  return BUILTIN_THEMES.find((t) => t.id === id) ?? BUILTIN_THEMES.find((t) => t.id === 'ocean')!;
 }
 
 function cssVarName(k: keyof AapThemeColors): string {
@@ -138,11 +138,9 @@ function applyCssVars(theme: AapTheme, accent: string | null): void {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }): ReactNode {
-  const theme = getTheme('graphite');
+  const theme = getTheme('ocean');
 
   useEffect(() => {
-    localStorage.removeItem('aap.theme');
-    localStorage.removeItem('aap.accent');
     applyCssVars(theme, null);
   }, [theme]);
 

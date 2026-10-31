@@ -1,6 +1,6 @@
 ﻿# AI超级面板 — 单镜像（Docker 形态；FPK 复用同一镜像）
 # 构建：docker build -f deploy/docker/Dockerfile -t ai-superpanel:latest .
-# 运行：见 docker-compose.yml；数据卷 /data（SQLite、证书、密钥、头像）
+# 运行：见 docker-compose.yml；数据卷 /data（证书、密钥、头像与托管应用文件）
 
 # ---------- 构建阶段 ----------
 # 构建（RUN --mount=type=cache 依赖 BuildKit，Docker 23+ 默认前端已支持）
@@ -8,11 +8,6 @@ FROM node:22-alpine AS build
 # CN 网络优化：alpine 源与 npm registry 走国内镜像
 RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.cloud.tencent.com#g' /etc/apk/repositories \
  && npm config set registry https://registry.npmmirror.com
-# better-sqlite3 源码编译时 node-gyp 拉 Node 头文件也走国内镜像（否则 nodejs.org 直连常僵死）
-ENV NODEJS_ORG_MIRROR=https://npmmirror.com/mirrors/node \
-    NVM_NODEJS_ORG_MIRROR=https://npmmirror.com/mirrors/node
-# better-sqlite3 无 musl 预编译时的源码编译依赖
-RUN apk add --no-cache python3 make g++ libc6-compat
 RUN corepack enable
 WORKDIR /app
 # manifest 先行：只声明不变时命中依赖层，源码变更不再触发全量拉包
@@ -52,9 +47,9 @@ RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.cloud.tencent.com#g
 WORKDIR /out
 # pnpm deploy 产物：package.json + node_modules（含 @aap/shared 构建产物）
 COPY --from=build /out ./
-# 服务端编译产物与迁移
+# 服务端编译产物与 PostgreSQL 迁移
 COPY --from=build /app/apps/server/dist ./dist
-COPY --from=build /app/apps/server/drizzle ./drizzle
+COPY --from=build /app/apps/server/drizzle-pg ./drizzle-pg
 # 前端构建产物（server 生产托管 + SPA 兜底）
 COPY --from=build /app/apps/web/dist ./public
 # .asp-app 运行时 SDK（M4：aap 对象 + runner）
@@ -84,4 +79,3 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "dist/server.js"]
-

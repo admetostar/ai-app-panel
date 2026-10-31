@@ -8,6 +8,7 @@
  * 不在流中途掐断（预估先行、事后校正——C6 语义）。
  */
 import { Router, type Request, type Response, type NextFunction } from 'express';
+import { eq } from 'drizzle-orm';
 
 import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
@@ -26,6 +27,8 @@ import {
   type AppTokenRow,
 } from '../lib/llm.js';
 import { verifyIdentity } from '../gateway/identity.js';
+import { getDb } from '../db/index.js';
+import { llmAppTokens } from '../db/schema.js';
 
 export const llmGatewayRouter = Router();
 
@@ -54,10 +57,10 @@ declare global {
   }
 }
 
-llmGatewayRouter.use('/v1', (req: Request, res: Response, next: NextFunction): void => {
+llmGatewayRouter.use('/v1', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   const auth = req.headers.authorization ?? '';
   const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : undefined;
-  const token = resolveAppToken(bearer);
+  const token = await resolveAppToken(bearer);
   if (!token) {
     const { status, body } = openaiError(401, 'invalid_api_key', '无效的网关凭据（Bearer token）');
     res.status(status).json(body);
@@ -81,17 +84,17 @@ llmGatewayRouter.use('/v1', (req: Request, res: Response, next: NextFunction): v
       return;
     }
   }
-  getDbTouch(token);
+  await getDbTouch(token);
   req.llmToken = token;
   next();
 });
 
 const llmRateHits = new Map<string, { start: number; count: number }>();
-import { getSqlite } from '../db/index.js';
-function getDbTouch(token: AppTokenRow): void {
-  getSqlite()
-    .prepare('UPDATE llm_app_tokens SET last_used_at = ? WHERE id = ?')
-    .run(Date.now(), token.id);
+async function getDbTouch(token: AppTokenRow): Promise<void> {
+  await getDb()
+    .update(llmAppTokens)
+    .set({ lastUsedAt: Date.now() })
+    .where(eq(llmAppTokens.id, token.id));
 }
 
 // ---------- 用户归因（passUser 身份链转发） ----------
@@ -118,7 +121,7 @@ llmGatewayRouter.get(
     const now = Math.floor(Date.now() / 1000);
     res.json({
       object: 'list',
-      data: modelCatalog().map((m) => ({ id: m, object: 'model', created: now, owned_by: 'AI-SuperPanel' })),
+      data: await (await modelCatalog()).map((m) => ({ id: m, object: 'model', created: now, owned_by: 'AI-SuperPanel' })),
     });
   }),
 );
@@ -140,7 +143,7 @@ llmGatewayRouter.post(
     const body = (req.body ?? {}) as ChatBody;
     // 能力声明闸（G1，审计 F1）：AAP_TOKEN 对全部包注入（egress 凭据），
     // 未声明 llm 的包不得凭它直连 /v1 花运行用户余额——与 /api/aap/llm/chat 同一判定
-    if (!appLlmAllowed(token.appId)) {
+    if (!await appLlmAllowed(token.appId)) {
       const { status, body: e } = openaiError(
         403,
         'capability_not_declared',
@@ -155,7 +158,7 @@ llmGatewayRouter.post(
       res.status(status).json(e);
       return;
     }
-    const candidates = resolveRouteCandidates(model);
+    const candidates = await resolveRouteCandidates(model);
     if (candidates.length === 0) {
       const { status, body: e } = openaiError(404, 'model_not_found', `模型 ${model} 不在网关目录中`);
       res.status(status).json(e);
@@ -171,7 +174,7 @@ llmGatewayRouter.post(
     // 流式无 usage 帧的入账兜底：预检处算好请求 token 估算随 meta 传入，
     // 避免结算处二次序列化（审计 P1-7）
     const estimatedPromptTokens = stream ? estimateTokens(body.messages) : 0;
-    precheck(userId, estimatedCost);
+    await precheck(userId, estimatedCost);
 
     const started = Date.now();
 
@@ -206,7 +209,7 @@ llmGatewayRouter.post(
           // 客户端类错误（参数/key 无效）：原样透传，不切换；本次无实际用量，
           // 预检扣减的预估成本全额退回（否则错误请求会白扣用户余额）
           const text = await up.text();
-          recordUsage({
+          await recordUsage({
             userId,
             appId: token.appId,
             model,
@@ -217,7 +220,7 @@ llmGatewayRouter.post(
             status: 'error',
             requestId,
           });
-          settleEstimate(userId, estimatedCost, 0);
+          await settleEstimate(userId, estimatedCost, 0);
           res.status(up.status).type('application/json').set('x-aap-request-id', requestId).send(text);
           return;
         }
@@ -243,7 +246,7 @@ llmGatewayRouter.post(
         };
         const promptTokens = json.usage?.prompt_tokens ?? estimateTokens(body.messages);
         const completionTokens = json.usage?.completion_tokens ?? 0;
-        recordUsage({
+        await recordUsage({
           userId,
           appId: token.appId,
           model,
@@ -254,7 +257,7 @@ llmGatewayRouter.post(
           status: 'ok',
           requestId,
         });
-        settleEstimate(userId, estimatedCost, Math.ceil(((promptTokens + completionTokens) * candidate.multiplier) / 100));
+        await settleEstimate(userId, estimatedCost, Math.ceil(((promptTokens + completionTokens) * candidate.multiplier) / 100));
         res.status(200).set('x-aap-request-id', requestId).json(json);
         return;
       } catch (err) {
@@ -264,7 +267,7 @@ llmGatewayRouter.post(
       }
     }
 
-    recordUsage({
+    await recordUsage({
       userId,
       appId: token.appId,
       model,
@@ -276,7 +279,7 @@ llmGatewayRouter.post(
       requestId,
     });
     // 全部候选失败：无实际用量，退回预检扣减的预估成本
-    settleEstimate(userId, estimatedCost, 0);
+    await settleEstimate(userId, estimatedCost, 0);
     const { status, body: e } = openaiError(502, 'upstream_error', `所有上游均不可用（最后错误：${lastError}）`);
     res.status(status).set('x-aap-request-id', requestId).json(e);
   }),
@@ -355,14 +358,12 @@ async function streamPassthrough(
     const u = parseUsageLine(carry);
     if (u) usage = u;
   }
-  res.end();
-
   // 无 usage 帧按估算入账，防断连免单（审计 P1-7）：客户端末帧前断开或上游
   // 不回 usage 时，prompt 按请求消息估算、completion 按已转发字节数/4 估；
   // usage 帧存在时按真实值。sentBytes=0（无内容流出）保持 0 入账全额退回
   const promptTokens = usage?.prompt_tokens ?? (sentBytes > 0 ? meta.estimatedPromptTokens : 0);
   const completionTokens = usage?.completion_tokens ?? (sentBytes > 0 ? Math.ceil(sentBytes / 4) : 0);
-  recordUsage({
+  await recordUsage({
     userId: meta.userId,
     appId: meta.appId,
     model: meta.model,
@@ -374,7 +375,8 @@ async function streamPassthrough(
     requestId: meta.requestId,
   });
   // 流式不中途掐断：预估已扣，实际用量事后校正缓存（账本只记实际）
-  settleEstimate(meta.userId, meta.estimatedCost, Math.ceil(((promptTokens + completionTokens) * meta.multiplier) / 100));
+  await settleEstimate(meta.userId, meta.estimatedCost, Math.ceil(((promptTokens + completionTokens) * meta.multiplier) / 100));
+  res.end();
 }
 
 /** 从单行 SSE data 提取 usage；非 data 行 / [DONE] / 非完整 JSON 返回 null */
@@ -400,4 +402,3 @@ function estimateTokens(messages: unknown): number {
     return 1;
   }
 }
-

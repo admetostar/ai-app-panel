@@ -5,8 +5,8 @@
 
 ## 形态（app-develop-internal.skill §8）
 
-- **原生 FPK**：载荷 = `deploy/native` 自包含包（自带 glibc Node 22 + 按目标 C 库
-  编译的 better-sqlite3），运行时依赖声明 `install_dep_apps=python312`；
+- **原生 FPK**：载荷 = `deploy/native` 自包含包（自带 glibc Node 22 与 PostgreSQL
+  迁移），运行时依赖声明 `install_dep_apps=python312`；平台业务数据使用外部 PostgreSQL 17。
   `cmd/main` 优先用 `/var/apps/python312/target/bin/python3`，缺失回落系统 python3。
 - **主入口 = 本服务自主监听端口**（向导 `wizard_port`，默认 8080，绑 0.0.0.0）：
   内网直连 `http://NAS:端口`，外网走门户自带 HTTPS/ACME 或用户自有反代；
@@ -36,14 +36,19 @@ AI-SuperPanel/
 │   ├── privilege        ← run-as=package 专用用户 AI-SuperPanel
 │   └── resource         ← {}（数据只落 TRIM_PKGVAR，不开放文件管理器共享）
 ├── wizard/
-│   ├── install          ← 服务端口 wizard_port（默认 8080）+ 可选初始管理员密码 wizard_admin_password
-│   └── config           ← 端口字段，装完后在应用设置里可改，提交自动重启生效
+│   ├── install          ← PostgreSQL 连接串 wizard_database_url + 服务端口 + 可选初始管理员密码
+│   └── config           ← PostgreSQL 连接串与端口字段，修改后自动重启生效
 ├── manifest             ← INI；platform=x86|arm（含原生二进制，不能 all）
 ├── ICON.PNG             ← 64×64
 └── ICON_256.PNG         ← 256×256
 ```
 
 ## 用法
+
+FPK 不内置 PostgreSQL 服务。安装前需准备可从 NAS 访问的 PostgreSQL 17
+数据库和专用数据库用户；安装向导中填写连接串（`postgresql://...`），该用户
+需要创建表、索引和迁移记录的权限。平台主业务数据写入 PostgreSQL；托管应用
+可选用各自独立的 `app.sqlite` 保存应用自身状态。
 
 ```bash
 # 前置：目标架构原生包已构建（或让脚本现场构建）
@@ -82,9 +87,9 @@ AI-SuperPanel/
 | 统一网关（gatewaySocket） | ❌ 不用（能力休眠） | 图标只是快捷方式，业务没必要过飞牛网关；服务端 socket/前缀能力保留，未来可零成本接回 |
 | `service_port` 静态声明 | ❌ 省略 + `checkport=false` | 端口已向导化（wizard_port），静态声明会显示错误端口；运行状态交给 `cmd/main status` |
 | `install_dep_apps=python312` | ✅ 采用 | 沙箱运行时确定化；`cmd/main` 保留系统 python3 回落 |
-| `install_dep_apps=nodejs_v22` | ❌ 不用 | better-sqlite3 按自带 Node 22 ABI 编译，绑定系统运行时版本有失配风险 |
-| `data-share` 共享目录 | ❌ 不用 | 数据目录含 SQLite/主密钥/上传件，不应暴露给文件管理器 |
-| wizard 安装向导 | ✅ 最小使用 | 收集服务端口 `wizard_port`（install + config，config 提交自动重启生效）+ 可选初始管理员密码 `wizard_admin_password`（password 型，留空随机生成写 admin-credentials.txt；无论哪种首次登录均强制改密 + 绑 MFA——密码会留在飞牛向导值存储中，强制改密后即作废）；首配仍走门户自身 checklist |
+| `install_dep_apps=nodejs_v22` | ❌ 不用 | Node 22 随载荷自带；PostgreSQL 驱动为纯 JavaScript |
+| `data-share` 共享目录 | ❌ 不用 | 数据目录含托管应用文件、主密钥与应用本地状态，不应暴露给文件管理器 |
+| wizard 安装向导 | ✅ 最小使用 | 收集必填 PostgreSQL 连接串 `wizard_database_url`、服务端口 `wizard_port` 与可选初始管理员密码；数据库连接串会保存在飞牛向导值存储中，应用启动时自动应用 `drizzle-pg/` 迁移 |
 | 打包签名 | —— | 官方文档（截至 2026-07-31）无 FPK 签名要求；上架走开发者先锋交流群提交。仓库内 ed25519 体系是 **.asp-app 应用包**的签名（fnos-dashboard 方法论），与 FPK 无关 |
 
 ## 真机待验证
@@ -95,4 +100,3 @@ AI-SuperPanel/
 4. `config/resource` 为空对象 `{}` 时安装器行为（文档未给空资源示例）。
 5. python312 运行时包在目标 fnOS 版本的实际可用性（`cmd/main` 已回落系统 python3）。
 6. 沙箱 runner 在包用户（非 root）身份下的 persistent 进程行为。
-

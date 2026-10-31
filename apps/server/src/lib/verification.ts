@@ -167,12 +167,11 @@ export async function issueCode(
   const now = Date.now();
 
   // 同通道 60s 限 1 条
-  const last = db
+  const last = (await db
     .select({ createdAt: verificationCodes.createdAt })
     .from(verificationCodes)
     .where(and(eq(verificationCodes.channel, channel), eq(verificationCodes.target, target)))
-    .orderBy(sql`id DESC`)
-    .get();
+    .orderBy(sql`id DESC`))[0];
   if (last && now - last.createdAt < RESEND_INTERVAL_MS) {
     throw new HttpError(429, 'CODE_RESEND_TOO_FAST', '发送太频繁，请稍后再试', {
       retryAfterMs: RESEND_INTERVAL_MS - (now - last.createdAt),
@@ -181,7 +180,7 @@ export async function issueCode(
 
   // 24h 上限（防轰炸/刷费）
   const dailyLimit = getSettingInt('CODE_SEND_DAILY_LIMIT', 10);
-  const count = db
+  const count = Number((await db
     .select({ n: sql<number>`count(*)` })
     .from(verificationCodes)
     .where(
@@ -190,14 +189,13 @@ export async function issueCode(
         eq(verificationCodes.target, target),
         gt(verificationCodes.createdAt, now - 24 * 3600_000),
       ),
-    )
-    .get()?.n ?? 0;
+    ))[0]?.n ?? 0);
   if (count >= dailyLimit) {
     throw new HttpError(429, 'CODE_DAILY_LIMIT', '今日发送次数已达上限，请明天再试');
   }
 
   const code = String(randomInt(0, 10 ** CODE_LENGTH)).padStart(CODE_LENGTH, '0');
-  db.insert(verificationCodes)
+  await db.insert(verificationCodes)
     .values({
       channel,
       target,
@@ -206,8 +204,7 @@ export async function issueCode(
       ip,
       createdAt: now,
       expiresAt: now + CODE_TTL_MS,
-    })
-    .run();
+    });
 
   const ch = getChannel(channel);
   try {
@@ -217,7 +214,7 @@ export async function issueCode(
     throw new HttpError(502, 'CODE_SEND_FAILED', '验证码发送失败，请稍后重试或联系管理员');
   }
 
-  audit(`channel:${channel}`, ip, 'verification.issued', { purpose, target: channel === 'email' ? maskEmail(target) : target });
+  await audit(`channel:${channel}`, ip, 'verification.issued', { purpose, target: channel === 'email' ? maskEmail(target) : target });
   return {
     sentTo: channel === 'email' ? maskEmail(target) : target,
     resendAfterMs: RESEND_INTERVAL_MS,
@@ -228,10 +225,10 @@ export async function issueCode(
 export type VerifyResult = { ok: true } | { ok: false; error: string };
 
 /** 校验验证码：最新未消费未过期行，命中即标记消费（单次有效） */
-export function verifyCode(channel: VerifyChannel, target: string, purpose: CodePurpose, code: string): VerifyResult {
+export async function verifyCode(channel: VerifyChannel, target: string, purpose: CodePurpose, code: string): Promise<VerifyResult> {
   const db = getDb();
   const now = Date.now();
-  const row = db
+  const row = (await db
     .select()
     .from(verificationCodes)
     .where(
@@ -243,25 +240,23 @@ export function verifyCode(channel: VerifyChannel, target: string, purpose: Code
         gt(verificationCodes.expiresAt, now),
       ),
     )
-    .orderBy(sql`id DESC`)
-    .get();
+    .orderBy(sql`id DESC`))[0];
   if (!row) return { ok: false, error: 'CODE_INVALID_OR_EXPIRED' };
   if (!codeMatches(row.codeHash, code)) return { ok: false, error: 'CODE_MISMATCH' };
   // 条件消费（consumed_at IS NULL 才置值）：同步模型下 SELECT/UPDATE 本不可交错，
   // 此为防御纵深（未来引入多进程/异步通道时不退化为一码多用）
-  const consumed = db
+  const consumed = await db
     .update(verificationCodes)
     .set({ consumedAt: now })
     .where(and(eq(verificationCodes.id, row.id), isNull(verificationCodes.consumedAt)))
-    .run();
-  if (consumed.changes === 0) return { ok: false, error: 'CODE_CONSUMED' };
+    .returning({ id: verificationCodes.id });
+  if (consumed.length === 0) return { ok: false, error: 'CODE_CONSUMED' };
   return { ok: true };
 }
 
 /** 清理过期验证码（挂进 audit 的清理循环） */
-function purgeExpiredCodes(now = Date.now()): void {
-  getDb().delete(verificationCodes).where(sql`expires_at < ${now - 24 * 3600_000}`).run();
+async function purgeExpiredCodes(now = Date.now()): Promise<void> {
+  await getDb().delete(verificationCodes).where(sql`expires_at < ${now - 24 * 3600_000}`);
 }
 
 registerPurgeTask(purgeExpiredCodes);
-

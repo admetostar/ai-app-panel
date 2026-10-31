@@ -11,7 +11,7 @@ import type { IncomingMessage, Server } from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
 import { eq } from 'drizzle-orm';
 import { sessionCookieFor, setupTestDb, teardownTestDb } from './testkit.js';
-import { closeDb, getDb, getSqlite } from '../db/index.js';
+import { getDb } from '../db/index.js';
 import { seedSettings, setSetting, getSetting } from '../lib/settings.js';
 import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
@@ -54,8 +54,8 @@ async function createAppViaAdmin(payload: Record<string, unknown>): Promise<void
 }
 
 beforeAll(async () => {
-  ({ dir } = setupTestDb());
-  seedSettings();
+  ({ dir } = await setupTestDb());
+  await seedSettings();
 
   // mock 上游
   up = http.createServer((req, res) => {
@@ -111,18 +111,17 @@ beforeAll(async () => {
   const base = `http://127.0.0.1:${gwPort}`;
 
   // 管理员（直插 + 直建 full 会话；mfaEnabled=true 时 HTTP 登录只给半登录态）
-  const info = getDb()
+  const [info] = await getDb()
     .insert(users)
-    .values({ kind: 'local', username: 'admin', name: '管理员', role: 'admin', mfaEnabled: true, createdAt: Date.now() })
-    .run();
-  adminCookie = sessionCookieFor(Number(info.lastInsertRowid));
+    .values({ kind: 'local', username: 'admin', name: '管理员', role: 'admin', mfaEnabled: true, createdAt: Date.now() }).returning({ id: users.id });
+  adminCookie = await sessionCookieFor(Number(info!.id));
 
   // 普通用户（plan=free）
-  const u = getDb()
+  const [u] = await getDb()
     .insert(users)
     .values({ kind: 'local', username: 'freeuser', name: 'free', role: 'user', createdAt: Date.now() })
-    .run();
-  await writeLocalCredentials(Number(u.lastInsertRowid), 'free-password');
+    .returning({ id: users.id });
+  await writeLocalCredentials(u!.id, 'free-password');
 
   // 注册应用：公开(passUser) / 需登录 / 会员 / path 型凭据
   await createAppViaAdmin({ id: 'pub', name: '公开应用', upstream: `http://127.0.0.1:${upPort}`, visibility: 'public', passUser: true });
@@ -147,8 +146,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await new Promise<void>((r) => gw.close(() => r()));
   await new Promise<void>((r) => up.close(() => r()));
-  closeDb();
-  teardownTestDb(dir);
+  await teardownTestDb(dir);
 });
 
 describe('W5 反代（B1）', () => {
@@ -279,7 +277,7 @@ describe('PUT 应用受众 ACL（回归：PUT 曾不写 ACL，restricted 收窄�
       body: JSON.stringify({ username: 'freeuser', password: 'free-password' }),
     });
     const cookie = cookieOf(login);
-    const freeId = getDb().select().from(users).where(eq(users.username, 'freeuser')).get()!.id;
+    const freeId = await (await getDb().select().from(users).where(eq(users.username, 'freeuser')))[0]!.id;
 
     // 初始：restricted + 空 ACL = 全体登录用户可见
     await createAppViaAdmin({ id: 'aclput', name: 'ACL-PUT', upstream: `http://127.0.0.1:${upPort}`, visibility: 'restricted' });
@@ -294,14 +292,14 @@ describe('PUT 应用受众 ACL（回归：PUT 曾不写 ACL，restricted 收窄�
 
     // PUT 收窄：仅放行 freeuser 不在的分组 → ACL 落库且访问判定立即收窄
     expect((await putAcl({ allowedGroupIds: [999999] })).status).toBe(200);
-    expect(getAcl('aclput').allowGroupIds).toEqual([999999]);
-    expect(getAcl('aclput').allowUserIds).toEqual([]); // 未提交的一侧保留（创建时为空）
+    expect((await getAcl('aclput')).allowGroupIds).toEqual([999999]);
+    expect((await getAcl('aclput')).allowUserIds).toEqual([]); // 未提交的一侧保留（创建时为空）
     expect((await fetch(`${base}/app/aclput/`, { headers: { cookie } })).status).toBe(403);
 
     // 再 PUT 仅提交 allowedUserIds：分组一侧保留，freeuser 命中账号白名单恢复可见
     expect((await putAcl({ allowedUserIds: [freeId] })).status).toBe(200);
-    expect(getAcl('aclput').allowGroupIds).toEqual([999999]);
-    expect(getAcl('aclput').allowUserIds).toEqual([freeId]);
+    expect((await getAcl('aclput')).allowGroupIds).toEqual([999999]);
+    expect((await getAcl('aclput')).allowUserIds).toEqual([freeId]);
     expect((await fetch(`${base}/app/aclput/`, { headers: { cookie } })).status).toBe(200);
   });
 });
@@ -341,25 +339,23 @@ describe('P 可见性新模型（restricted/private/分组）', () => {
     const { getDb } = await import('../db/index.js');
     const { userGroups, userGroupMembers, appAcl, apps } = await import('../db/schema.js');
     const now = Date.now();
-    const g = getDb().insert(userGroups).values({ name: 'vip-test', createdAt: now }).run();
-    const gid = Number(g.lastInsertRowid);
-    // 建两个测试用户
-    const u1 = getDb().insert(users).values({ kind: 'local', username: 'aclvip', role: 'user', createdAt: now }).run();
-    const u1id = Number(u1.lastInsertRowid);
-    const u2 = getDb().insert(users).values({ kind: 'local', username: 'aclnone', role: 'user', createdAt: now }).run();
-    const u2id = Number(u2.lastInsertRowid);
-    getDb().insert(userGroupMembers).values({ groupId: gid, userId: u1id, createdAt: now }).run();
-    // restricted 应用：仅 gid 组可见
-    getDb().insert(apps).values({
+    const [g] = await getDb().insert(userGroups).values({ name: 'vip-test', createdAt: now }).returning({ id: userGroups.id });
+    const gid = g!.id;
+    const [u1] = await getDb().insert(users).values({ kind: 'local', username: 'aclvip', role: 'user', createdAt: now }).returning({ id: users.id });
+    const u1id = u1!.id;
+    const [u2] = await getDb().insert(users).values({ kind: 'local', username: 'aclnone', role: 'user', createdAt: now }).returning({ id: users.id });
+    const u2id = u2!.id;
+    await getDb().insert(userGroupMembers).values({ groupId: gid, userId: u1id, createdAt: now });
+    await getDb().insert(apps).values({
       id: 'acl-app', name: 'ACL', visibility: 'restricted', upstream: `http://127.0.0.1:${upPort}`,
       ownerUserId: 1, kind: 'upstream', createdAt: now, updatedAt: now,
-    }).run();
-    getDb().insert(appAcl).values({ appId: 'acl-app', allowGroupIds: JSON.stringify([gid]), allowUserIds: '[]' }).run();
+    });
+    await getDb().insert(appAcl).values({ appId: 'acl-app', allowGroupIds: JSON.stringify([gid]), allowUserIds: '[]' });
     // private 应用：归属 u1
-    getDb().insert(apps).values({
+    await getDb().insert(apps).values({
       id: 'priv-app', name: 'PRIV', visibility: 'private', upstream: `http://127.0.0.1:${upPort}`,
       ownerUserId: u1id, kind: 'upstream', createdAt: now, updatedAt: now,
-    }).run();
+    });
 
     const login = async (username: string): Promise<string> => {
       const r = await fetch(`${base}/api/auth/login`, {
@@ -402,10 +398,10 @@ describe('P 可见性新模型（restricted/private/分组）', () => {
     const { writeHtmlApp } = await import('../gateway/staticApp.js');
     const { apps } = await import('../db/schema.js');
     writeHtmlApp('htmltest', '<!doctype html><html><body><h1 id="h">HELLO-HTML</h1></body></html>');
-    getDb().insert(apps).values({
+    await getDb().insert(apps).values({
       id: 'htmltest', name: 'HTML', visibility: 'public', upstream: '', kind: 'html',
       ownerUserId: 1, createdAt: Date.now(), updatedAt: Date.now(),
-    }).run();
+    });
     const res = await fetch(`${base}/app/htmltest/`);
     expect(res.status).toBe(200);
     const html = await res.text();
@@ -471,7 +467,7 @@ describe('P 可见性矩阵（login 态）', () => {
 
 describe('W5 限流（令牌桶双维度）', () => {
   it('超过每 IP 上限 → 429（放最后，避免污染其他用例）', async () => {
-    setSetting('RATE_IP_PER_MIN', '3');
+    await setSetting('RATE_IP_PER_MIN', '3');
     // 连续请求匿名公开应用，直到 429（桶里可能已有余量，上限 20 次防死循环）
     let got429 = false;
     for (let i = 0; i < 20; i++) {
@@ -483,7 +479,7 @@ describe('W5 限流（令牌桶双维度）', () => {
       await res.text();
     }
     expect(got429).toBe(true);
-    setSetting('RATE_IP_PER_MIN', '600');
+    await setSetting('RATE_IP_PER_MIN', '600');
   });
 });
 

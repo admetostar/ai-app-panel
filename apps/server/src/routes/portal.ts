@@ -16,7 +16,7 @@ export const portalRouter = Router();
 
 const REGISTRATION_MODES: RegistrationMode[] = ['closed', 'open', 'invite'];
 
-portalRouter.get('/portal/bootstrap', (_req, res) => {
+portalRouter.get('/portal/bootstrap', async (_req, res) => {
   const mode = (getSetting('REGISTRATION_MODE') ?? 'closed') as RegistrationMode;
   const bootstrap: PortalBootstrap = {
     branding: {
@@ -33,15 +33,15 @@ portalRouter.get('/portal/bootstrap', (_req, res) => {
       mode: REGISTRATION_MODES.includes(mode) ? mode : 'closed',
       turnstileEnabled: Boolean(getSetting('TURNSTILE_SITE_KEY')),
     },
-    needsInit: (getDb().select({ n: sql<number>`count(*)` }).from(users).get()?.n ?? 0) === 0,
+    needsInit: Number((await getDb().select({ n: sql<number>`count(*)` }).from(users))[0]?.n ?? 0) === 0,
     oidc: { enabled: oidcEnabled() },
   };
   res.json(bootstrap);
 });
 
-portalRouter.get('/portal/plans', (_req, res) => {
-  const groupNames = new Map(listGroups().map((group) => [group.id, group.name]));
-  const plans = listPlans(true).map((plan) => ({
+portalRouter.get('/portal/plans', async (_req, res) => {
+  const groupNames = new Map(await (await listGroups()).map((group) => [group.id, group.name]));
+  const plans = await (await listPlans(true)).map((plan) => ({
     ...plan,
     groupName: groupNames.get(plan.groupId) ?? `#${plan.groupId}`,
   }));

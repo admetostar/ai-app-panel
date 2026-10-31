@@ -34,7 +34,7 @@ adminLlmRouter.use('/admin/llm', requireAdmin);
 adminLlmRouter.get(
   '/admin/llm/upstreams',
   h(async (_req, res) => {
-    res.json({ upstreams: listUpstreams() });
+    res.json({ upstreams: await listUpstreams() });
   }),
 );
 
@@ -45,8 +45,8 @@ adminLlmRouter.post(
     if (!body.name?.trim() || !body.baseUrl?.trim() || !body.apiKey?.trim()) {
       throw new HttpError(400, 'INVALID_INPUT', '名称、Base URL、API Key 均必填');
     }
-    const id = createUpstream(body.name.trim(), body.baseUrl.trim(), body.apiKey.trim());
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'llm.upstream.create', { id, name: body.name });
+    const id = await createUpstream(body.name.trim(), body.baseUrl.trim(), body.apiKey.trim());
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'llm.upstream.create', { id, name: body.name });
     res.json({ ok: true, id });
   }),
 );
@@ -56,8 +56,8 @@ adminLlmRouter.put(
   h(async (req, res) => {
     const id = Number(req.params.id);
     const body = (req.body ?? {}) as { name?: string; baseUrl?: string; apiKey?: string; enabled?: boolean };
-    updateUpstream(id, body);
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'llm.upstream.update', { id });
+    await updateUpstream(id, body);
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'llm.upstream.update', { id });
     res.json({ ok: true });
   }),
 );
@@ -66,16 +66,15 @@ adminLlmRouter.post(
   '/admin/llm/upstreams/:id/test',
   h(async (req, res) => {
     const id = Number(req.params.id);
-    const up = getDb().select().from(llmUpstreams).where(eq(llmUpstreams.id, id)).get();
+    const up = (await getDb().select().from(llmUpstreams).where(eq(llmUpstreams.id, id)))[0];
     if (!up) throw new HttpError(404, 'NOT_FOUND', '上游不存在');
     // 用该上游第一条启用路由的真实模型做 1-token chat ping——比 /models 列表更能
     // 暴露真实问题（key 无效、http/https 边缘拦截、模型名映射错误，均实测踩过）
-    const route = getDb()
+    const route = (await getDb()
       .select({ m: llmRoutes.upstreamModel })
       .from(llmRoutes)
       .where(and(eq(llmRoutes.upstreamId, id), eq(llmRoutes.enabled, true)))
-      .orderBy(llmRoutes.priority)
-      .get();
+      .orderBy(llmRoutes.priority))[0];
     const model = String((req.body ?? {}).model ?? route?.m ?? '').trim();
     const base = up.baseUrl.replace(/\/+$/, '');
     const started = Date.now();
@@ -99,7 +98,7 @@ adminLlmRouter.post(
         detail = `网络错误：${err instanceof Error ? err.message : String(err)}`.slice(0, 240);
       }
     }
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'llm.upstream.test', { id, ok, status: httpStatus });
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'llm.upstream.test', { id, ok, status: httpStatus });
     res.json({ ok, status: httpStatus, latencyMs: Date.now() - started, model: model || null, detail });
   }),
 );
@@ -107,8 +106,8 @@ adminLlmRouter.post(
 adminLlmRouter.delete(
   '/admin/llm/upstreams/:id',
   h(async (req, res) => {
-    deleteUpstream(Number(req.params.id));
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'llm.upstream.delete', { id: Number(req.params.id) });
+    await deleteUpstream(Number(req.params.id));
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'llm.upstream.delete', { id: Number(req.params.id) });
     res.json({ ok: true });
   }),
 );
@@ -118,9 +117,9 @@ adminLlmRouter.delete(
 adminLlmRouter.get(
   '/admin/llm/routes',
   h(async (_req, res) => {
-    const upstreams = new Map(listUpstreams().map((u) => [u.id, u.name]));
+    const upstreams = new Map(await (await listUpstreams()).map((u) => [u.id, u.name]));
     res.json({
-      routes: listRoutes().map((r) => ({ ...r, upstreamName: upstreams.get(r.upstreamId) ?? `#${r.upstreamId}` })),
+      routes: await (await listRoutes()).map((r) => ({ ...r, upstreamName: upstreams.get(r.upstreamId) ?? `#${r.upstreamId}` })),
     });
   }),
 );
@@ -132,7 +131,7 @@ adminLlmRouter.post(
     if (!body.model?.trim() || !body.upstreamId || !body.upstreamModel?.trim()) {
       throw new HttpError(400, 'INVALID_INPUT', 'model、upstreamId、upstreamModel 必填');
     }
-    createRoute({
+    await createRoute({
       model: body.model,
       upstreamId: body.upstreamId,
       upstreamModel: body.upstreamModel,
@@ -140,7 +139,7 @@ adminLlmRouter.post(
       priority: body.priority,
       weight: body.weight,
     });
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'llm.route.create', { model: body.model });
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'llm.route.create', { model: body.model });
     res.json({ ok: true });
   }),
 );
@@ -157,7 +156,7 @@ adminLlmRouter.put(
     if (body.weight !== undefined) set.weight = Math.max(1, Math.round(body.weight));
     if (body.enabled !== undefined) set.enabled = body.enabled;
     if (Object.keys(set).length > 0) {
-      getDb().update(llmRoutes).set(set).where(eq(llmRoutes.id, id)).run();
+      await getDb().update(llmRoutes).set(set).where(eq(llmRoutes.id, id));
     }
     res.json({ ok: true });
   }),
@@ -166,7 +165,7 @@ adminLlmRouter.put(
 adminLlmRouter.delete(
   '/admin/llm/routes/:id',
   h(async (req, res) => {
-    deleteRoute(Number(req.params.id));
+    await deleteRoute(Number(req.params.id));
     res.json({ ok: true });
   }),
 );
@@ -177,7 +176,7 @@ adminLlmRouter.get(
   '/admin/llm/tokens',
   h(async (_req, res) => {
     res.json({
-      tokens: listAppTokens().map((t) => ({
+      tokens: await (await listAppTokens()).map((t) => ({
         id: t.id,
         appId: t.appId,
         name: t.name,
@@ -199,8 +198,8 @@ adminLlmRouter.post(
     if (!/^[a-z0-9][a-z0-9_.-]{0,63}$/i.test(appId)) {
       throw new HttpError(400, 'INVALID_APP_ID', '应用标识不合法');
     }
-    const token = createAppToken(appId.toLowerCase(), String(body.name ?? ''), body.perMinuteLimit ?? null);
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'llm.token.create', { appId });
+    const token = await createAppToken(appId.toLowerCase(), String(body.name ?? ''), body.perMinuteLimit ?? null);
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'llm.token.create', { appId });
     res.json({ ok: true, token }); // 明文仅此一次
   }),
 );
@@ -208,8 +207,8 @@ adminLlmRouter.post(
 adminLlmRouter.delete(
   '/admin/llm/tokens/:id',
   h(async (req, res) => {
-    revokeAppToken(Number(req.params.id));
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'llm.token.revoke', { id: Number(req.params.id) });
+    await revokeAppToken(Number(req.params.id));
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'llm.token.revoke', { id: Number(req.params.id) });
     res.json({ ok: true });
   }),
 );
@@ -225,11 +224,11 @@ adminLlmRouter.post(
     if (!Number.isInteger(userId) || userId <= 0 || !Number.isInteger(delta) || delta === 0) {
       throw new HttpError(400, 'INVALID_INPUT', 'userId 与非零整数 delta 必填');
     }
-    if (!getDb().select({ id: users.id }).from(users).where(eq(users.id, userId)).get()) {
+    if (!(await getDb().select({ id: users.id }).from(users).where(eq(users.id, userId)))[0]) {
       throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
     }
-    grantTokens(userId, delta, String(body.note ?? '').slice(0, 200) || (delta > 0 ? '管理员发放' : '管理员调减'), req.user!.id);
-    res.json({ ok: true, balance: recomputeBalance(userId) });
+    await grantTokens(userId, delta, (await String(body.note ?? '')).slice(0, 200) || (delta > 0 ? '管理员发放' : '管理员调减'), req.user!.id);
+    res.json({ ok: true, balance: await recomputeBalance(userId) });
   }),
 );
 
@@ -237,12 +236,11 @@ adminLlmRouter.get(
   '/admin/llm/usage',
   h(async (req, res) => {
     const limit = Math.min(200, Math.max(1, Number(req.query.limit ?? 50) || 50));
-    const rows = getDb()
+    const rows = await getDb()
       .select()
       .from(llmLedger)
       .orderBy(sql`id DESC`)
-      .limit(limit)
-      .all();
+      .limit(limit);
     res.json({
       rows: rows.map((r) => ({
         id: r.id,

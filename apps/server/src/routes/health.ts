@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { getSqlite } from '../db/index.js';
+import { sql } from 'drizzle-orm';
+import { getDb } from '../db/index.js';
 
 /**
  * 存活与健康探针（Docker HEALTHCHECK / FPK 健康检查）。
@@ -8,12 +9,11 @@ import { getSqlite } from '../db/index.js';
  */
 export const healthRouter = Router();
 
-healthRouter.get('/health', (_req, res) => {
-  let dbOk = true;
+healthRouter.get('/health', async (_req, res) => {
   try {
-    getSqlite().prepare('SELECT 1').get();
+    await getDb().execute(sql`SELECT 1`);
+    res.status(200).json({ ok: true });
   } catch {
-    dbOk = false;
+    res.status(503).json({ ok: false });
   }
-  res.status(dbOk ? 200 : 503).json({ ok: dbOk });
 });

@@ -6,33 +6,33 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { config } from '../config/index.js';
 import { getDb } from '../db/index.js';
-import { localCredentials, trustedSigningKeys, users } from '../db/schema.js';
+import { localCredentials, users } from '../db/schema.js';
 import { generatePassword, hashPassword } from './passwords.js';
 import { audit } from './audit.js';
 import { defaultAvatarForUser } from './userAvatar.js';
 
 export const CREDENTIALS_FILE = 'admin-credentials.txt';
+const INITIAL_ADMIN_POINTS = 99_999_999;
 
 function credentialsPath(): string {
   return path.join(config.dataDir, CREDENTIALS_FILE);
 }
 
-export function userCount(): number {
-  return getDb().select({ n: sql<number>`count(*)` }).from(users).get()?.n ?? 0;
+export async function userCount(): Promise<number> {
+  return Number((await getDb().select({ n: sql<number>`count(*)` }).from(users))[0]?.n ?? 0);
 }
 
-export function adminCount(): number {
-  return getDb().select({ n: sql<number>`count(*)` }).from(users).where(sql`role = 'admin'`).get()?.n ?? 0;
+export async function adminCount(): Promise<number> {
+  return Number((await getDb().select({ n: sql<number>`count(*)` }).from(users).where(sql`role = 'admin'`))[0]?.n ?? 0);
 }
 
 /** 首启引导；幂等（已有用户则跳过）。async：凭据 scrypt 完成前不得放行 listen，
  *  否则首秒内登录会因凭据行未落库而 401（e2e setup 高负载下随机踩中） */
 export async function ensureInitialAdmin(): Promise<void> {
-  if (userCount() > 0) return;
+  if (await userCount() > 0) return;
 
   const username = (process.env.ADMIN_USERNAME?.trim() || 'admin').toLowerCase();
   if (!/^[a-zA-Z0-9_.-]{3,64}$/.test(username)) {
@@ -41,7 +41,7 @@ export async function ensureInitialAdmin(): Promise<void> {
   }
   const password = config.adminInitialPassword ?? generatePassword(12);
 
-  const info = getDb()
+  const [created] = await getDb()
     .insert(users)
     .values({
       kind: 'local',
@@ -49,12 +49,14 @@ export async function ensureInitialAdmin(): Promise<void> {
       name: '管理员',
       role: 'admin',
       status: 'active',
+      pointsBalance: INITIAL_ADMIN_POINTS,
       mustChangePassword: true, // F3：初始密码登录 → 强制改密 → 强制绑 MFA → checklist
       createdAt: Date.now(),
     })
-    .run();
-  const userId = Number(info.lastInsertRowid);
-  getDb().update(users).set({ avatar: defaultAvatarForUser(userId) }).where(eq(users.id, userId)).run();
+    .returning({ id: users.id });
+  if (!created) throw new Error('Failed to create bootstrap administrator');
+  const userId = created.id;
+  await getDb().update(users).set({ avatar: defaultAvatarForUser(userId) }).where(eq(users.id, userId));
   await writeLocalCredentials(userId, password);
 
   // 凭据落盘（0600）+ 打印日志
@@ -73,7 +75,7 @@ export async function ensureInitialAdmin(): Promise<void> {
     console.error('[bootstrap] 凭据文件写入失败:', err);
   }
   console.log(content);
-  audit('system', null, 'bootstrap.admin.created', { username, via: config.adminInitialPassword ? 'env' : 'random' });
+  await audit('system', null, 'bootstrap.admin.created', { username, via: config.adminInitialPassword ? 'env' : 'random' });
 }
 
 /** 管理员首次登录（进入强制改密流程）后删除一次性凭据文件 */
@@ -89,54 +91,20 @@ export function disposeCredentialsFile(): void {
   }
 }
 
-/** 官方签名公钥内置信任（G4）：AAP_OFFICIAL_SIGN_PUBKEY（base64，32 字节 Ed25519 公钥）
- *  设置时种入信任列表并标记 builtin（设置页/接口不可删）；不设置则跳过。 */
-export function seedOfficialSigningKey(): void {
-  const b64 = process.env.AAP_OFFICIAL_SIGN_PUBKEY?.trim();
-  if (!b64) return;
-  let raw: Buffer;
-  try {
-    raw = Buffer.from(b64, 'base64');
-  } catch {
-    console.error('[bootstrap] AAP_OFFICIAL_SIGN_PUBKEY 不是合法 base64，跳过内置信任');
-    return;
-  }
-  if (raw.length !== 32) {
-    console.error('[bootstrap] AAP_OFFICIAL_SIGN_PUBKEY 必须是 32 字节 Ed25519 公钥（base64），跳过内置信任');
-    return;
-  }
-  const keyId = 'SHA256:' + createHash('sha256').update(raw).digest('hex').slice(0, 16);
-  getDb()
-    .insert(trustedSigningKeys)
-    .values({
-      keyId,
-      name: process.env.AAP_OFFICIAL_SIGNER_NAME?.trim() || '官方发布',
-      publicKey: raw.toString('base64'),
-      builtin: true,
-      createdAt: Date.now(),
-    })
-    .onConflictDoNothing()
-    .run();
-  console.log(`[bootstrap] 官方签名公钥已内置信任: ${keyId}`);
-}
-
 /** 创建/更新本地凭据（注册、改密、引导共用） */
 export async function writeLocalCredentials(userId: number, password: string): Promise<void> {
   const passwordHash = await hashPassword(password);
-  getDb()
+  await getDb()
     .insert(localCredentials)
     .values({ userId, passwordHash, updatedAt: Date.now() })
-    .onConflictDoUpdate({ target: localCredentials.userId, set: { passwordHash, updatedAt: Date.now() } })
-    .run();
+    .onConflictDoUpdate({ target: localCredentials.userId, set: { passwordHash, updatedAt: Date.now() } });
 }
 
-export function getLocalPasswordHash(userId: number): string | null {
+export async function getLocalPasswordHash(userId: number): Promise<string | null> {
   return (
-    getDb()
+    await (await getDb()
       .select({ h: localCredentials.passwordHash })
       .from(localCredentials)
-      .where(eq(localCredentials.userId, userId))
-      .get()?.h ?? null
+      .where(eq(localCredentials.userId, userId)))[0]?.h ?? null
   );
 }
-

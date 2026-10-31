@@ -8,6 +8,7 @@ export NODE_ENV=production
 export PORT="${PORT:-8080}"
 export HTTPS_PORT="${HTTPS_PORT:-8443}"
 export DATA_DIR="${DATA_DIR:-$DIR/data}"
+export MIGRATIONS_DIR="${MIGRATIONS_DIR:-$DIR/drizzle-pg}"
 export WEB_DIST="$DIR/public"
 export PYTHON_BIN="${PYTHON_BIN:-python3}"
 export PYTHONPATH="$DIR/aap-sdk"
@@ -42,4 +43,3 @@ if ! PYTHONPATH="$AAP_PREINSTALLED_PYTHONPATH" "$PYTHON_BIN" -c 'import flask' >
 fi
 
 exec "$DIR/bin/node" "$DIR/dist/server.js"
-

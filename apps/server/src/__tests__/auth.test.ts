@@ -60,8 +60,8 @@ function cookieOf(res: Response): string {
 }
 
 beforeAll(async () => {
-  ({ dir } = setupTestDb());
-  seedSettings();
+  ({ dir } = await setupTestDb());
+  await seedSettings();
   logSpy = vi.spyOn(console, 'log');
   const cfg = { ...loadConfig({}), webDist: null };
   server = createApp(cfg).listen(0);
@@ -71,8 +71,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   logSpy.mockRestore();
-  closeDb();
-  teardownTestDb(dir);
+  await closeDb();
+  await teardownTestDb(dir);
 });
 
 describe('W3 注册（A2）', () => {
@@ -87,8 +87,8 @@ describe('W3 注册（A2）', () => {
   });
 
   it('开放注册：无 PoW 拒绝；带 PoW 发码；首账号自动 admin', async () => {
-    groupId = createGroup('registration-benefits', 'Registration test plans');
-    freePlanId = createPlan({
+    groupId = await createGroup('registration-benefits', 'Registration test plans');
+    freePlanId = await createPlan({
       name: '免费权益包',
       groupId,
       durationDays: 30,
@@ -96,7 +96,7 @@ describe('W3 注册（A2）', () => {
       tier: 0,
       publicAppLimit: 2,
     });
-    paidPlanId = createPlan({
+    paidPlanId = await createPlan({
       name: '付费权益包',
       groupId,
       durationDays: 30,
@@ -104,7 +104,8 @@ describe('W3 注册（A2）', () => {
       tier: 1,
       publicAppLimit: 10,
     });
-    setSetting('REGISTRATION_MODE', 'open');
+    await setSetting('REGISTRATION_POINTS_GIFT', '731');
+    await setSetting('REGISTRATION_MODE', 'open');
 
     // 无 PoW → 403 POW_REQUIRED（响应附带新挑战）
     const noPow = await fetch(`${base}/api/auth/register/start`, {
@@ -152,6 +153,9 @@ describe('W3 注册（A2）', () => {
     expect(done.user.username).toBe('neo');
     expect(done.user.role).toBe('admin'); // 首账号自动 admin
     expect(done.user.membershipSelectionRequired).toBe(false); // 首管理员可先配置套餐
+    const registeredUser = (await getDb().select().from(users).where(eq(users.username, 'neo')))[0];
+    expect(registeredUser?.pointsBalance).toBe(731);
+    await setSetting('REGISTRATION_POINTS_GIFT', '0');
 
     // 会话可用
     const me = await fetch(`${base}/api/auth/me`, { headers: { cookie: cookieOf(ok) } });
@@ -162,49 +166,23 @@ describe('W3 注册（A2）', () => {
 
   });
 
-  it('开放注册必须有启用的零价权益包；选套餐前限制账户功能', async () => {
-    setSetting('REGISTRATION_MODE', 'closed');
-    deletePlan(freePlanId);
-    const gateAdminId = Number(
-      getDb()
-        .insert(users)
-        .values({
+  it('无权益包时仍允许开放注册；新账号获得注册积分并以未订阅状态进入个人中心', async () => {
+    await setSetting('REGISTRATION_MODE', 'closed');
+    await deletePlan(freePlanId);
+    await deletePlan(paidPlanId);
+    const [gateAdmin] = await getDb()
+      .insert(users)
+      .values({
           kind: 'local',
           username: 'benefitadmin',
           role: 'admin',
           mfaEnabled: true,
           createdAt: Date.now(),
         })
-        .run().lastInsertRowid,
-    );
-    const gateAdminCookie = sessionCookieFor(gateAdminId);
+      .returning({ id: users.id });
+    const gateAdminId = gateAdmin!.id;
+    const gateAdminCookie = await sessionCookieFor(gateAdminId);
 
-    const blockedOpen = await fetch(`${base}/api/admin/settings`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json', cookie: gateAdminCookie, origin: base },
-      body: JSON.stringify({ REGISTRATION_MODE: 'open' }),
-    });
-    expect(blockedOpen.status).toBe(409);
-    expect(((await blockedOpen.json()) as { error: { code: string } }).error.code).toBe('FREE_PLAN_REQUIRED');
-
-    setSetting('REGISTRATION_MODE', 'open');
-    const blockedRegistration = await fetch(`${base}/api/auth/register/start`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: 'no-benefit-plan', password: 'password123', email: 'no-plan@example.com' }),
-    });
-    expect(blockedRegistration.status).toBe(503);
-    expect(((await blockedRegistration.json()) as { error: { code: string } }).error.code).toBe('FREE_PLAN_REQUIRED');
-    setSetting('REGISTRATION_MODE', 'closed');
-
-    freePlanId = createPlan({
-      name: '免费权益包',
-      groupId,
-      durationDays: 30,
-      priceFen: 0,
-      tier: 0,
-      publicAppLimit: 2,
-    });
     const allowedOpen = await fetch(`${base}/api/admin/settings`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json', cookie: gateAdminCookie, origin: base },
@@ -212,13 +190,87 @@ describe('W3 注册（A2）', () => {
     });
     expect(allowedOpen.status).toBe(200);
 
-    const freeUser = Number(
-      getDb()
-        .insert(users)
-        .values({ kind: 'local', username: 'freechoice', membershipSelectionRequired: true, createdAt: Date.now() })
-        .run().lastInsertRowid,
-    );
-    const freeCookie = sessionCookieFor(freeUser);
+    await setSetting('REGISTRATION_POINTS_GIFT', '123');
+    const registration = await fetch(`${base}/api/auth/register/start`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        username: 'no-benefit-plan',
+        password: 'password123',
+        email: 'no-plan@example.com',
+        powToken: await solvePow(),
+      }),
+    });
+    expect(registration.status).toBe(200);
+    const started = (await registration.json()) as { registrationId: string };
+    const verified = await fetch(`${base}/api/auth/register/verify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ registrationId: started.registrationId, code: lastCodeFromLog() }),
+    });
+    expect(verified.status).toBe(200);
+    const registered = (await verified.json()) as {
+      user: { username: string; membershipSelectionRequired: boolean };
+    };
+    expect(registered.user.username).toBe('no-benefit-plan');
+    expect(registered.user.membershipSelectionRequired).toBe(false);
+    const userId = (await getDb()
+      .select({ id: users.id, pointsBalance: users.pointsBalance })
+      .from(users)
+      .where(eq(users.username, 'no-benefit-plan')))[0];
+    expect(userId?.pointsBalance).toBe(123);
+    const membership = await fetch(`${base}/api/user/membership`, {
+      headers: { cookie: cookieOf(verified) },
+    });
+    expect(membership.status).toBe(200);
+    expect(await membership.json()).toMatchObject({
+      membership: null,
+      tokenBalance: 0,
+      pointsBalance: 123,
+      plans: [],
+    });
+    expect((await fetch(`${base}/api/user/profile`, { headers: { cookie: cookieOf(verified) } })).status).toBe(200);
+    const [waitingUser] = await getDb()
+      .insert(users)
+      .values({ kind: 'local', username: 'no-plans-waiting', membershipSelectionRequired: true, createdAt: Date.now() })
+      .returning({ id: users.id });
+    const skipSelection = await fetch(`${base}/api/user/membership/skip-selection`, {
+      method: 'POST',
+      headers: { cookie: await sessionCookieFor(waitingUser!.id) },
+    });
+    expect(skipSelection.status).toBe(200);
+    expect((await getDb().select().from(users).where(eq(users.id, waitingUser!.id)))[0]?.membershipSelectionRequired).toBe(false);
+    await setSetting('REGISTRATION_POINTS_GIFT', '0');
+
+    paidPlanId = await createPlan({
+      name: '付费权益包',
+      groupId,
+      durationDays: 30,
+      priceFen: 990,
+      tier: 1,
+      publicAppLimit: 10,
+    });
+    freePlanId = await createPlan({
+      name: '免费权益包',
+      groupId,
+      durationDays: 30,
+      priceFen: 0,
+      tier: 0,
+      publicAppLimit: 2,
+    });
+    const allowedOpenWithPlans = await fetch(`${base}/api/admin/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie: gateAdminCookie, origin: base },
+      body: JSON.stringify({ REGISTRATION_MODE: 'open' }),
+    });
+    expect(allowedOpenWithPlans.status).toBe(200);
+
+    const [freeUserRow] = await getDb()
+      .insert(users)
+      .values({ kind: 'local', username: 'freechoice', membershipSelectionRequired: true, createdAt: Date.now() })
+      .returning({ id: users.id });
+    const freeUser = freeUserRow!.id;
+    const freeCookie = await sessionCookieFor(freeUser);
     const blockedProfile = await fetch(`${base}/api/user/profile`, { headers: { cookie: freeCookie } });
     expect(blockedProfile.status).toBe(403);
     expect(((await blockedProfile.json()) as { error: { action: string } }).error.action).toBe('membership-selection');
@@ -230,18 +282,17 @@ describe('W3 注册（A2）', () => {
     });
     expect(freeSelection.status).toBe(200);
     expect(((await freeSelection.json()) as { activated: boolean }).activated).toBe(true);
-    const freeUserAfter = getDb().select().from(users).where(eq(users.id, freeUser)).get();
+    const freeUserAfter = (await getDb().select().from(users).where(eq(users.id, freeUser)))[0];
     expect(freeUserAfter?.membershipSelectionRequired).toBe(false);
     expect(freeUserAfter?.membershipPlanId).toBe(freePlanId);
     expect((await fetch(`${base}/api/user/profile`, { headers: { cookie: freeCookie } })).status).toBe(200);
 
-    const paidUser = Number(
-      getDb()
-        .insert(users)
-        .values({ kind: 'local', username: 'paidchoice', membershipSelectionRequired: true, createdAt: Date.now() })
-        .run().lastInsertRowid,
-    );
-    const paidCookie = sessionCookieFor(paidUser);
+    const [paidUserRow] = await getDb()
+      .insert(users)
+      .values({ kind: 'local', username: 'paidchoice', membershipSelectionRequired: true, createdAt: Date.now() })
+      .returning({ id: users.id });
+    const paidUser = paidUserRow!.id;
+    const paidCookie = await sessionCookieFor(paidUser);
     const paidSelection = await fetch(`${base}/api/user/membership/select-plan`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie: paidCookie },
@@ -250,9 +301,129 @@ describe('W3 注册（A2）', () => {
     expect(paidSelection.status).toBe(200);
     const paidResult = (await paidSelection.json()) as { activated: boolean; orderId: string };
     expect(paidResult.activated).toBe(false);
-    const order = getDb().select().from(topupOrders).where(eq(topupOrders.id, paidResult.orderId)).get();
+    const order = (await getDb().select().from(topupOrders).where(eq(topupOrders.id, paidResult.orderId)))[0];
     expect(order?.status).toBe('pending');
-    expect(getDb().select().from(users).where(eq(users.id, paidUser)).get()?.membershipSelectionRequired).toBe(false);
+    expect(await (await getDb().select().from(users).where(eq(users.id, paidUser)))[0]?.membershipSelectionRequired).toBe(false);
+
+    const pointsPlanId = await createPlan({
+      name: '积分权益包',
+      groupId,
+      durationDays: 30,
+      priceCurrency: 'POINTS',
+      pricePoints: 100,
+      tier: 2,
+      publicAppLimit: 5,
+    });
+    const usdPlanId = await createPlan({
+      name: '美元权益包',
+      groupId,
+      durationDays: 30,
+      priceCurrency: 'USD',
+      priceCents: 1250,
+      tier: 2,
+      publicAppLimit: 5,
+    });
+    const [pointsUserRow] = await getDb()
+      .insert(users)
+      .values({
+        kind: 'local',
+        username: 'pointchoice',
+        membershipSelectionRequired: true,
+        pointsBalance: 120,
+        createdAt: Date.now(),
+      })
+      .returning({ id: users.id });
+    const pointsUser = pointsUserRow!.id;
+    const pointsCookie = await sessionCookieFor(pointsUser);
+    const pendingMembership = await fetch(`${base}/api/user/membership`, { headers: { cookie: pointsCookie } });
+    expect(pendingMembership.status).toBe(200);
+    expect(((await pendingMembership.json()) as { pointsBalance: number }).pointsBalance).toBe(120);
+
+    const pointsSelection = await fetch(`${base}/api/user/membership/select-plan`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: pointsCookie },
+      body: JSON.stringify({ planId: pointsPlanId }),
+    });
+    expect(pointsSelection.status).toBe(200);
+    expect(((await pointsSelection.json()) as { activated: boolean }).activated).toBe(true);
+    const pointsUserAfter = (await getDb().select().from(users).where(eq(users.id, pointsUser)))[0];
+    expect(pointsUserAfter?.pointsBalance).toBe(20);
+    expect(pointsUserAfter?.membershipPlanId).toBe(pointsPlanId);
+
+    const [insufficientUserRow] = await getDb()
+      .insert(users)
+      .values({
+        kind: 'local',
+        username: 'pointshort',
+        membershipSelectionRequired: true,
+        pointsBalance: 99,
+        createdAt: Date.now(),
+      })
+      .returning({ id: users.id });
+    const insufficientCookie = await sessionCookieFor(insufficientUserRow!.id);
+    const insufficient = await fetch(`${base}/api/user/membership/select-plan`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: insufficientCookie },
+      body: JSON.stringify({ planId: pointsPlanId }),
+    });
+    expect(insufficient.status).toBe(400);
+    expect(((await insufficient.json()) as { error: { code: string } }).error.code).toBe('INSUFFICIENT_POINTS');
+    const insufficientUserAfter = (await getDb().select().from(users).where(eq(users.id, insufficientUserRow!.id)))[0];
+    expect(insufficientUserAfter?.pointsBalance).toBe(99);
+    expect(insufficientUserAfter?.membershipSelectionRequired).toBe(true);
+
+    const [usdUserRow] = await getDb()
+      .insert(users)
+      .values({ kind: 'local', username: 'usdchoice', membershipSelectionRequired: true, createdAt: Date.now() })
+      .returning({ id: users.id });
+    const usdCookie = await sessionCookieFor(usdUserRow!.id);
+    const usdSelection = await fetch(`${base}/api/user/membership/select-plan`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: usdCookie },
+      body: JSON.stringify({ planId: usdPlanId }),
+    });
+    expect(usdSelection.status).toBe(200);
+    const usdResult = (await usdSelection.json()) as { activated: boolean; orderId: string };
+    expect(usdResult.activated).toBe(false);
+    const usdOrder = (await getDb().select().from(topupOrders).where(eq(topupOrders.id, usdResult.orderId)))[0];
+    expect(usdOrder).toMatchObject({ priceCurrency: 'USD', priceFen: 0, priceCents: 1250, status: 'pending' });
+
+    const [subscriberRow] = await getDb()
+      .insert(users)
+      .values({ kind: 'local', username: 'pointsubscriber', pointsBalance: 100, createdAt: Date.now() })
+      .returning({ id: users.id });
+    const subscriberCookie = await sessionCookieFor(subscriberRow!.id);
+    const redemption = await fetch(`${base}/api/user/membership/subscribe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: subscriberCookie },
+      body: JSON.stringify({ planId: pointsPlanId }),
+    });
+    expect(redemption.status).toBe(200);
+    expect(((await redemption.json()) as { activated: boolean }).activated).toBe(true);
+    const subscriberAfter = (await getDb().select().from(users).where(eq(users.id, subscriberRow!.id)))[0];
+    expect(subscriberAfter?.pointsBalance).toBe(0);
+    expect(subscriberAfter?.membershipPlanId).toBe(pointsPlanId);
+
+    const [raceUserRow] = await getDb()
+      .insert(users)
+      .values({ kind: 'local', username: 'pointrace', pointsBalance: 100, createdAt: Date.now() })
+      .returning({ id: users.id });
+    const raceCookie = await sessionCookieFor(raceUserRow!.id);
+    const redeemRequests = await Promise.all([1, 2].map(() => fetch(`${base}/api/user/membership/subscribe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: raceCookie },
+      body: JSON.stringify({ planId: pointsPlanId }),
+    })));
+    expect(redeemRequests.map((response) => response.status).sort()).toEqual([200, 400]);
+    const raceUserAfter = (await getDb().select().from(users).where(eq(users.id, raceUserRow!.id)))[0];
+    expect(raceUserAfter?.pointsBalance).toBe(0);
+
+    const disabledLastFreePlan = await fetch(`${base}/api/admin/billing/plans/${freePlanId}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie: gateAdminCookie, origin: base },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(disabledLastFreePlan.status).toBe(200);
   });
 
   it('60s 重发限流：注册路径占用校验（409）先于发码限流，无枚举面；找回路径的限流已静默化（P1-4 用例覆盖）', () => {
@@ -341,11 +512,10 @@ describe('W3 找回密码（防枚举）', () => {
   it('不存在的邮箱也返回 ok；存在的邮箱走码重置', async () => {
     // 专用用户（直插 DB，避免与注册流程的限流/占用相互纠缠）
     const { writeLocalCredentials } = await import('../lib/bootstrap.js');
-    const info = getDb()
+    const [info] = await getDb()
       .insert((await import('../db/schema.js')).users)
-      .values({ kind: 'local', username: 'resetguy', email: 'resetguy@example.com', name: 'rg', createdAt: Date.now() })
-      .run();
-    await writeLocalCredentials(Number(info.lastInsertRowid), 'originalPassword1');
+      .values({ kind: 'local', username: 'resetguy', email: 'resetguy@example.com', name: 'rg', createdAt: Date.now() }).returning({ id: users.id });
+    await writeLocalCredentials(Number(info!.id), 'originalPassword1');
 
     const token = await solvePow();
     const ghost = await fetch(`${base}/api/auth/forgot/start`, {
@@ -397,11 +567,11 @@ describe('W3 找回密码（防枚举）', () => {
 
   it('重置码错猜 ≥5 次即作废：正确码也不通过，重新发码后恢复', async () => {
     const { writeLocalCredentials } = await import('../lib/bootstrap.js');
-    const info = getDb()
+    const [info] = await getDb()
       .insert((await import('../db/schema.js')).users)
       .values({ kind: 'local', username: 'bruteguy', email: 'bruteguy@example.com', name: 'bg', createdAt: Date.now() })
-      .run();
-    await writeLocalCredentials(Number(info.lastInsertRowid), 'originalPassword1');
+      .returning({ id: users.id });
+    await writeLocalCredentials(info!.id, 'originalPassword1');
 
     const start = await fetch(`${base}/api/auth/forgot/start`, {
       method: 'POST',
@@ -468,11 +638,10 @@ describe('W3 找回密码（防枚举）', () => {
 
 describe('W3 邀请码注册', () => {
   it('invite 模式：无邀请码拒绝，有效邀请码通过且一次性', async () => {
-    setSetting('REGISTRATION_MODE', 'invite');
-    getDb()
+    await setSetting('REGISTRATION_MODE', 'invite');
+    await getDb()
       .insert(inviteCodes)
-      .values({ code: 'INVITE-XYZ', createdAt: Date.now() })
-      .run();
+      .values({ code: 'INVITE-XYZ', createdAt: Date.now() });
 
     const noInvite = await fetch(`${base}/api/auth/register/start`, {
       method: 'POST',
@@ -528,7 +697,7 @@ describe('W3 邀请码注册', () => {
 describe('终审 P1-1：半登录态改密拒绝', () => {
   it('MFA 用户 password_ok 会话调 change-password → 403 MFA_REQUIRED', async () => {
     const { writeLocalCredentials } = await import('../lib/bootstrap.js');
-    const info = getDb()
+    const [info] = await getDb()
       .insert(users)
       .values({
         kind: 'local',
@@ -538,8 +707,8 @@ describe('终审 P1-1：半登录态改密拒绝', () => {
         mfaEnabled: true, // 登录状态机据此给半登录态（无需真实 TOTP 绑定）
         createdAt: Date.now(),
       })
-      .run();
-    await writeLocalCredentials(Number(info.lastInsertRowid), 'password123');
+      .returning({ id: users.id });
+    await writeLocalCredentials(info!.id, 'password123');
 
     const login = await fetch(`${base}/api/auth/login`, {
       method: 'POST',
@@ -565,18 +734,18 @@ describe('终审 P1-1：半登录态改密拒绝', () => {
 
 describe('终审 P1-5：同 IP 24h 注册上限（含已完成）', () => {
   it('完成的注册仍占 24h 名额：触顶后新注册 429', async () => {
-    setSetting('REGISTRATION_MODE', 'open');
+    await setSetting('REGISTRATION_MODE', 'open');
     const ip = '127.0.0.1';
     // 前面用例已完成的注册（neo/guest）行保留 → 计入窗口
-    const existing =
-      getDb()
+    const existing = Number(
+      (await getDb()
         .select({ n: sql<number>`count(*)` })
         .from(registrations)
-        .where(and(eq(registrations.ip, ip), gt(registrations.createdAt, Date.now() - 24 * 3600_000)))
-        .get()?.n ?? 0;
+        .where(and(eq(registrations.ip, ip), gt(registrations.createdAt, Date.now() - 24 * 3600_000))))[0]?.n ?? 0,
+    );
     expect(existing).toBeGreaterThan(0);
     // 上限 = 现有数 + 1：再完成一个注册即触顶
-    setSetting('MAX_ACCOUNTS_PER_IP_24H', String(existing + 1));
+    await setSetting('MAX_ACCOUNTS_PER_IP_24H', String(existing + 1));
     try {
       const start = await fetch(`${base}/api/auth/register/start`, {
         method: 'POST',
@@ -597,7 +766,7 @@ describe('终审 P1-5：同 IP 24h 注册上限（含已完成）', () => {
       });
       expect(done.status).toBe(200);
       // 完成行保留（completedAt 非空），不再删除释放名额
-      const row = getDb().select().from(registrations).where(eq(registrations.username, 'capuser')).get();
+      const row = (await getDb().select().from(registrations).where(eq(registrations.username, 'capuser')))[0];
       expect(row?.completedAt).not.toBeNull();
 
       const over = await fetch(`${base}/api/auth/register/start`, {
@@ -613,7 +782,7 @@ describe('终审 P1-5：同 IP 24h 注册上限（含已完成）', () => {
       expect(over.status).toBe(429);
       expect(((await over.json()) as { error: { code: string } }).error.code).toBe('TOO_MANY_REGISTRATIONS');
     } finally {
-      setSetting('MAX_ACCOUNTS_PER_IP_24H', '5');
+      await setSetting('MAX_ACCOUNTS_PER_IP_24H', '5');
     }
   });
 });
@@ -621,7 +790,7 @@ describe('终审 P1-5：同 IP 24h 注册上限（含已完成）', () => {
 describe('终审 P1-6：强制流程门禁', () => {
   it('mustChangePassword 会话：/api/apps → 403 FORCE_CHANGE_PASSWORD；/me 正常；改密后放行', async () => {
     const { writeLocalCredentials } = await import('../lib/bootstrap.js');
-    const info = getDb()
+    const [info] = await getDb()
       .insert(users)
       .values({
         kind: 'local',
@@ -631,8 +800,8 @@ describe('终审 P1-6：强制流程门禁', () => {
         mustChangePassword: true,
         createdAt: Date.now(),
       })
-      .run();
-    await writeLocalCredentials(Number(info.lastInsertRowid), 'initialPass123');
+      .returning({ id: users.id });
+    await writeLocalCredentials(info!.id, 'initialPass123');
 
     const login = await fetch(`${base}/api/auth/login`, {
       method: 'POST',
@@ -669,11 +838,11 @@ describe('终审 P1-6：强制流程门禁', () => {
 
   it('未绑 MFA 的 local admin：登录响应 mustEnrollMfa=true；/api/apps → 403 FORCE_ENROLL_MFA；/me 正常', async () => {
     const { writeLocalCredentials } = await import('../lib/bootstrap.js');
-    const info = getDb()
+    const [info] = await getDb()
       .insert(users)
       .values({ kind: 'local', username: 'nomfaadmin', email: 'nomfa@example.com', name: 'na', role: 'admin', createdAt: Date.now() })
-      .run();
-    await writeLocalCredentials(Number(info.lastInsertRowid), 'adminPass123');
+      .returning({ id: users.id });
+    await writeLocalCredentials(info!.id, 'adminPass123');
 
     const login = await fetch(`${base}/api/auth/login`, {
       method: 'POST',
@@ -701,16 +870,16 @@ describe('终审 P1-6：强制流程门禁', () => {
   });
 
   it('OIDC 管理员（MFA 委托 IdP）不受强制绑定门禁', async () => {
-    const info = getDb()
+    const [info] = await getDb()
       .insert(users)
       .values({ kind: 'oidc', subject: 'sub-boss', email: 'boss@example.com', name: 'boss', role: 'admin', createdAt: Date.now() })
-      .run();
+      .returning({ id: users.id });
     // 直建会话（OIDC 回调链路在 e2e 覆盖，这里只验门禁判定）
     const { createSession } = await import('../lib/session.js');
     let token = '';
-    createSession(
+    await createSession(
       { cookie: (_name: string, value: string) => { token = value; } } as never,
-      { id: Number(info.lastInsertRowid) },
+      { id: info!.id },
       { ip: '127.0.0.1' },
     );
     const cookie = `aap_sid=${token}`;

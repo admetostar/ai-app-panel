@@ -1,8 +1,9 @@
 ﻿# AI超级面板 — 原生运行包（无 Docker）
 
-自包含部署包：自带 glibc 版 Node 22 二进制与全部依赖（含按目标平台编译的
-better-sqlite3），解压即跑，**不需要 Docker、不需要安装 Node**。
-唯一外部依赖是 `python3`（沙箱运行时；飞牛 fnOS / Debian 系系统自带）。
+自包含应用包：自带 glibc 版 Node 22 二进制、服务端/前端和 PostgreSQL 迁移，
+解压即跑，**不需要 Docker、不需要安装 Node**。需要可连接的 PostgreSQL 17
+数据库和 `python3`（沙箱运行时；飞牛 fnOS / Debian 系系统自带）。
+本形态不内置 PostgreSQL 服务；开发、测试与生产均通过 `DATABASE_URL` 连接 PostgreSQL。
 
 > 平台预置 Python 框架（flask）由 `start.sh` 启动时自检补装到数据目录
 > `python-libs/`（需要宿主 python3 带 pip——缺 pip 时脚本会先尝试 ensurepip，
@@ -17,9 +18,13 @@ better-sqlite3），解压即跑，**不需要 Docker、不需要安装 Node**�
 ```bash
 tar -xzf ai-app-portal-native_<版本>_linux_<arch>.tar.gz
 cd ai-app-portal-native_<版本>_linux_<arch>
-ADMIN_INITIAL_PASSWORD='你的初始密码' ./start.sh     # 前台启动，Ctrl-C 停止
+DATABASE_URL='postgresql://aap:strong_random_password@127.0.0.1:5432/ai_app_portal' \
+  ADMIN_INITIAL_PASSWORD='你的初始密码' ./start.sh  # 前台启动，Ctrl-C 停止
 ```
 
+- 启动前设置 `DATABASE_URL`，例如
+  `postgresql://aap:密码@127.0.0.1:5432/ai_app_portal`；数据库需预先创建，
+  连接用户需拥有创建表/索引的权限，服务启动时会自动应用 `drizzle-pg/` 迁移。
 - 服务地址 `http://<主机>:8080`（`PORT` 可改；HTTPS 口 8443）
 - 数据目录默认在包内 `data/`（`DATA_DIR` 可改到独立数据盘）
 - 首次启动用 `ADMIN_INITIAL_PASSWORD` 设定管理员密码；不设则容器日志语义改为
@@ -32,7 +37,11 @@ sudo useradd -r -u 10001 -s /usr/sbin/nologin aap || true
 sudo mkdir -p /opt/AI-SuperPanel /var/lib/AI-SuperPanel
 sudo tar -xzf ai-app-portal-native_<版本>_linux_<arch>.tar.gz -C /opt/AI-SuperPanel --strip-components=1
 sudo chown -R aap:aap /opt/AI-SuperPanel /var/lib/AI-SuperPanel
+sudo install -o root -g aap -m 0640 /dev/null /etc/ai-superpanel.env
 ```
+
+编辑 `/etc/ai-superpanel.env`，至少设置 `DATABASE_URL=postgresql://...`；
+该文件应只允许 root 写入，并仅授予服务组读取权限。
 
 `/etc/systemd/system/AI-SuperPanel.service`：
 
@@ -46,6 +55,7 @@ User=aap
 Group=aap
 WorkingDirectory=/opt/AI-SuperPanel
 Environment=DATA_DIR=/var/lib/AI-SuperPanel
+EnvironmentFile=/etc/ai-superpanel.env
 Environment=ADMIN_INITIAL_PASSWORD=CHANGE_ME_FIRST_BOOT
 ExecStart=/opt/AI-SuperPanel/start.sh
 Restart=on-failure
@@ -79,4 +89,3 @@ Docker 形态的 `SANDBOX_UID/GID=10001` 在原生形态下由 systemd `User=` �
 - 升级 = 解压新版本包替换程序文件（数据目录勿动）；无镜像版本管理
 - fnOS 应用中心对「非 Docker 类」包的支持待与官方文档核实（fpk README
   待确认清单）；当前以 systemd / 手动方式运行，不改用统一网关桌面入口
-

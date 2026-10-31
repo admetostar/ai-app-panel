@@ -34,6 +34,7 @@ body {
   background: rgba(8, 24, 63, 0.48);
   border-bottom-color: rgba(255, 255, 255, 0.2);
   backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 .aap-home-shell .aap-header a,
@@ -55,6 +56,17 @@ body {
   padding: 0;
 }
 
+.aap-membership-selection-shell,
+.aap-membership-selection-shell .aap-main {
+  background: #f5f6f8;
+}
+
+.aap-membership-selection-shell .aap-main {
+  width: 100%;
+  max-width: none;
+  padding: 0;
+}
+
 .aap-home-page {
   --aap-bg-layout: #f5f6f8;
   --aap-bg-container: #fff;
@@ -64,6 +76,51 @@ body {
   --aap-border: #e4e7ec;
   color: #172033;
   background: #fff;
+}
+
+.aap-membership-selection-page .aap-home-section__inner {
+  width: min(100%, 1040px);
+}
+
+.aap-membership-selection-page .aap-home-section__lead {
+  margin-bottom: 20px;
+}
+
+.aap-membership-selection-page__balance {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 28px;
+  padding: 10px 14px;
+  border: 1px solid #d8e1ec;
+  border-radius: 10px;
+  background: #fff;
+  color: #5a6a85;
+  font-size: 14px;
+}
+
+.aap-membership-selection-page__balance strong {
+  color: #1e5aa8;
+  font-variant-numeric: tabular-nums;
+}
+
+.aap-membership-selection-page .aap-home-plan-card__name {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 8px;
+}
+
+.aap-membership-selection-page .aap-home-plan-card__name h3.ant-typography {
+  margin: 0;
+}
+
+.aap-membership-selection-page .aap-home-plan-card__features {
+  margin-top: 12px;
+}
+
+.aap-membership-selection-page .aap-home-plan-card .ant-btn {
+  padding-inline: 12px;
 }
 
 .aap-home-section .ant-typography,
@@ -562,7 +619,7 @@ body {
   --aap-text-secondary: #667085;
   --aap-border: #e4e7ec;
   min-height: 100%;
-  padding: clamp(32px, 5vw, 68px) clamp(18px, 5vw, 72px) 72px;
+  padding: clamp(18px, 2.5vw, 32px) clamp(18px, 5vw, 72px) 32px;
   background:
     radial-gradient(ellipse at 10% 0%, rgba(214, 228, 255, 0.62), transparent 36%),
     #f5f6f8;
@@ -576,7 +633,7 @@ body {
 }
 
 .aap-guide-heading {
-  margin-bottom: 30px;
+  margin-bottom: 18px;
 }
 
 .aap-guide-eyebrow {
@@ -587,9 +644,9 @@ body {
 }
 
 .aap-guide-heading h1.ant-typography {
-  margin: 12px 0 8px;
+  margin: 6px 0 4px;
   color: #172033;
-  font-size: clamp(30px, 4vw, 48px);
+  font-size: clamp(26px, 3vw, 38px);
   font-weight: 600;
   letter-spacing: -0.045em;
 }
@@ -598,8 +655,8 @@ body {
   max-width: 720px;
   margin-bottom: 8px;
   color: #475467;
-  font-size: 16px;
-  line-height: 1.8;
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .aap-guide-heading__meta {
@@ -619,7 +676,7 @@ body {
   display: grid;
   grid-template-columns: minmax(230px, 0.7fr) minmax(0, 1.8fr);
   align-items: start;
-  gap: 20px;
+  gap: 16px;
 }
 
 .aap-guide-progress,
@@ -632,11 +689,11 @@ body {
 .aap-guide-progress {
   position: sticky;
   top: 82px;
-  padding: 22px 18px;
+  padding: 16px;
 }
 
 .aap-guide-progress__label {
-  margin-bottom: 14px;
+  margin-bottom: 8px;
   color: #344054;
   font-size: 13px;
   font-weight: 700;
@@ -647,7 +704,7 @@ body {
 }
 
 .aap-guide-progress__count {
-  margin-bottom: 16px;
+  margin-bottom: 10px;
   color: #98a2b3;
   font-size: 12px;
 }
@@ -670,7 +727,7 @@ body {
   min-width: 0;
   align-items: flex-start;
   gap: 10px;
-  padding: 10px 8px;
+  padding: 7px 8px;
   color: #667085;
   font-size: 12px;
   line-height: 1.5;
@@ -718,14 +775,16 @@ body {
 }
 
 .aap-guide-step {
-  min-height: 540px;
-  padding: clamp(22px, 4vw, 42px);
+  display: flex;
+  min-height: calc(100vh - 260px);
+  flex-direction: column;
+  padding: clamp(18px, 2.5vw, 30px);
 }
 
 .aap-guide-step__topline {
   display: flex;
   justify-content: space-between;
-  padding-bottom: 16px;
+  padding-bottom: 10px;
   border-bottom: 1px solid #e4e7ec;
   color: #667085;
   font-size: 12px;
@@ -737,8 +796,8 @@ body {
 }
 
 .aap-guide-step__content {
-  min-height: 390px;
-  padding: 22px 0 28px;
+  flex: 1;
+  padding: 14px 0 18px;
   animation: aap-guide-step-in 220ms ease-out;
 }
 
@@ -761,15 +820,15 @@ body {
 }
 
 .aap-guide-markdown h2 {
-  margin: 0 0 18px;
+  margin: 0 0 12px;
   color: #172033;
-  font-size: clamp(22px, 3vw, 30px);
+  font-size: clamp(21px, 2.5vw, 26px);
   font-weight: 650;
   line-height: 1.4;
 }
 
 .aap-guide-markdown h3 {
-  margin: 22px 0 10px;
+  margin: 14px 0 6px;
   color: #344054;
   font-size: 16px;
   font-weight: 700;
@@ -779,21 +838,21 @@ body {
 .aap-guide-markdown ul,
 .aap-guide-markdown ol {
   color: #344054;
-  line-height: 1.85;
+  line-height: 1.65;
 }
 
 .aap-guide-markdown p {
-  margin: 0 0 14px;
+  margin: 0 0 9px;
 }
 
 .aap-guide-markdown ul,
 .aap-guide-markdown ol {
-  margin: 0 0 16px;
-  padding-left: 22px;
+  margin: 0 0 10px;
+  padding-left: 20px;
 }
 
 .aap-guide-markdown li {
-  margin-bottom: 7px;
+  margin-bottom: 3px;
 }
 
 .aap-guide-markdown a {
@@ -802,8 +861,8 @@ body {
 }
 
 .aap-guide-markdown blockquote {
-  margin: 14px 0 18px;
-  padding: 12px 16px;
+  margin: 8px 0 12px;
+  padding: 8px 12px;
   border-left: 3px solid #175cd3;
   background: #f2f4f7;
   color: #344054;
@@ -824,7 +883,7 @@ body {
 
 .aap-guide-markdown__table {
   overflow-x: auto;
-  margin: 14px 0 20px;
+  margin: 8px 0 12px;
 }
 
 .aap-guide-markdown table {
@@ -836,7 +895,7 @@ body {
 
 .aap-guide-markdown th,
 .aap-guide-markdown td {
-  padding: 10px 12px;
+  padding: 7px 10px;
   border: 1px solid #d0d5dd;
   text-align: left;
   vertical-align: top;
@@ -857,7 +916,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  padding-top: 18px;
+  padding-top: 12px;
   border-top: 1px solid #e4e7ec;
 }
 
@@ -1429,11 +1488,13 @@ body {
   gap: 16px;
   padding: 0 24px;
   height: 60px;
-  background: var(--aap-bg-container);
+  background: color-mix(in srgb, var(--aap-bg-container) 78%, transparent);
   border-bottom: 1px solid var(--aap-border);
   position: sticky;
   top: 0;
   z-index: 100;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 .aap-header .aap-brand {
@@ -1767,7 +1828,7 @@ body {
 
 .aap-user-page-shell[data-user-theme='light'] .aap-header {
   border-bottom-color: #d0d5dd;
-  background: #f8fafc;
+  background: color-mix(in srgb, #f8fafc 78%, transparent);
 }
 
 .aap-user-page-shell[data-user-theme='light'] .aap-header .aap-site-name,
@@ -1808,7 +1869,7 @@ body {
 
 .aap-user-page-shell[data-user-theme='dark'] .aap-header {
   border-bottom-color: #2e333d;
-  background: #1d2129;
+  background: color-mix(in srgb, #1d2129 78%, transparent);
 }
 
 .aap-user-page-shell[data-user-theme='dark'] .aap-header .aap-site-name,
@@ -2094,7 +2155,7 @@ body {
   }
 
   .aap-guide-page {
-    padding: 30px 14px 42px;
+    padding: 20px 14px 28px;
   }
 
   .aap-guide-workspace {
@@ -2107,10 +2168,13 @@ body {
   }
 
   .aap-guide-progress ol {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: flex;
+    overflow-x: auto;
+    gap: 4px;
   }
 
   .aap-guide-progress li {
+    flex: 0 0 auto;
     padding: 7px 4px;
   }
 
@@ -2120,6 +2184,10 @@ body {
 
   .aap-guide-step__content {
     min-height: 0;
+  }
+
+  .aap-guide-markdown h2 {
+    font-size: 22px;
   }
 
   .aap-guide-step__footer {

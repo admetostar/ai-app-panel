@@ -60,13 +60,12 @@ export interface PasskeyView {
   deviceType: string | null;
 }
 
-export function listPasskeys(userId: number): PasskeyView[] {
-  return getDb()
+export async function listPasskeys(userId: number): Promise<PasskeyView[]> {
+  const rows = await getDb()
     .select()
     .from(passkeys)
-    .where(eq(passkeys.userId, userId))
-    .all()
-    .map((r) => ({
+    .where(eq(passkeys.userId, userId));
+  return rows.map((r) => ({
       id: r.id,
       nickname: r.nickname,
       createdAt: r.createdAt,
@@ -80,7 +79,7 @@ export function listPasskeys(userId: number): PasskeyView[] {
 
 export async function passkeyRegisterOptions(req: Request, userId: number, username: string) {
   const { rpID, rpName } = rpInfo(req);
-  const existing = listPasskeys(userId);
+  const existing = await listPasskeys(userId);
   const options = await generateRegistrationOptions({
     rpName,
     rpID,
@@ -129,10 +128,10 @@ export async function passkeyRegisterVerify(
   };
   const id = info.credential.id;
   const publicKeyB64 = Buffer.from(info.credential.publicKey).toString('base64url');
-  if (getDb().select().from(passkeys).where(eq(passkeys.id, id)).get()) {
+  if ((await getDb().select().from(passkeys).where(eq(passkeys.id, id)))[0]) {
     throw new HttpError(409, 'PASSKEY_EXISTS', '该 Passkey 已绑定过');
   }
-  getDb()
+  await getDb()
     .insert(passkeys)
     .values({
       id,
@@ -144,11 +143,10 @@ export async function passkeyRegisterVerify(
       backedUp: info.credentialBackedUp ?? false,
       nickname: nickname.slice(0, 64) || 'Passkey',
       createdAt: Date.now(),
-    })
-    .run();
-  getDb().update(users).set({ mfaEnabled: true }).where(eq(users.id, userId)).run();
-  audit(`user:${userId}`, req.clientIp ?? null, 'mfa.passkey.registered', { id });
-  const view = listPasskeys(userId).find((p) => p.id === id);
+    });
+  await getDb().update(users).set({ mfaEnabled: true }).where(eq(users.id, userId));
+  await audit(`user:${userId}`, req.clientIp ?? null, 'mfa.passkey.registered', { id });
+  const view = await (await listPasskeys(userId)).find((p) => p.id === id);
   if (!view) throw new HttpError(500, 'INTERNAL', '凭据保存失败');
   return view;
 }
@@ -161,7 +159,7 @@ export async function passkeyAuthOptions(
   userId: number | null,
 ): Promise<{ requestId: string; options: unknown }> {
   const { rpID } = rpInfo(req);
-  const allow = userId ? listPasskeys(userId).map((c) => ({ id: c.id })) : [];
+  const allow = userId ? await (await listPasskeys(userId)).map((c) => ({ id: c.id })) : [];
   const options = await generateAuthenticationOptions({
     rpID,
     allowCredentials: allow,
@@ -195,7 +193,7 @@ export async function passkeyAuthVerify(
     if (!Number.isInteger(userId) || userId <= 0) throw new HttpError(400, 'WEBAUTHN_USER_HANDLE', '用户标识非法');
   }
 
-  const cred = getDb().select().from(passkeys).where(eq(passkeys.userId, userId)).all();
+  const cred = await getDb().select().from(passkeys).where(eq(passkeys.userId, userId));
   const credentialId = response.id;
   const target = cred.find((c) => c.id === credentialId) ?? cred[0];
   if (!target) throw new HttpError(400, 'PASSKEY_NOT_FOUND', '未找到对应凭据');
@@ -215,35 +213,33 @@ export async function passkeyAuthVerify(
   });
   if (!verification.verified) throw new HttpError(400, 'WEBAUTHN_VERIFY_FAILED', 'Passkey 校验失败');
 
-  getDb()
+  await getDb()
     .update(passkeys)
     .set({
       counter: verification.authenticationInfo.newCounter ?? target.counter + 1,
       lastUsedAt: Date.now(),
     })
-    .where(eq(passkeys.id, target.id))
-    .run();
-  audit(`user:${userId}`, req.clientIp ?? null, 'mfa.passkey.verify', { id: target.id });
+    .where(eq(passkeys.id, target.id));
+  await audit(`user:${userId}`, req.clientIp ?? null, 'mfa.passkey.verify', { id: target.id });
   return { userId, credentialId: target.id };
 }
 
 /** 删除 passkey；admin 且无 TOTP 时禁止删最后一个（admin 强制 MFA） */
-export function deletePasskey(userId: number, credentialId: string, isAdmin: boolean, totpBound: boolean): void {
-  const row = getDb().select().from(passkeys).where(eq(passkeys.id, credentialId)).get();
+export async function deletePasskey(userId: number, credentialId: string, isAdmin: boolean, totpBound: boolean): Promise<void> {
+  const row = (await getDb().select().from(passkeys).where(eq(passkeys.id, credentialId)))[0];
   if (!row || row.userId !== userId) throw new HttpError(404, 'PASSKEY_NOT_FOUND', '凭据不存在');
-  const count =
-    getDb()
+  const count = Number(
+    (await getDb()
       .select({ n: sql<number>`count(*)` })
       .from(passkeys)
-      .where(eq(passkeys.userId, userId))
-      .get()?.n ?? 0;
+      .where(eq(passkeys.userId, userId)))[0]?.n ?? 0,
+  );
   if (isAdmin && !totpBound && count <= 1) {
     throw new HttpError(403, 'MFA_REQUIRED_FOR_ADMIN', '管理员必须保留至少一种多因子');
   }
-  getDb().delete(passkeys).where(eq(passkeys.id, credentialId)).run();
+  await getDb().delete(passkeys).where(eq(passkeys.id, credentialId));
   if (count - 1 === 0 && !totpBound) {
-    getDb().update(users).set({ mfaEnabled: false }).where(eq(users.id, userId)).run();
+    await getDb().update(users).set({ mfaEnabled: false }).where(eq(users.id, userId));
   }
-  audit(`user:${userId}`, null, 'mfa.passkey.deleted', { id: credentialId });
+  await audit(`user:${userId}`, null, 'mfa.passkey.deleted', { id: credentialId });
 }
-

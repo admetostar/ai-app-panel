@@ -16,9 +16,17 @@ export const requireAuth: RequestHandler = (req, res, next) => {
     res.status(403).json({ error: { code: 'MFA_REQUIRED', message: '需要完成多因子认证', action: 'mfa' } });
     return;
   }
+  const requestPath = req.originalUrl.split('?')[0] ?? '';
+  const isMembershipSummaryRequest = req.method === 'GET' && requestPath === '/api/user/membership';
   if (
     req.user.membershipSelectionRequired &&
-    !['/api/auth/me', '/api/auth/logout', '/api/user/membership/select-plan'].includes(req.originalUrl.split('?')[0] ?? '')
+    ![
+      '/api/auth/me',
+      '/api/auth/logout',
+      '/api/user/membership/select-plan',
+      '/api/user/membership/skip-selection',
+    ].includes(requestPath) &&
+    !isMembershipSummaryRequest
   ) {
     res.status(403).json({
       error: { code: 'MEMBERSHIP_SELECTION_REQUIRED', message: '请先选择权益计划', action: 'membership-selection' },
@@ -42,9 +50,9 @@ export const requireStepUp: RequestHandler = (req, res, next) => {
 
 /** 要求管理员 */
 export const requireAdmin: RequestHandler = (req, res, next) => {
-  requireAuth(req, res, () => {
+  requireAuth(req, res, async () => {
     if (req.user?.role !== 'admin') {
-      audit(req.user ? `${req.user.kind}:${req.user.id}` : 'anonymous', req.clientIp ?? null, 'admin.denied', {
+      await audit(req.user ? `${req.user.kind}:${req.user.id}` : 'anonymous', req.clientIp ?? null, 'admin.denied', {
         path: req.path,
       });
       res.status(403).json({ error: { code: 'FORBIDDEN', message: '需要管理员权限' } });

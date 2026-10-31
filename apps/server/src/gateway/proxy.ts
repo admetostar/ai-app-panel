@@ -219,14 +219,14 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
   const id = String(req.params.id);
   // 与 WS 通道（wsproxy 正则）对齐：非法 id 不进 DB 查询，也不回显到错误页
   if (!isSlug(id)) return htmlError(res, 404, 'Not Found', '应用不存在');
-  const app = findApp(id);
+  const app = await findApp(id);
   if (!app || !app.enabled) {
     return htmlError(res, 404, '应用不存在', '未找到应用 %% 或已被停用', id);
   }
 
   // 访问策略三态
   const user = req.user;
-  if (!canAccess(app, user ?? null)) {
+  if (!await canAccess(app, user ?? null)) {
     if (!user) {
       return htmlError(res, 403, '需要登录', '应用「%%」需要登录后访问，<a href="/login">去登录</a>', app.name);
     }
@@ -247,7 +247,7 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
     const sub0 = decodeSafe((req.params[0] as string | undefined) ?? '');
     // 用户上传包（归属者非管理员）经 iframe 沙箱隔离（PRD G1）：
     // 外壳层挂统一页面元素；内容只经 /raw/ 通道输出（不直出门户源）
-    const sandboxed = needsIframeSandbox(app);
+    const sandboxed = await needsIframeSandbox(app);
     // raw 判定与 staticApp.RAW_PREFIX_RE 同义（锚定段边界：raw/raw/… 命中，rawfoo 不命中）
     const inRaw = sandboxed && /^raw(?:\/|$)/.test(sub0);
     if (sandboxed && !inRaw) return serveSandboxShell(res, app.id, sub0);
@@ -255,7 +255,7 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
     if (app.kind === 'package' && app.runtimeMode === 'persistent') {
       // G2 persistent：拉起长驻沙箱并反代（纳入 B 域门禁/限流/审计）
       // 必填环境变量未配置 → 不拉起，给可操作的错误页（而不是让应用起来后行为异常）
-      const missing = missingRequiredEnv(app.id);
+      const missing = await missingRequiredEnv(app.id);
       if (missing.length > 0) {
         return htmlError(res, 503, '应用缺少配置', '必填环境变量未配置：%%。请由归属者或管理员在应用「环境变量」中填写后重试。', missing.join('、'));
       }

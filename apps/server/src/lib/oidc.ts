@@ -61,7 +61,7 @@ export async function buildLoginRedirect(req: Request): Promise<string> {
   const state = randomBytes(16).toString('hex');
   const nonce = randomBytes(16).toString('hex');
   const codeVerifier = randomBytes(32).toString('hex');
-  getDb()
+  await getDb()
     .insert(oidcStates)
     .values({
       state,
@@ -70,8 +70,7 @@ export async function buildLoginRedirect(req: Request): Promise<string> {
       ip: req.clientIp ?? null,
       createdAt: Date.now(),
       expiresAt: Date.now() + 10 * 60_000,
-    })
-    .run();
+    });
   return client.authorizationUrl({
     scope: getSetting('OIDC_SCOPES') || 'openid email profile',
     state,
@@ -98,9 +97,9 @@ export async function exchangeCallback(
 ): Promise<OidcProfile> {
   const client = await getClient(req);
   const state = String(query.state ?? '');
-  const row = getDb().select().from(oidcStates).where(eq(oidcStates.state, state)).get();
+  const row = (await getDb().select().from(oidcStates).where(eq(oidcStates.state, state)))[0];
   if (!row) throw new HttpError(400, 'OIDC_STATE', '登录状态已失效，请重新发起登录');
-  getDb().delete(oidcStates).where(eq(oidcStates.state, state)).run(); // 读后即删
+  await getDb().delete(oidcStates).where(eq(oidcStates.state, state)); // 读后即删
   if (row.expiresAt <= Date.now()) throw new HttpError(400, 'OIDC_STATE_EXPIRED', '登录状态已过期');
 
   const ticket = await client.callback(redirectUri(req), { code: String(query.code ?? ''), state }, {
@@ -123,6 +122,7 @@ export async function exchangeCallback(
   };
 }
 
-export function isAdminSubject(profile: OidcProfile): boolean {
-  return oidcAdminSubjects().includes(profile.subject) || oidcAdminSubjects().includes(profile.email ?? '');
+export async function isAdminSubject(profile: OidcProfile): Promise<boolean> {
+  const subjects = await oidcAdminSubjects();
+  return subjects.includes(profile.subject) || subjects.includes(profile.email ?? '');
 }

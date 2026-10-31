@@ -1,186 +1,115 @@
 /**
- * G4 包签名信任链测试（Ed25519）：
- * sign-aap.mjs keygen/sign 工具 → 上传验签四态：
- *   verified（信任公钥 → 免审 approved）/ untrusted（照常审核）/ invalid（篡改硬拒）。
- * 依赖仓库根 devDependency adm-zip（CLI 复用）。
+ * .asp-app package uploads do not require signatures.
+ * User and administrator upload paths still validate the archive and manifest.
  */
-import { execSync } from 'node:child_process';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import AdmZip from 'adm-zip';
-import { sessionCookieFor, setupTestDb, teardownTestDb } from './testkit.js';
+import { eq } from 'drizzle-orm';
+import { sessionCookieFor, setupTestDb, testPackage, teardownTestDb } from './testkit.js';
 import { closeDb, getDb } from '../db/index.js';
 import { seedSettings } from '../lib/settings.js';
 import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
-import { trustedSigningKeys } from '../db/schema.js';
-import { writeLocalCredentials } from '../lib/bootstrap.js';
+import { apps, users } from '../db/schema.js';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-
-const CLI = path.resolve(
-  path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)),
-  '../../../../packages/aap-sdk/sign-aap.mjs',
-);
 
 let server: Server;
 let base: string;
 let dir: string;
 let adminCookie = '';
-const tmpDirs: string[] = [];
 
-function zipPkg(files: Record<string, string>): Buffer {
-  const zip = new AdmZip();
-  for (const [name, content] of Object.entries(files)) zip.addFile(name, Buffer.from(content));
-  return zip.toBuffer();
+function packageBase64(id: string, extraFiles: Record<string, string> = {}): string {
+  return testPackage({
+    'manifest.json': JSON.stringify({
+      name: id,
+      display_name: id,
+      version: '1.0.0',
+      type: 'html',
+      entry: 'index.html',
+    }),
+    'index.html': `<h1>${id}</h1>`,
+    ...extraFiles,
+  }).toString('base64');
 }
 
-function cookieOf(res: Response): string {
-  const cookies = res.headers.getSetCookie();
-  const sid = cookies.find((c) => c.startsWith('aap_sid='));
-  if (!sid) throw new Error('no session cookie');
-  return sid.split(';')[0]!;
-}
-
-function tmpdir(): string {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'aapsign-'));
-  tmpDirs.push(d);
-  return d;
-}
-
-/** CLI keygen：返回私钥文件与公钥 base64 */
-function keygen(): { secretFile: string; pubB64: string } {
-  const d = tmpdir();
-  execSync(`node ${JSON.stringify(CLI)} keygen -o ${JSON.stringify(path.join(d, 'k.secret'))}`, { cwd: d, stdio: 'pipe' });
-  return { secretFile: path.join(d, 'k.secret'), pubB64: fs.readFileSync(path.join(d, 'k.pub'), 'utf8').trim() };
-}
-
-function signWithCli(zipBuf: Buffer, secretFile: string, signer: string): Buffer {
-  const d = tmpdir();
-  const pkg = path.join(d, 'pkg.asp-app');
-  fs.writeFileSync(pkg, zipBuf);
-  execSync(
-    `node ${JSON.stringify(CLI)} sign ${JSON.stringify(pkg)} --key ${JSON.stringify(secretFile)} --signer ${JSON.stringify(signer)}`,
-    { cwd: d, stdio: 'pipe' },
-  );
-  return fs.readFileSync(pkg);
-}
-
-function keyIdOfB64(pubB64: string): string {
-  return 'SHA256:' + createHash('sha256').update(Buffer.from(pubB64, 'base64')).digest('hex').slice(0, 16);
-}
-
-function submit(dataBase64: string): Promise<{ status: number; body: { review?: string; error?: { code?: string } } }> {
+function submit(dataBase64: string): Promise<{ status: number; body: { id?: string; error?: { code?: string } } }> {
   return fetch(`${base}/api/apps/submit`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
     body: JSON.stringify({ filename: 'pkg.asp-app', dataBase64 }),
-  }).then(async (r) => ({ status: r.status, body: (await r.json()) as { review?: string; error?: { code?: string } } }));
+  }).then(async (r) => ({ status: r.status, body: (await r.json()) as { id?: string; error?: { code?: string } } }));
 }
 
-import { apps } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
+function submitAdmin(dataBase64: string): Promise<{ status: number; body: { error?: { code?: string } } }> {
+  return fetch(`${base}/api/admin/apps/package`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
+    body: JSON.stringify({ filename: 'pkg.asp-app', dataBase64 }),
+  }).then(async (r) => ({ status: r.status, body: (await r.json()) as { error?: { code?: string } } }));
+}
 
-function rowOf(id: string): { signatureStatus: string | null; reviewStatus: string } {
-  const r = getDb()
-    .select({ signatureStatus: apps.signatureStatus, reviewStatus: apps.reviewStatus })
+async function rowOf(id: string): Promise<{ signatureStatus: string | null; visibility: string; enabled: boolean } | null> {
+  const row = (await getDb()
+    .select({ signatureStatus: apps.signatureStatus, visibility: apps.visibility, enabled: apps.enabled })
     .from(apps)
-    .where(eq(apps.id, id))
-    .get()!;
-  return r;
+    .where(eq(apps.id, id)))[0];
+  return row ?? null;
 }
 
 beforeAll(async () => {
-  ({ dir } = setupTestDb());
-  seedSettings();
+  ({ dir } = await setupTestDb());
+  await seedSettings();
 
   server = createApp({ ...loadConfig({}), webDist: null }).listen(0, '127.0.0.1');
-  await new Promise<void>((r) => server.once('listening', r));
+  await new Promise<void>((resolve) => server.once('listening', resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
-  getDb()
-    .insert((await import('../db/schema.js')).users)
+  const [admin] = await getDb()
+    .insert(users)
     .values({ kind: 'local', username: 'admin', name: '管理员', role: 'admin', mfaEnabled: true, createdAt: Date.now() })
-    .run();
-  const adminId = getDb().select().from((await import('../db/schema.js')).users).get()!.id;
-  // 直建 full 会话（mfaEnabled=true 时 HTTP 登录只给半登录态）
-  adminCookie = sessionCookieFor(adminId);
+    .returning({ id: users.id });
+  if (!admin) throw new Error('Failed to create test administrator');
+  adminCookie = await sessionCookieFor(admin.id);
 });
 
-afterAll(() => {
+afterAll(async () => {
   server.close();
-  closeDb();
-  teardownTestDb(dir);
-  for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true });
+  await closeDb();
+  await teardownTestDb(dir);
 });
 
-const OFFICIAL_MANIFEST = {
-  name: 'officialpkg',
-  display_name: '官方包',
-  version: '1.0.0',
-  type: 'html',
-  entry: 'index.html',
-};
-
-describe('G4 包签名信任链（Ed25519）', () => {
-  it('官方签名：信任公钥命中 → verified + 免审 approved', async () => {
-    const { secretFile, pubB64 } = keygen();
-    getDb()
-      .insert(trustedSigningKeys)
-      .values({ keyId: keyIdOfB64(pubB64), name: '官方发布', publicKey: pubB64, builtin: true, createdAt: Date.now() })
-      .run();
-
-    const signed = signWithCli(
-      zipPkg({
-        'manifest.json': JSON.stringify(OFFICIAL_MANIFEST),
-        'index.html': '<h1>official</h1>',
-      }),
-      secretFile,
-      'neon',
-    );
-    const r = await submit(signed.toString('base64'));
+describe('.asp-app 上传不要求签名', () => {
+  it('普通用户上传未签名包后立即启用为私有应用', async () => {
+    const r = await submit(packageBase64('unsignedpkg'));
     expect(r.status).toBe(200);
-
-    expect(r.body.review).toBe('approved');
-    expect(rowOf('officialpkg')).toEqual({ signatureStatus: 'verified', reviewStatus: 'approved' });
+    expect(await rowOf('unsignedpkg')).toEqual({ signatureStatus: null, visibility: 'private', enabled: true });
   });
 
-  it('未信任签名者：签名有效但 key 未知 → untrusted，照常走审核', async () => {
-    const { secretFile } = keygen(); // 未加入信任列表
-    const signed = signWithCli(
-      zipPkg({
-        'manifest.json': JSON.stringify({ ...OFFICIAL_MANIFEST, name: 'strangerpkg', display_name: 'Stranger' }),
-        'index.html': '<h1>x</h1>',
-      }),
-      secretFile,
-      'stranger',
-    );
-    const r = await submit(signed.toString('base64'));
+  it('签名文件内容无效或与包内容不匹配不影响接收', async () => {
+    const r = await submit(packageBase64('signatureignored', {
+      'signature.json': JSON.stringify({ alg: 'ed25519', signature: 'invalid' }),
+    }));
     expect(r.status).toBe(200);
-    expect(r.body.review).toBe('none');
-    expect(rowOf('strangerpkg')).toEqual({ signatureStatus: 'untrusted', reviewStatus: 'none' });
+    expect(await rowOf('signatureignored')).toEqual({ signatureStatus: null, visibility: 'private', enabled: true });
   });
 
-  it('篡改包：签名后增删改文件 → invalid 硬拒上传', async () => {
-    const { secretFile } = keygen();
-    const signedZipBuf = signWithCli(
-      zipPkg({
-        'manifest.json': JSON.stringify({ ...OFFICIAL_MANIFEST, name: 'tamperedpkg', display_name: 'Tampered' }),
-        'index.html': '<h1>orig</h1>',
-      }),
-      secretFile,
-      'neon',
-    );
-    // 签名后再改内容（换成未签名的第二份内容 + 原 signature.json 不动）
-    const zip = new AdmZip(signedZipBuf);
-    zip.updateFile('index.html', Buffer.from('<h1>evil</h1>'));
-    const tampered = zip.toBuffer();
+  it('普通用户上传不需要管理员配置的公钥', async () => {
+    const r = await submit(packageBase64('no-trust-list'));
+    expect(r.status).toBe(200);
+    expect(await rowOf('no-trust-list')).not.toBeNull();
+  });
 
-    const r = await submit(tampered.toString('base64'));
-    expect(r.status).toBe(400);
-    expect(r.body.error?.code).toBe('PACKAGE_TAMPERED');
+  it('管理员上传同样接受未签名包', async () => {
+    const r = await submitAdmin(packageBase64('admin-unsigned'));
+    expect(r.status).toBe(200);
+    expect(await rowOf('admin-unsigned')).toEqual({ signatureStatus: null, visibility: 'private', enabled: true });
+  });
+
+  it('管理员上传也不验证包内签名', async () => {
+    const r = await submitAdmin(packageBase64('admin-invalid-signature', {
+      'signature.json': 'not a signature',
+    }));
+    expect(r.status).toBe(200);
+    expect(await rowOf('admin-invalid-signature')).not.toBeNull();
   });
 });

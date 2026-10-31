@@ -6,11 +6,12 @@
  *  - loadSessionByToken 同时服务 Express 中间件与裸 req（WS upgrade，W5）。
  */
 import type { Request, RequestHandler, Response } from 'express';
-import type Database from 'better-sqlite3';
 import { randomBytes } from 'node:crypto';
+import { eq } from 'drizzle-orm';
 import type { AuthState } from '@aap/shared';
 import { config } from '../config/index.js';
-import { getSqlite } from '../db/index.js';
+import { getDb } from '../db/index.js';
+import { sessions, users } from '../db/schema.js';
 import { sha256Hex } from './passwords.js';
 import { getSettingInt } from './settings.js';
 import type { SessionUser } from '../types.js';
@@ -75,45 +76,51 @@ interface SessionJoinRow {
   membership_selection_required: number;
 }
 
-let joinStmt: Database.Statement | null = null;
-
 /**
  * 按会话 token（明文）装载用户；过期/用户禁用即删会话返回 null。
  * 独立成函数以便 WS upgrade（裸 req）复用。
  */
-export function loadSessionByToken(token: string | undefined | null): SessionUser | null {
+export async function loadSessionByToken(token: string | undefined | null): Promise<SessionUser | null> {
   if (!token) return null;
-  const s = getSqlite();
-  if (!joinStmt) {
-    joinStmt = s.prepare(`
-      SELECT s.token_hash, s.auth_state, s.step_up_until, s.expires_at, s.last_seen_at,
-             u.id AS u_id, u.kind, u.username, u.email, u.phone, u.name, u.role, u.status,
-             u.plan, u.mfa_enabled, u.must_change_password, u.membership_selection_required
-      FROM sessions s JOIN users u ON u.id = s.user_id
-      WHERE s.token_hash = ?
-    `);
-  }
   const tokenHash = hashToken(token);
-  const row = joinStmt.get(tokenHash) as SessionJoinRow | undefined;
+  const row = (await getDb()
+    .select({
+      token_hash: sessions.tokenHash,
+      auth_state: sessions.authState,
+      step_up_until: sessions.stepUpUntil,
+      expires_at: sessions.expiresAt,
+      last_seen_at: sessions.lastSeenAt,
+      u_id: users.id,
+      kind: users.kind,
+      username: users.username,
+      email: users.email,
+      phone: users.phone,
+      name: users.name,
+      role: users.role,
+      status: users.status,
+      plan: users.plan,
+      mfa_enabled: users.mfaEnabled,
+      must_change_password: users.mustChangePassword,
+      membership_selection_required: users.membershipSelectionRequired,
+    })
+    .from(sessions)
+    .innerJoin(users, eq(users.id, sessions.userId))
+    .where(eq(sessions.tokenHash, tokenHash)))[0];
   if (!row) return null;
 
-  const del = (): void => {
-    s.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
-  };
-
   if (row.expires_at <= Date.now()) {
-    del();
+    await getDb().delete(sessions).where(eq(sessions.tokenHash, tokenHash));
     return null;
   }
   // 用户被禁用/待批准：会话即刻作废（deletion_pending 仍可登录以便撤回注销）
   if (row.status === 'disabled' || row.status === 'pending_approval') {
-    del();
+    await getDb().delete(sessions).where(eq(sessions.tokenHash, tokenHash));
     return null;
   }
 
   // lastSeenAt 节流刷新（≥60s 才写，避免每请求写放大）
   if (Date.now() - row.last_seen_at > 60_000) {
-    s.prepare('UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?').run(Date.now(), tokenHash);
+    await getDb().update(sessions).set({ lastSeenAt: Date.now() }).where(eq(sessions.tokenHash, tokenHash));
   }
 
   return {
@@ -130,9 +137,9 @@ export function loadSessionByToken(token: string | undefined | null): SessionUse
     sessionId: row.token_hash,
     authState: (row.auth_state as AuthState) || 'full',
     stepUpUntil: row.step_up_until ?? null,
-    mfaEnabled: row.mfa_enabled === 1,
-    mustChangePassword: row.must_change_password === 1,
-    membershipSelectionRequired: row.membership_selection_required === 1,
+    mfaEnabled: row.mfa_enabled,
+    mustChangePassword: row.must_change_password,
+    membershipSelectionRequired: row.membership_selection_required,
   };
 }
 
@@ -140,67 +147,63 @@ export function loadSessionByToken(token: string | undefined | null): SessionUse
  *  grantStepUp：登录即授予步升窗口——密码/Passkey/邮箱码本身就是刚验证过的
  *  因子，强制绑 MFA（F3）因此可在登录后立即进行；窗口过期后的敏感操作仍需
  *  重验因子（防被劫持会话静默绑定新 MFA，渗透测试 P2-9）。 */
-export function createSession(
+export async function createSession(
   res: Response,
   user: { id: number },
   opts: { ip?: string | null; userAgent?: string | null; authState?: AuthState; ttlSec?: number; grantStepUp?: boolean },
-): string {
+): Promise<string> {
   const token = generateToken();
   const now = Date.now();
   const ttl = opts.ttlSec ?? sessionTtlSec();
   const expiresAt = now + ttl * 1000;
   const stepUpUntil = opts.grantStepUp ? now + stepUpTtlSec() * 1000 : null;
-  const s = getSqlite();
-  s.prepare(
-    `INSERT INTO sessions(token_hash, user_id, auth_state, step_up_until, created_at, last_seen_at, expires_at, ip, user_agent)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    hashToken(token),
-    user.id,
-    opts.authState ?? 'full',
+  await getDb().insert(sessions).values({
+    tokenHash: hashToken(token),
+    userId: user.id,
+    authState: opts.authState ?? 'full',
     stepUpUntil,
-    now,
-    now,
+    createdAt: now,
+    lastSeenAt: now,
     expiresAt,
-    opts.ip ?? null,
-    (opts.userAgent ?? '').slice(0, 255),
-  );
-  s.prepare('UPDATE users SET last_login_at = ?, last_ip = ? WHERE id = ?').run(now, opts.ip ?? null, user.id);
+    ip: opts.ip ?? null,
+    userAgent: (opts.userAgent ?? '').slice(0, 255),
+  });
+  await getDb().update(users).set({ lastLoginAt: now, lastIp: opts.ip ?? null }).where(eq(users.id, user.id));
   res.cookie(config.sessionCookieName, token, cookieOptions());
   return token;
 }
 
 /** 登出 / 踢下线共用：按 token 哈希删行 */
-export function destroySessionByToken(token: string | undefined | null): void {
+export async function destroySessionByToken(token: string | undefined | null): Promise<void> {
   if (!token) return;
-  getSqlite().prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashToken(token));
+  await getDb().delete(sessions).where(eq(sessions.tokenHash, hashToken(token)));
 }
 
 /** 登录状态机推进：password_ok → full（MFA 验证通过） */
-export function upgradeSessionToFull(tokenHash: string): void {
-  getSqlite()
-    .prepare("UPDATE sessions SET auth_state = 'full' WHERE token_hash = ?")
-    .run(tokenHash);
+export async function upgradeSessionToFull(tokenHash: string): Promise<void> {
+  await getDb().update(sessions).set({ authState: 'full' }).where(eq(sessions.tokenHash, tokenHash));
 }
 
 /** 敏感操作步升认证：重验一次因子后 5 分钟内免重验（A3） */
-export function markStepUp(tokenHash: string): number {
+export async function markStepUp(tokenHash: string): Promise<number> {
   const ttl = getSettingInt('MFA_STEPUP_TTL', 300);
   const until = Date.now() + ttl * 1000;
-  getSqlite().prepare('UPDATE sessions SET step_up_until = ? WHERE token_hash = ?').run(until, tokenHash);
+  await getDb().update(sessions).set({ stepUpUntil: until }).where(eq(sessions.tokenHash, tokenHash));
   return until;
 }
 
-export function destroySession(req: Request, res: Response): void {
-  destroySessionByToken(req.cookies?.[config.sessionCookieName]);
+export async function destroySession(req: Request, res: Response): Promise<void> {
+  await destroySessionByToken(req.cookies?.[config.sessionCookieName]);
   res.clearCookie(config.sessionCookieName, { path: '/' });
 }
 
 /** Express 中间件：装载 req.user（未登录保持 undefined） */
-export const sessionMiddleware: RequestHandler = (req, _res, next) => {
+export const sessionMiddleware: RequestHandler = async (req, _res, next) => {
   const token = req.cookies?.[config.sessionCookieName];
-  req.user = loadSessionByToken(token);
-  next();
+  void loadSessionByToken(token).then((user) => {
+    req.user = user ?? undefined;
+    next();
+  }, next);
 };
 
 // ---------- 强制流程门禁（F3/A3：强制改密 / admin 强制绑 MFA） ----------

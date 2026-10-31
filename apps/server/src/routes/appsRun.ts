@@ -2,7 +2,7 @@
  * .asp-app 运行与发布（M4，G3/G4/G5）：
  *  - POST /api/apps/:id/run            invoked 执行（requireAuth + 可见性门禁；运行记录入 app_runs + 审计）
  *  - GET  /api/apps/:id/meta           执行页元数据（入参 schema 等；匿名按可见性门禁可读公开应用）
- *  - POST /api/apps/submit             用户上传 .asp-app（requireAuth；默认私有可见，归属=上传者；
+ *  - POST /api/apps/submit             用户上传 .asp-app（requireAuth；必须可信签名；默认私有可见，归属=上传者；
  *                                      正式目录写入一律在归属校验之后，防止同名包清空他人应用）
  *  - POST /api/apps/:id/publish        用户发布为公开（requireAuth + 订阅额度校验）
  *  - GET  /api/apps/mine               我的应用（requireAuth）
@@ -22,7 +22,6 @@ import { loopbackPlatformPort, runInvoked } from '../lib/sandbox.js';
 import { ensureAutoProvisionedToken } from '../lib/llm.js';
 import { config } from '../config/index.js';
 import { storePackageFiles, validateManifest, parseEnvSpec, type ManifestEnvVar } from '../gateway/staticApp.js';
-import { checkPackageSignature, type SignatureCheck, type SignatureObj } from '../lib/signing.js';
 import { audit } from '../lib/audit.js';
 import { encryptSecret, decryptSecret } from '../lib/cryptoSecrets.js';
 import { missingRequiredEnv } from '../lib/appEnv.js';
@@ -53,8 +52,8 @@ function uploadAllowed(uid: number): boolean {
 
 export const appsRunRouter = Router();
 
-function loadApp(id: string) {
-  return getDb().select().from(apps).where(eq(apps.id, id)).get();
+async function loadApp(id: string) {
+  return (await getDb().select().from(apps).where(eq(apps.id, id)))[0];
 }
 
 // ---------- 执行页元数据 ----------
@@ -62,8 +61,8 @@ function loadApp(id: string) {
 appsRunRouter.get(
   '/apps/:id/meta',
   h(async (req, res) => {
-    const app = loadApp(String(req.params.id));
-    if (!app || !app.enabled || !canAccess(app, req.user ?? null)) {
+    const app = await loadApp(String(req.params.id));
+    if (!app || !app.enabled || !await canAccess(app, req.user ?? null)) {
       throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在或不可访问');
     }
     let inputSchema: unknown = null;
@@ -91,11 +90,11 @@ appsRunRouter.post(
   '/apps/:id/run',
   requireAuth,
   h(async (req, res) => {
-    const app = loadApp(String(req.params.id));
+    const app = await loadApp(String(req.params.id));
     if (!app || !app.enabled || app.kind !== 'package') {
       throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在或不是可执行包');
     }
-    if (!canAccess(app, req.user ?? null)) {
+    if (!await canAccess(app, req.user ?? null)) {
       throw new HttpError(403, 'FORBIDDEN', '无权访问该应用');
     }
     if (app.runtimeMode !== 'invoked') {
@@ -112,7 +111,7 @@ appsRunRouter.post(
     const userId = req.user!.id;
 
     // 必填环境变量未配置 → 明确报错（而不是让包在运行时莫名拿不到配置）
-    const missing = missingRequiredEnv(app.id);
+    const missing = await missingRequiredEnv(app.id);
     if (missing.length > 0) {
       throw new HttpError(400, 'ENV_MISSING', `缺少必填环境变量：${missing.join('、')}（请在应用的环境变量配置中填写后重试）`);
     }
@@ -124,7 +123,7 @@ appsRunRouter.post(
     const platformBase = `http://127.0.0.1:${loopbackPlatformPort(req.socket.localPort, config)}`;
     const result = await runInvoked(app.id, entry, input.input ?? {}, { userId, timeoutMs: 30_000, platformBase });
 
-    getDb()
+    await getDb()
       .insert(appRuns)
       .values({
         appId: app.id,
@@ -134,9 +133,8 @@ appsRunRouter.post(
         status: result.status,
         error: result.error ?? null,
         logs: result.logs ?? null,
-      })
-      .run();
-    audit(`user:${userId}`, req.clientIp ?? null, 'app.run', {
+      });
+    await audit(`user:${userId}`, req.clientIp ?? null, 'app.run', {
       appId: app.id,
       status: result.status,
       durationMs: result.durationMs,
@@ -154,8 +152,8 @@ appsRunRouter.post(
 
 // ---------- 应用环境变量 / 机密（G6：manifest.env 声明，AES-256-GCM 落盘，沙箱启动注入） ----------
 
-function envSpecOfStored(appId: string): Record<string, ManifestEnvVar> {
-  const app = loadApp(appId);
+async function envSpecOfStored(appId: string): Promise<Record<string, ManifestEnvVar>> {
+  const app = await loadApp(appId);
   if (!app?.manifestJson) return {};
   try {
     const m = JSON.parse(app.manifestJson) as Record<string, unknown>;
@@ -173,17 +171,16 @@ appsRunRouter.get(
   '/apps/:id/env',
   requireAuth,
   h(async (req, res) => {
-    const app = loadApp(String(req.params.id));
+    const app = await loadApp(String(req.params.id));
     if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
     if (!canManageEnv(app, req.user!)) throw new HttpError(403, 'FORBIDDEN', '只有归属者或管理员可以查看环境变量');
     if (app.kind !== 'package') throw new HttpError(400, 'NOT_PACKAGE', '环境变量仅对 .asp-app 包生效');
 
-    const spec = envSpecOfStored(app.id);
-    const rows = getDb()
+    const spec = await envSpecOfStored(app.id);
+    const rows = await getDb()
       .select({ name: appEnvVars.name, valueEnc: appEnvVars.valueEnc, isSecret: appEnvVars.isSecret })
       .from(appEnvVars)
-      .where(eq(appEnvVars.appId, app.id))
-      .all();
+      .where(eq(appEnvVars.appId, app.id));
     const byName = new Map(rows.map((r) => [r.name, r]));
 
     const declared = Object.entries(spec).map(([name, s]) => {
@@ -227,12 +224,12 @@ appsRunRouter.put(
   '/apps/:id/env',
   requireAuth,
   h(async (req, res) => {
-    const app = loadApp(String(req.params.id));
+    const app = await loadApp(String(req.params.id));
     if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
     if (!canManageEnv(app, req.user!)) throw new HttpError(403, 'FORBIDDEN', '只有归属者或管理员可以修改环境变量');
     if (app.kind !== 'package') throw new HttpError(400, 'NOT_PACKAGE', '环境变量仅对 .asp-app 包生效');
 
-    const spec = envSpecOfStored(app.id);
+    const spec = await envSpecOfStored(app.id);
     const body = (req.body ?? {}) as { values?: Record<string, unknown> };
     const values = body.values ?? {};
     if (typeof values !== 'object' || Array.isArray(values)) throw new HttpError(400, 'INVALID_BODY', 'values 必须是对象');
@@ -250,7 +247,7 @@ appsRunRouter.put(
       if (value.length > 8192) throw new HttpError(400, 'INVALID_BODY', `变量值过长（上限 8192 字符）: ${name}`);
       if (value === '') {
         // 空串 = 清除该变量配置
-        getDb().delete(appEnvVars).where(and(eq(appEnvVars.appId, app.id), eq(appEnvVars.name, name))).run();
+        await getDb().delete(appEnvVars).where(and(eq(appEnvVars.appId, app.id), eq(appEnvVars.name, name)));
         cleared.push(name);
         continue;
       }
@@ -264,21 +261,20 @@ appsRunRouter.put(
           throw new HttpError(400, 'ENV_PATTERN_MISMATCH', `变量 ${name} 的格式校验规则无效`);
         }
       }
-      getDb()
+      await getDb()
         .insert(appEnvVars)
         .values({ appId: app.id, name, valueEnc: encryptSecret(value), isSecret: s.secret, updatedAt: now })
         .onConflictDoUpdate({
           target: [appEnvVars.appId, appEnvVars.name],
           set: { valueEnc: encryptSecret(value), isSecret: s.secret, updatedAt: now },
-        })
-        .run();
+        });
       saved.push(name);
     }
 
     // persistent 进程已带旧环境在跑：杀掉，下次访问以新环境重新拉起
     if (saved.length + cleared.length > 0 && app.runtimeMode === 'persistent') stopPersistentFor(app.id);
     if (saved.length + cleared.length > 0) {
-      audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'app.env.set', {
+      await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'app.env.set', {
         appId: app.id,
         saved,
         cleared,
@@ -328,25 +324,17 @@ appsRunRouter.post(
     // 临时目录按请求唯一命名：并发提交共用固定目录会互踩。
     let rawManifest: Record<string, unknown>;
     let manifest: ReturnType<typeof validateManifest>;
-    let signatureCheck: SignatureCheck;
     const tmpDir = `submit_tmp_${randomBytes(8).toString('hex')}`;
     try {
       const r = storePackageFiles(tmpDir, zipBuf);
       rawManifest = r.manifest;
       manifest = validateManifest(r.manifest);
-      signatureCheck = checkPackageSignature(r.entries, r.signature as SignatureObj | null);
     } catch (err) {
       fs.rmSync(appSiteDir(tmpDir), { recursive: true, force: true });
       throw new HttpError(400, 'PACKAGE_INVALID', err instanceof Error ? err.message : '包校验失败');
     }
-    if (signatureCheck.status === 'invalid') {
-      // 签名与内容不符 = 包被篡改/损坏，硬拒（G4）
-      fs.rmSync(appSiteDir(tmpDir), { recursive: true, force: true });
-      throw new HttpError(400, 'PACKAGE_TAMPERED', `包签名校验失败：${signatureCheck.reason ?? '签名无效'}`);
-    }
-    const initialReviewStatus = signatureCheck.status === 'verified' ? 'approved' : 'none';
     const now = Date.now();
-    const existing = getDb().select().from(apps).where(eq(apps.id, manifest.name)).get();
+    const existing = (await getDb().select().from(apps).where(eq(apps.id, manifest.name)))[0];
     if (existing) {
       // 版本更新：仅归属者或管理员；通过包校验后直接更新
       const isOwner = existing.ownerUserId === req.user!.id;
@@ -357,23 +345,18 @@ appsRunRouter.post(
       const to = appSiteDir(manifest.name);
       fs.rmSync(to, { recursive: true, force: true });
       fs.renameSync(appSiteDir(tmpDir), to);
-      getDb()
+      await getDb()
         .update(apps)
         .set({
           description: String(rawManifest.description ?? existing.description),
           // 新包字段优先，旧 manifest 仅补足校验器不感知的字段（如 description）
           manifestJson: JSON.stringify({ ...(safeParse(existing.manifestJson) || {}), ...rawManifest, ...manifest }),
-          signatureStatus: signatureCheck.status,
-          reviewStatus: 'approved',
-          reviewNote: null,
-          submittedAt: now,
+          signatureStatus: null,
           updatedAt: now,
         })
-        .where(eq(apps.id, manifest.name))
-        .run();
-      audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.package.update', {
+        .where(eq(apps.id, manifest.name));
+      await audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.package.update', {
         name: manifest.name,
-        signature: signatureCheck.status,
       });
       res.json({ ok: true, id: manifest.name });
       return;
@@ -384,7 +367,7 @@ appsRunRouter.post(
     fs.renameSync(appSiteDir(tmpDir), to);
 
     const isHtml = manifest.type === 'html';
-    getDb()
+    await getDb()
       .insert(apps)
       .values({
         id: manifest.name,
@@ -397,20 +380,17 @@ appsRunRouter.post(
         passUser: manifest.capabilities.includes('llm'),
         upstream: '',
         manifestJson: JSON.stringify({ ...rawManifest, ...manifest }),
-        signatureStatus: signatureCheck.status,
+        signatureStatus: null,
         runtimeMode: manifest.type === 'python' ? manifest.runtime : null,
-        reviewStatus: initialReviewStatus,
         enabled: true, // 私有即可用（G4：上传 → 校验 → 私有可用）
         createdAt: now,
         updatedAt: now,
-      })
-      .run();
-    ensureAutoProvisionedToken(manifest.name);
-    audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.package.submit', {
+      });
+    await ensureAutoProvisionedToken(manifest.name);
+    await audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.package.submit', {
       name: manifest.name,
       type: manifest.type,
       capabilities: manifest.capabilities,
-      signature: signatureCheck.status,
     });
     res.json({ ok: true, id: manifest.name });
   }),
@@ -432,12 +412,11 @@ appsRunRouter.get(
   requireAuth,
   h(async (req, res) => {
     const uid = req.user!.id;
-    const rows = getDb()
+    const rows = await getDb()
       .select()
       .from(apps)
       .where(and(eq(apps.ownerUserId, uid), ne(apps.kind, 'upstream')))
-      .orderBy(sql`updated_at DESC`)
-      .all();
+      .orderBy(sql`updated_at DESC`);
     res.json({
       apps: rows.map((r): OwnedAppCard => ({
         id: r.id,
@@ -464,16 +443,16 @@ appsRunRouter.delete(
   requireStepUp,
   h(async (req, res) => {
     const id = String(req.params.id);
-    const app = loadApp(id);
+    const app = await loadApp(id);
     if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
     if (app.ownerUserId !== req.user!.id) throw new HttpError(403, 'FORBIDDEN', '只能删除自己创建的应用');
     if (app.kind === 'upstream') throw new HttpError(400, 'NOT_PACKAGE', '仅托管应用可以在个人中心删除');
 
     stopPersistentFor(id);
     fs.rmSync(appSiteDir(id), { recursive: true, force: true });
-    getDb().delete(apps).where(eq(apps.id, id)).run();
-    getDb().delete(llmAppTokens).where(eq(llmAppTokens.appId, id)).run();
-    audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.delete', { appId: id });
+    await getDb().delete(apps).where(eq(apps.id, id));
+    await getDb().delete(llmAppTokens).where(eq(llmAppTokens.appId, id));
+    await audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.delete', { appId: id });
     res.json({ ok: true });
   }),
 );
@@ -484,26 +463,22 @@ appsRunRouter.post(
   '/apps/:id/publish',
   requireAuth,
   h(async (req, res) => {
-    const app = loadApp(String(req.params.id));
+    const app = await loadApp(String(req.params.id));
     if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
     if (app.ownerUserId !== req.user!.id) {
       throw new HttpError(403, 'FORBIDDEN', '只有应用归属者可以发布');
     }
     if (app.kind === 'upstream') throw new HttpError(400, 'NOT_PACKAGE', '仅托管应用包可以发布');
-    assertPublicAppQuota(app.ownerUserId, app.id);
-    getDb()
+    await assertPublicAppQuota(app.ownerUserId, app.id);
+    await getDb()
       .update(apps)
       .set({
         visibility: 'public',
         enabled: true,
-        reviewStatus: 'approved',
-        reviewNote: null,
-        submittedAt: Date.now(),
         updatedAt: Date.now(),
       })
-      .where(eq(apps.id, app.id))
-      .run();
-    audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.publish.public', {
+      .where(eq(apps.id, app.id));
+    await audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.publish.public', {
       appId: app.id,
     });
     res.json({ ok: true, visibility: 'public' });

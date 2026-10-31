@@ -12,7 +12,7 @@ import { publicUserOf } from './shared.js';
 import { registerPurgeTask } from '../lib/audit.js';
 import { getSetting, getSettingBool, getSettingInt } from '../lib/settings.js';
 import { issueCode, verifyCode } from '../lib/verification.js';
-import { activateMembership, cancelOrder, createOrder, listPlans } from '../lib/billing.js';
+import { activateMembership, cancelOrder, createOrder, isFreePlan, listPlans } from '../lib/billing.js';
 import { redeem as redeemCodeLib } from '../lib/redeem.js';
 import { audit } from '../lib/audit.js';
 import { recomputeBalance } from '../lib/llm.js';
@@ -21,7 +21,15 @@ export const userRouter = Router();
 
 userRouter.use('/user', requireAuth);
 userRouter.use('/user', (req, res, next) => {
-  if (!req.user?.membershipSelectionRequired || req.path === '/membership/select-plan') {
+  const originalPath = (req.originalUrl ?? '').split('?')[0] ?? '';
+  const isMembershipSummaryRequest =
+    req.method === 'GET' &&
+    (req.path === '/membership' || originalPath.endsWith('/user/membership'));
+  if (
+    !req.user?.membershipSelectionRequired ||
+    req.path === '/membership/select-plan' ||
+    isMembershipSummaryRequest
+  ) {
     next();
     return;
   }
@@ -36,7 +44,7 @@ const MAX_AVATAR_BYTES = 100 * 1024;
 userRouter.get(
   '/user/profile',
   h(async (req, res) => {
-    const row = getDb().select().from(users).where(eq(users.id, req.user!.id)).get();
+    const row = (await getDb().select().from(users).where(eq(users.id, req.user!.id)))[0];
     if (!row) throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
     res.json({ user: publicUserOf(row) });
   }),
@@ -62,9 +70,9 @@ userRouter.patch(
         patch.avatar = body.avatar;
       }
     }
-    getDb().update(users).set(patch).where(eq(users.id, req.user!.id)).run();
-    audit(`user:${req.user!.id}`, req.clientIp ?? null, 'user.profile.update', { keys: Object.keys(patch) });
-    const row = getDb().select().from(users).where(eq(users.id, req.user!.id)).get();
+    await getDb().update(users).set(patch).where(eq(users.id, req.user!.id));
+    await audit(`user:${req.user!.id}`, req.clientIp ?? null, 'user.profile.update', { keys: Object.keys(patch) });
+    const row = (await getDb().select().from(users).where(eq(users.id, req.user!.id)))[0];
     res.json({ user: publicUserOf(row!) });
   }),
 );
@@ -78,7 +86,7 @@ userRouter.post(
     const body = (req.body ?? {}) as { newEmail?: string; powToken?: string };
     const newEmail = String(body.newEmail ?? '').trim().toLowerCase();
     if (!EMAIL_RE.test(newEmail)) throw new HttpError(400, 'INVALID_EMAIL', '邮箱格式不正确');
-    const taken = getDb().select({ id: users.id }).from(users).where(eq(users.email, newEmail)).get();
+    const taken = (await getDb().select({ id: users.id }).from(users).where(eq(users.email, newEmail)))[0];
     if (taken && taken.id !== req.user!.id) throw new HttpError(409, 'EMAIL_TAKEN', '邮箱已被其他账号占用');
     const issued = await issueCode('email', newEmail, 'bind', req.clientIp ?? null);
     res.json({ sentTo: issued.sentTo, resendAfterMs: issued.resendAfterMs, viaLogFallback: issued.viaLogFallback });
@@ -91,12 +99,12 @@ userRouter.post(
   h(async (req, res) => {
     const body = (req.body ?? {}) as { newEmail?: string; code?: string };
     const newEmail = String(body.newEmail ?? '').trim().toLowerCase();
-    const result = verifyCode('email', newEmail, 'bind', String(body.code ?? '').trim());
+    const result = await verifyCode('email', newEmail, 'bind', String(body.code ?? '').trim());
     if (!result.ok) throw new HttpError(400, result.error === 'CODE_MISMATCH' ? 'CODE_MISMATCH' : 'CODE_INVALID', '验证码错误或已过期');
-    const taken = getDb().select({ id: users.id }).from(users).where(eq(users.email, newEmail)).get();
+    const taken = (await getDb().select({ id: users.id }).from(users).where(eq(users.email, newEmail)))[0];
     if (taken && taken.id !== req.user!.id) throw new HttpError(409, 'EMAIL_TAKEN', '邮箱已被其他账号占用');
-    getDb().update(users).set({ email: newEmail }).where(eq(users.id, req.user!.id)).run();
-    audit(`user:${req.user!.id}`, req.clientIp ?? null, 'user.email.changed', {});
+    await getDb().update(users).set({ email: newEmail }).where(eq(users.id, req.user!.id));
+    await audit(`user:${req.user!.id}`, req.clientIp ?? null, 'user.email.changed', {});
     res.json({ ok: true });
   }),
 );
@@ -107,12 +115,11 @@ userRouter.get(
   '/user/sessions',
   h(async (req, res) => {
     const uid = req.user!.id;
-    const rows = getDb()
+    const rows = await getDb()
       .select()
       .from(sessions)
       .where(and(eq(sessions.userId, uid), gt(sessions.expiresAt, Date.now())))
-      .orderBy(sql`last_seen_at DESC`)
-      .all();
+      .orderBy(sql`last_seen_at DESC`);
     res.json({
       sessions: rows.map((s) => ({
         id: s.tokenHash.slice(0, 12),
@@ -132,18 +139,17 @@ userRouter.delete(
   h(async (req, res) => {
     const uid = req.user!.id;
     const prefix = String(req.params.id ?? '');
-    const rows = getDb()
+    const rows = await getDb()
       .select()
       .from(sessions)
-      .where(and(eq(sessions.userId, uid), gt(sessions.expiresAt, Date.now())))
-      .all();
+      .where(and(eq(sessions.userId, uid), gt(sessions.expiresAt, Date.now())));
     const target = rows.find((r) => r.tokenHash.startsWith(prefix));
     if (!target) throw new HttpError(404, 'SESSION_NOT_FOUND', '会话不存在或已过期');
     if (target.tokenHash === req.user!.sessionId) {
       throw new HttpError(400, 'CURRENT_SESSION', '不能踢除当前会话（请用退出登录）');
     }
-    getDb().delete(sessions).where(eq(sessions.id, target.id)).run();
-    audit(`user:${uid}`, req.clientIp ?? null, 'user.session.revoked', { sessionId: prefix });
+    await getDb().delete(sessions).where(eq(sessions.id, target.id));
+    await audit(`user:${uid}`, req.clientIp ?? null, 'user.session.revoked', { sessionId: prefix });
     res.json({ ok: true });
   }),
 );
@@ -154,16 +160,15 @@ userRouter.get(
   '/user/billing',
   h(async (req, res) => {
     const uid = req.user!.id;
-    const row = getDb().select({ plan: users.plan }).from(users).where(eq(users.id, uid)).get();
+    const row = (await getDb().select({ plan: users.plan }).from(users).where(eq(users.id, uid)))[0];
     // M2：余额与用量来自 LLM 网关账本（M3 接充值与结算引擎）
-    const balance = recomputeBalance(uid);
-    const usage = getDb()
+    const balance = await recomputeBalance(uid);
+    const usage = await getDb()
       .select()
       .from(llmLedger)
       .where(and(eq(llmLedger.userId, uid), eq(llmLedger.kind, 'usage')))
       .orderBy(sql`id DESC`)
-      .limit(10)
-      .all();
+      .limit(10);
     res.json({
       plan: row?.plan ?? 'free',
       tokenBalance: balance,
@@ -190,13 +195,13 @@ userRouter.get(
     const { getPublicAppQuota, listPlans, listUserOrders } = await import('../lib/billing.js');
     const { listGroups } = await import('../lib/groups.js');
     const uid = req.user!.id;
-    const me = getDb().select().from(users).where(eq(users.id, uid)).get();
+    const me = (await getDb().select().from(users).where(eq(users.id, uid)))[0];
     const plan = me?.membershipPlanId
-      ? getDb().select().from(membershipPlans).where(eq(membershipPlans.id, me.membershipPlanId)).get()
+      ? (await getDb().select().from(membershipPlans).where(eq(membershipPlans.id, me.membershipPlanId)))[0]
       : undefined;
     const activePlan = plan && me?.membershipExpiresAt && me.membershipExpiresAt > Date.now() ? plan : undefined;
-    const groupNames = new Map(listGroups().map((group) => [group.id, group.name]));
-    const publicQuota = getPublicAppQuota(uid);
+    const groupNames = new Map(await (await listGroups()).map((group) => [group.id, group.name]));
+    const publicQuota = await getPublicAppQuota(uid);
     res.json({
       membership: activePlan && me?.membershipExpiresAt
         ? {
@@ -209,44 +214,91 @@ userRouter.get(
             remainingPublicApps: publicQuota.remaining,
           }
         : null,
-      tokenBalance: recomputeBalance(uid),
-      plans: listPlans().map((item) => ({ ...item, groupName: groupNames.get(item.groupId) ?? `#${item.groupId}` })),
-      orders: listUserOrders(uid),
+      tokenBalance: await recomputeBalance(uid),
+      pointsBalance: me?.pointsBalance ?? 0,
+      plans: await (await listPlans()).map((item) => ({ ...item, groupName: groupNames.get(item.groupId) ?? `#${item.groupId}` })),
+      orders: await listUserOrders(uid),
     });
   }),
 );
 
-/** 注册后首次权益选择：零价立即开通，付费套餐创建待确认订单 */
+/** 注册后首次权益选择：零价与积分套餐立即开通，人民币/美元套餐创建待确认订单 */
+userRouter.post(
+  '/user/membership/skip-selection',
+  h(async (_req, res) => {
+    if ((await listPlans(true)).length > 0) {
+      throw new HttpError(409, 'MEMBERSHIP_PLANS_AVAILABLE', '仍有可选择的权益包');
+    }
+    await getDb()
+      .update(users)
+      .set({ membershipSelectionRequired: false })
+      .where(and(eq(users.id, _req.user!.id), eq(users.membershipSelectionRequired, true)));
+    res.json({ ok: true });
+  }),
+);
+
 userRouter.post(
   '/user/membership/select-plan',
   h(async (req, res) => {
     const body = (req.body ?? {}) as { planId?: number };
-    const plan = listPlans(true).find((item) => item.id === Number(body.planId));
+    const plan = await (await listPlans(true)).find((item) => item.id === Number(body.planId));
     if (!plan) throw new HttpError(404, 'PLAN_NOT_FOUND', '权益包不存在或已下架');
 
     let orderId: string | null = null;
-    getDb().transaction(() => {
-      const current = getDb()
-        .select({ required: users.membershipSelectionRequired })
+    await getDb().transaction(async (tx) => {
+      const current = (await tx
+        .select({ required: users.membershipSelectionRequired, pointsBalance: users.pointsBalance })
         .from(users)
         .where(eq(users.id, req.user!.id))
-        .get();
+        .for('update'))[0];
       if (!current?.required) throw new HttpError(409, 'MEMBERSHIP_ALREADY_SELECTED', '权益计划已选择');
 
-      if (plan.priceFen === 0) {
-        activateMembership(req.user!.id, plan.id);
+      if (plan.priceCurrency === 'POINTS' && plan.pricePoints > 0) {
+        if ((current.pointsBalance ?? 0) < plan.pricePoints) {
+          throw new HttpError(400, 'INSUFFICIENT_POINTS', '积分不足，无法兑换该权益包');
+        }
+        await tx
+          .update(users)
+          .set({ pointsBalance: current.pointsBalance - plan.pricePoints })
+          .where(eq(users.id, req.user!.id));
+        await activateMembership(req.user!.id, plan.id, tx);
+      } else if (isFreePlan(plan)) {
+        await activateMembership(req.user!.id, plan.id, tx);
       } else {
-        orderId = createOrder(req.user!.id, 'membership', { priceFen: plan.priceFen, planId: plan.id }).id;
+        orderId = (await createOrder(
+          req.user!.id,
+          'membership',
+          {
+            priceCurrency: plan.priceCurrency === 'USD' ? 'USD' : 'CNY',
+            priceFen: plan.priceFen,
+            priceCents: plan.priceCents,
+            planId: plan.id,
+          },
+          tx,
+        )).id;
       }
-      getDb()
+      await tx
         .update(users)
         .set({ membershipSelectionRequired: false })
-        .where(and(eq(users.id, req.user!.id), eq(users.membershipSelectionRequired, true)))
-        .run();
+        .where(and(eq(users.id, req.user!.id), eq(users.membershipSelectionRequired, true)));
     });
+    if (orderId) {
+      await audit(`user:${req.user!.id}`, null, 'billing.order.create', {
+        id: orderId,
+        kind: 'membership',
+        priceCurrency: plan.priceCurrency,
+        priceFen: plan.priceFen,
+        priceCents: plan.priceCents,
+      });
+    } else if (plan.priceCurrency === 'POINTS' && plan.pricePoints > 0) {
+      await audit(`user:${req.user!.id}`, null, 'billing.membership.points_redeem', {
+        planId: plan.id,
+        points: plan.pricePoints,
+      });
+    }
     res.json({
       ok: true,
-      activated: plan.priceFen === 0,
+      activated: orderId === null,
       planName: plan.name,
       orderId,
     });
@@ -256,12 +308,52 @@ userRouter.post(
 userRouter.post(
   '/user/membership/subscribe',
   h(async (req, res) => {
-    const { createOrder, listPlans } = await import('../lib/billing.js');
     const body = (req.body ?? {}) as { planId?: number };
-    const plan = listPlans(true).find((p) => p.id === Number(body.planId));
+    const plan = await (await listPlans(true)).find((p) => p.id === Number(body.planId));
     if (!plan) throw new HttpError(404, 'PLAN_NOT_FOUND', '套餐不存在或已下架');
-    const order = createOrder(req.user!.id, 'membership', { priceFen: plan.priceFen, planId: plan.id });
-    res.json({ ok: true, orderId: order.id, priceFen: order.priceFen });
+    if ((plan.priceCurrency === 'POINTS' && plan.pricePoints > 0) || isFreePlan(plan)) {
+      await getDb().transaction(async (tx) => {
+        const current = (await tx
+          .select({ pointsBalance: users.pointsBalance })
+          .from(users)
+          .where(eq(users.id, req.user!.id))
+          .for('update'))[0];
+        if (!current) throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
+        if (plan.priceCurrency === 'POINTS' && plan.pricePoints > 0) {
+          if (current.pointsBalance < plan.pricePoints) {
+            throw new HttpError(400, 'INSUFFICIENT_POINTS', '积分不足，无法兑换该权益包');
+          }
+          await tx
+            .update(users)
+            .set({ pointsBalance: current.pointsBalance - plan.pricePoints })
+            .where(eq(users.id, req.user!.id));
+        }
+        await activateMembership(req.user!.id, plan.id, tx);
+      });
+      if (plan.priceCurrency === 'POINTS' && plan.pricePoints > 0) {
+        await audit(`user:${req.user!.id}`, null, 'billing.membership.points_redeem', {
+          planId: plan.id,
+          points: plan.pricePoints,
+        });
+      }
+      res.json({ ok: true, activated: true, planName: plan.name, orderId: null });
+      return;
+    }
+    const order = await createOrder(req.user!.id, 'membership', {
+      priceCurrency: plan.priceCurrency === 'USD' ? 'USD' : 'CNY',
+      priceFen: plan.priceFen,
+      priceCents: plan.priceCents,
+      planId: plan.id,
+    });
+    res.json({
+      ok: true,
+      activated: false,
+      planName: plan.name,
+      orderId: order.id,
+      priceCurrency: order.priceCurrency,
+      priceFen: order.priceFen,
+      priceCents: order.priceCents,
+    });
   }),
 );
 
@@ -274,7 +366,7 @@ userRouter.post(
     const priceFen = Math.round(Number(body.priceFen ?? 0));
     const perFen = getSettingInt('TOPUP_TOKENS_PER_FEN', 1000);
     if (priceFen < 100) throw new HttpError(400, 'INVALID_AMOUNT', '最低充值 1.00 元');
-    const order = createOrder(req.user!.id, 'tokens', { priceFen, tokens: priceFen * perFen });
+    const order = await createOrder(req.user!.id, 'tokens', { priceFen, tokens: priceFen * perFen });
     res.json({ ok: true, orderId: order.id, tokens: order.tokens, priceFen: order.priceFen });
   }),
 );
@@ -303,7 +395,7 @@ userRouter.post(
 userRouter.post(
   '/user/orders/:id/cancel',
   h(async (req, res) => {
-    cancelOrder(String(req.params.id), req.user!.id, false);
+    await cancelOrder(String(req.params.id), req.user!.id, false);
     res.json({ ok: true });
   }),
 );
@@ -316,17 +408,15 @@ userRouter.post(
   h(async (req, res) => {
     const uid = req.user!.id;
     const now = Date.now();
-    getDb()
+    await getDb()
       .update(users)
       .set({ status: 'deletion_pending', deletionRequestedAt: now })
-      .where(eq(users.id, uid))
-      .run();
+      .where(eq(users.id, uid));
     // 踢除其他会话，保留当前（供撤回）
-    getDb()
+    await getDb()
       .delete(sessions)
-      .where(and(eq(sessions.userId, uid), ne(sessions.tokenHash, req.user!.sessionId)))
-      .run();
-    audit(`user:${uid}`, req.clientIp ?? null, 'user.delete.requested', {
+      .where(and(eq(sessions.userId, uid), ne(sessions.tokenHash, req.user!.sessionId)));
+    await audit(`user:${uid}`, req.clientIp ?? null, 'user.delete.requested', {
       cooldownDays: getSettingInt('DELETION_COOLDOWN_DAYS', 7),
     });
     res.json({ ok: true });
@@ -337,26 +427,25 @@ userRouter.post(
   '/user/delete/cancel',
   h(async (req, res) => {
     const uid = req.user!.id;
-    const row = getDb().select().from(users).where(eq(users.id, uid)).get();
+    const row = (await getDb().select().from(users).where(eq(users.id, uid)))[0];
     if (row?.status === 'deletion_pending') {
-      getDb().update(users).set({ status: 'active', deletionRequestedAt: null }).where(eq(users.id, uid)).run();
-      audit(`user:${uid}`, req.clientIp ?? null, 'user.delete.cancelled', {});
+      await getDb().update(users).set({ status: 'active', deletionRequestedAt: null }).where(eq(users.id, uid));
+      await audit(`user:${uid}`, req.clientIp ?? null, 'user.delete.cancelled', {});
     }
     res.json({ ok: true });
   }),
 );
 
 /** 冷静期到期 → 匿名化：删除用户行（级联会话/凭据/MFA），审计保留脱敏记录 */
-registerPurgeTask((now) => {
+registerPurgeTask(async (now) => {
   const cooldownMs = getSettingInt('DELETION_COOLDOWN_DAYS', 7) * 86_400_000;
-  const due = getDb()
+  const due = await getDb()
     .select()
     .from(users)
-    .where(and(eq(users.status, 'deletion_pending'), sql`deletion_requested_at < ${now - cooldownMs}`))
-    .all();
+    .where(and(eq(users.status, 'deletion_pending'), sql`deletion_requested_at < ${now - cooldownMs}`));
   for (const u of due) {
-    getDb().delete(users).where(eq(users.id, u.id)).run();
-    audit(`deleted:${u.id}`, null, 'user.deleted.anonymized', {
+    await getDb().delete(users).where(eq(users.id, u.id));
+    await audit(`deleted:${u.id}`, null, 'user.deleted.anonymized', {
       // 脱敏保留：仅留 ID 与时间，不留用户名/邮箱
       registeredAt: u.createdAt,
       deletedAt: now,

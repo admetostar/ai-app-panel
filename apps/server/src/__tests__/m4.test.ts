@@ -8,9 +8,8 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import AdmZip from 'adm-zip';
 import { WebSocket } from 'ws';
-import { sessionCookieFor, setupTestDb, teardownTestDb } from './testkit.js';
+import { sessionCookieFor, setupTestDb, testPackage, teardownTestDb } from './testkit.js';
 import { closeDb, getDb } from '../db/index.js';
 import { apps, users } from '../db/schema.js';
 import { seedSettings, setSetting } from '../lib/settings.js';
@@ -29,9 +28,7 @@ let adminCookie = '';
 let pythonOk = true;
 
 function zipPkg(files: Record<string, string>): string {
-  const zip = new AdmZip();
-  for (const [name, content] of Object.entries(files)) zip.addFile(name, Buffer.from(content));
-  return zip.toBuffer().toString('base64');
+  return testPackage(files).toString('base64');
 }
 
 function cookieOf(res: Response): string {
@@ -42,8 +39,8 @@ function cookieOf(res: Response): string {
 }
 
 beforeAll(async () => {
-  ({ dir } = setupTestDb());
-  seedSettings();
+  ({ dir } = await setupTestDb());
+  await seedSettings();
   try {
     execSync('python3 -c "print(1)"', { stdio: 'pipe' });
   } catch {
@@ -57,21 +54,20 @@ beforeAll(async () => {
   base = `http://127.0.0.1:${(gw.address() as AddressInfo).port}`;
 
   // 管理员登录
-  getDb()
+  await getDb()
     .insert((await import('../db/schema.js')).users)
-    .values({ kind: 'local', username: 'admin', name: '管理员', role: 'admin', mfaEnabled: true, createdAt: Date.now() })
-    .run();
+    .values({ kind: 'local', username: 'admin', name: '管理员', role: 'admin', mfaEnabled: true, createdAt: Date.now() });
   const { writeLocalCredentials } = await import('../lib/bootstrap.js');
-  const adminId = getDb().select().from((await import('../db/schema.js')).users).get()!.id;
+  const adminId = await (await getDb().select().from((await import('../db/schema.js')).users))[0]!.id;
   // 直建 full 会话（mfaEnabled=true 时 HTTP 登录只给半登录态）
-  adminCookie = sessionCookieFor(adminId);
+  adminCookie = await sessionCookieFor(adminId);
 });
 
-afterAll(() => {
+afterAll(async () => {
   stopAllPersistent();
   gw.close();
-  closeDb();
-  teardownTestDb(dir);
+  await closeDb();
+  await teardownTestDb(dir);
 });
 
 describe.skipIf(!pythonOk)('M4 生态（Python 沙箱运行时）', () => {
@@ -167,8 +163,8 @@ def handle(input, aap):
   });
 
   it('公开发布：没有订阅名额时拒绝发布，且不再开放管理员审核接口', async () => {
-    const owner = getDb().select().from(users).get()!;
-    getDb().insert(apps).values({
+    const owner = await (await getDb().select().from(users))[0]!;
+    await getDb().insert(apps).values({
       id: 'quota-publish-test',
       name: '额度发布测试',
       ownerUserId: owner.id,
@@ -177,7 +173,7 @@ def handle(input, aap):
       upstream: '',
       createdAt: Date.now(),
       updatedAt: Date.now(),
-    }).run();
+    });
     const publish = await fetch(`${base}/api/apps/quota-publish-test/publish`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
@@ -469,7 +465,7 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
       fs.mkdirSync(appSiteDir(id), { recursive: true });
       fs.writeFileSync(path.join(appSiteDir(id), 'mod.py'), SERVE_MOD);
     }
-    setSetting('SANDBOX_MAX_PERSISTENT', '1');
+    await setSetting('SANDBOX_MAX_PERSISTENT', '1');
     try {
       const portA = await ensurePersistent('cap-a', 'mod.py');
       expect(portA).not.toBeNull();
@@ -478,7 +474,7 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
       expect(portB).not.toBe(portA);
       expect(persistentPort('cap-a')).toBeNull();
     } finally {
-      setSetting('SANDBOX_MAX_PERSISTENT', '');
+      await setSetting('SANDBOX_MAX_PERSISTENT', '');
       stopAllPersistent();
     }
   }, 30_000);
@@ -523,10 +519,9 @@ describe('M4 安全回归（鉴权与归属校验）', () => {
     expect(up.status).toBe(200);
 
     // 攻击者（普通用户）同名提交恶意包
-    const u = getDb().insert(users)
-      .values({ kind: 'local', username: 'mallory', name: 'm', role: 'user', createdAt: Date.now() })
-      .run();
-    await writeLocalCredentials(Number(u.lastInsertRowid), 'mallory-password');
+    const [u] = await getDb().insert(users)
+      .values({ kind: 'local', username: 'mallory', name: 'm', role: 'user', createdAt: Date.now() }).returning({ id: users.id });
+    await writeLocalCredentials(Number(u!.id), 'mallory-password');
     const login = await fetch(`${base}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base },
@@ -558,11 +553,11 @@ describe('M4 安全回归（鉴权与归属校验）', () => {
   it('账号回归：管理员重置 → 凭返回密码登录 → 强制改密设为同值 → 重登成功', async () => {
     const { writeLocalCredentials } = await import('../lib/bootstrap.js');
     const { users } = await import('../db/schema.js');
-    const u = getDb()
+    const [u] = await getDb()
       .insert(users)
       .values({ kind: 'local', username: 'resetflow', name: 'rf', role: 'user', createdAt: Date.now() })
-      .run();
-    const uid = Number(u.lastInsertRowid);
+      .returning({ id: users.id });
+    const uid = u!.id;
     await writeLocalCredentials(uid, 'first-password');
 
     // 管理员重置（系统生成新密码）。回归点：曾因 UPDATE 缺 .run() 未持久化，

@@ -33,7 +33,7 @@ export const authRouter = Router();
 const USERNAME_RE = /^[a-z0-9][a-z0-9_.-]{2,63}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// ---------- PoW 挑战（公开；内存限速防 SQLite 写放大） ----------
+// ---------- PoW 挑战（公开；内存限速减少挑战数据写入） ----------
 
 const POW_RATE = { windowMs: 60_000, max: 30 };
 const powHits = new Map<string, { start: number; count: number }>();
@@ -56,9 +56,9 @@ authRouter.post(
   '/auth/pow',
   h(async (req, res) => {
     const ip = req.clientIp ?? 'unknown';
-    if (isBanned(ip)) throw new HttpError(403, 'IP_BANNED', '该地址已被封禁', { action: 'banned' });
+    if (await isBanned(ip)) throw new HttpError(403, 'IP_BANNED', '该地址已被封禁', { action: 'banned' });
     if (!powRateAllowed(ip)) throw new HttpError(429, 'TOO_MANY_REQUESTS', '请求太频繁');
-    res.json({ challenge: issueChallenge(ip) });
+    res.json({ challenge: await issueChallenge(ip) });
   }),
 );
 
@@ -68,7 +68,7 @@ authRouter.post(
     const ip = req.clientIp ?? 'unknown';
     if (!powRateAllowed(ip)) throw new HttpError(429, 'TOO_MANY_REQUESTS', '请求太频繁');
     const { challengeId, nonce } = (req.body ?? {}) as { challengeId?: string; nonce?: string };
-    const result = verifyPow(String(challengeId ?? ''), String(nonce ?? ''), ip);
+    const result = await verifyPow(String(challengeId ?? ''), String(nonce ?? ''), ip);
     if (!result.ok) throw new HttpError(403, result.error, '工作量证明校验未通过');
     res.json({ token: result.token, ttlSec: getSettingInt('POW_TOKEN_TTL', 300) });
   }),
@@ -83,13 +83,13 @@ interface PowBody {
 
 /** PoW 网关：always=true 恒要求（注册/找回写入口）；否则 IP 或账号任一维度
  *  失败超阈值后要求（登录；账号维度防跨 IP 分布式撞库） */
-function enforcePow(req: Express.Request, body: PowBody, always: boolean, userKey?: string): void {
+async function enforcePow(req: Express.Request, body: PowBody, always: boolean, userKey?: string): Promise<void> {
   const ip = req.clientIp ?? 'unknown';
-  if (!always && !needsPow(ip, userKey)) return;
-  if (body.powToken && consumePowToken(body.powToken, ip)) return;
+  if (!always && !await needsPow(ip, userKey)) return;
+  if (body.powToken && await consumePowToken(body.powToken, ip)) return;
   throw new HttpError(403, 'POW_REQUIRED', '需要完成工作量证明（PoW）', {
     action: 'pow',
-    challenge: issueChallenge(ip),
+    challenge: await issueChallenge(ip),
   });
 }
 
@@ -100,18 +100,17 @@ async function enforceTurnstile(req: Express.Request, body: PowBody): Promise<vo
 }
 
 
-function loadUserById(id: number) {
-  const row = getDb().select().from(users).where(eq(users.id, id)).get();
+async function loadUserById(id: number) {
+  const row = (await getDb().select().from(users).where(eq(users.id, id)))[0];
   if (!row) throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
   return row;
 }
 
-function loadUserByUsername(username: string) {
-  return getDb()
+async function loadUserByUsername(username: string) {
+  return (await getDb()
     .select()
     .from(users)
-    .where(and(eq(users.username, username), eq(users.kind, 'local')))
-    .get();
+    .where(and(eq(users.username, username), eq(users.kind, 'local'))))[0];
 }
 
 // ---------- 注册（两步） ----------
@@ -124,9 +123,6 @@ authRouter.post(
     if (mode === 'closed') {
       throw new HttpError(403, 'REGISTRATION_CLOSED', '本站未开放注册');
     }
-    if (mode === 'open' && !listPlans(true).some((plan) => plan.priceFen === 0)) {
-      throw new HttpError(503, 'FREE_PLAN_REQUIRED', '本站尚未配置启用的零价权益包，暂时无法开放注册');
-    }
     const body = (req.body ?? {}) as {
       username?: string;
       password?: string;
@@ -134,7 +130,7 @@ authRouter.post(
       inviteCode?: string;
     } & PowBody;
 
-    enforcePow(req, body, true);
+    await enforcePow(req, body, true);
     await enforceTurnstile(req, body);
 
     const username = String(body.username ?? '').trim().toLowerCase();
@@ -155,11 +151,10 @@ authRouter.post(
     if (mode === 'invite') {
       const code = String(body.inviteCode ?? '').trim();
       const row = code
-        ? getDb()
+        ? (await getDb()
             .select({ code: inviteCodes.code })
             .from(inviteCodes)
-            .where(and(eq(inviteCodes.code, code), isNull(inviteCodes.usedBy)))
-            .get()
+            .where(and(eq(inviteCodes.code, code), isNull(inviteCodes.usedBy))))[0]
         : undefined;
       if (!row) throw new HttpError(403, 'INVALID_INVITE_CODE', '邀请码无效或已被使用');
       inviteCode = row.code;
@@ -167,12 +162,12 @@ authRouter.post(
 
     // 同 IP 24h ≤ N 号
     const maxPerIp = getSettingInt('MAX_ACCOUNTS_PER_IP_24H', 5);
-    const recent =
-      getDb()
+    const recent = Number(
+      (await getDb()
         .select({ n: sql<number>`count(*)` })
         .from(registrations)
-        .where(and(eq(registrations.ip, ip), gt(registrations.createdAt, Date.now() - 24 * 3600_000)))
-        .get()?.n ?? 0;
+        .where(and(eq(registrations.ip, ip), gt(registrations.createdAt, Date.now() - 24 * 3600_000))))[0]?.n ?? 0,
+    );
     if (recent >= maxPerIp) {
       throw new HttpError(429, 'TOO_MANY_REGISTRATIONS', '该地址近期注册次数过多');
     }
@@ -182,12 +177,12 @@ authRouter.post(
     // 用户名/邮箱已由 users 表查询覆盖；排除可避免账号注销后 24h 内残留
     // 完成行继续占用同名/同邮箱的歧义。
     const usernameTaken =
-      getDb().select({ id: users.id }).from(users).where(eq(users.username, username)).get() ??
-      getDb().select({ id: registrations.id }).from(registrations).where(and(eq(registrations.username, username), isNull(registrations.completedAt))).get();
+      (await getDb().select({ id: users.id }).from(users).where(eq(users.username, username)))[0] ??
+      (await getDb().select({ id: registrations.id }).from(registrations).where(and(eq(registrations.username, username), isNull(registrations.completedAt))))[0];
     if (usernameTaken) throw new HttpError(409, 'USERNAME_TAKEN', '用户名已被占用');
     const emailTaken =
-      getDb().select({ id: users.id }).from(users).where(eq(users.email, email)).get() ??
-      getDb().select({ id: registrations.id }).from(registrations).where(and(eq(registrations.email, email), isNull(registrations.completedAt))).get();
+      (await getDb().select({ id: users.id }).from(users).where(eq(users.email, email)))[0] ??
+      (await getDb().select({ id: registrations.id }).from(registrations).where(and(eq(registrations.email, email), isNull(registrations.completedAt))))[0];
     if (emailTaken) throw new HttpError(409, 'EMAIL_TAKEN', '邮箱已被占用');
 
     // 发送验证码（60s/24h 限发在 issueCode 内）
@@ -195,7 +190,7 @@ authRouter.post(
 
     const id = randomToken(16);
     const now = Date.now();
-    getDb()
+    await getDb()
       .insert(registrations)
       .values({
         id,
@@ -206,10 +201,9 @@ authRouter.post(
         ip,
         createdAt: now,
         expiresAt: now + 24 * 3600_000, // 24h 内完成验证；废弃行按 N 天清理
-      })
-      .run();
+      });
 
-    audit(`anon:${ip}`, ip, 'user.register.start', { username, email: maskEmail(email), invite: inviteCode });
+    await audit(`anon:${ip}`, ip, 'user.register.start', { username, email: maskEmail(email), invite: inviteCode });
     res.json({
       registrationId: id,
       sentTo: issued.sentTo,
@@ -225,23 +219,22 @@ authRouter.post(
     const ip = req.clientIp ?? 'unknown';
     const body = (req.body ?? {}) as { registrationId?: string; code?: string };
     const reg = body.registrationId
-      ? getDb().select().from(registrations).where(eq(registrations.id, body.registrationId)).get()
+      ? (await getDb().select().from(registrations).where(eq(registrations.id, body.registrationId)))[0]
       : undefined;
     // 已完成行（completedAt 非空）按不存在处理：防重复消费/防通过错猜删行释放 24h 名额
     if (!reg || reg.completedAt != null || reg.expiresAt <= Date.now()) {
       throw new HttpError(404, 'REGISTRATION_NOT_FOUND', '注册会话不存在或已过期，请重新注册');
     }
 
-    const result = verifyCode('email', reg.email ?? '', 'register', String(body.code ?? '').trim());
+    const result = await verifyCode('email', reg.email ?? '', 'register', String(body.code ?? '').trim());
     if (!result.ok) {
       // 尝试次数限制：≥5 次失败作废整个注册
-      getDb()
+      await getDb()
         .update(registrations)
         .set({ attempts: sql`${registrations.attempts} + 1` })
-        .where(eq(registrations.id, reg.id))
-        .run();
+        .where(eq(registrations.id, reg.id));
       if (reg.attempts + 1 >= 5) {
-        getDb().delete(registrations).where(eq(registrations.id, reg.id)).run();
+        await getDb().delete(registrations).where(eq(registrations.id, reg.id));
         throw new HttpError(400, 'CODE_TOO_MANY_ATTEMPTS', '验证码错误次数过多，请重新注册', { invalidated: true });
       }
       throw new HttpError(400, result.error === 'CODE_MISMATCH' ? 'CODE_MISMATCH' : 'CODE_INVALID', '验证码错误或已过期');
@@ -249,11 +242,12 @@ authRouter.post(
 
     // 首账号自动 admin（PRD A2）；建号/发凭据/消费邀请码/删注册单同一事务——
     // 邀请码消费带 usedBy IS NULL 条件，防并发双花（两人各持同码均通过 start 校验）
-    const promote = adminCount() === 0;
+    const promote = await adminCount() === 0;
+    const membershipSelectionRequired = !promote && (await listPlans(true)).length > 0;
     const now = Date.now();
     let userId = 0;
-    getDb().transaction(() => {
-      const info = getDb()
+    await getDb().transaction(async (tx) => {
+      const [created] = await tx
         .insert(users)
         .values({
           kind: 'local',
@@ -262,35 +256,36 @@ authRouter.post(
           name: reg.username,
           role: promote ? 'admin' : 'user',
           status: 'active',
-          membershipSelectionRequired: !promote,
+          membershipSelectionRequired,
+          pointsBalance: Math.max(0, getSettingInt('REGISTRATION_POINTS_GIFT', 0)),
           createdAt: now,
         })
-        .run();
-      userId = Number(info.lastInsertRowid);
-      getDb().update(users).set({ avatar: defaultAvatarForUser(userId) }).where(eq(users.id, userId)).run();
+        .returning({ id: users.id });
+      if (!created) throw new Error('Failed to create registered user');
+      userId = created.id;
+      await tx.update(users).set({ avatar: defaultAvatarForUser(userId) }).where(eq(users.id, userId));
       // 口令哈希直接搬运（注册 start 时已 scrypt，避免二次计算）
-      getDb()
+      await tx
         .insert(localCredentials)
-        .values({ userId, passwordHash: reg.passwordHash, updatedAt: now })
-        .run();
+        .values({ userId, passwordHash: reg.passwordHash, updatedAt: now });
 
       if (reg.inviteCode) {
-        const used = getDb()
+        const used = await tx
           .update(inviteCodes)
           .set({ usedBy: userId, usedAt: now })
           .where(and(eq(inviteCodes.code, reg.inviteCode), isNull(inviteCodes.usedBy)))
-          .run();
-        if (used.changes === 0) throw new HttpError(409, 'INVITE_CODE_USED', '邀请码已被使用，请更换邀请码重新注册');
+          .returning({ code: inviteCodes.code });
+        if (used.length === 0) throw new HttpError(409, 'INVITE_CODE_USED', '邀请码已被使用，请更换邀请码重新注册');
       }
       // 完成不删行：置 completedAt 保留（同 IP 24h 注册名额继续计入，终审 P1-5）；
       // 超过 24h 后由清理任务删除
-      getDb().update(registrations).set({ completedAt: now }).where(eq(registrations.id, reg.id)).run();
+      await tx.update(registrations).set({ completedAt: now }).where(eq(registrations.id, reg.id));
     });
 
-    audit(`local:${reg.username}`, ip, 'user.register.done', { userId, promoted: promote });
+    await audit(`local:${reg.username}`, ip, 'user.register.done', { userId, promoted: promote });
 
-    createSession(res, { id: userId }, { ip, userAgent: req.headers['user-agent'], grantStepUp: true });
-    const user = loadUserById(userId);
+    await createSession(res, { id: userId }, { ip, userAgent: req.headers['user-agent'], grantStepUp: true });
+    const user = await loadUserById(userId);
     res.json({
       user: publicUserOf(user),
       authState: 'full',
@@ -310,7 +305,7 @@ authRouter.post(
     const body = (req.body ?? {}) as { username?: string; password?: string } & PowBody;
 
     // 封禁检查
-    const ban = isBanned(ip);
+    const ban = await isBanned(ip);
     if (ban) {
       throw new HttpError(403, 'IP_BANNED', '该地址已被封禁', {
         action: 'banned',
@@ -323,26 +318,26 @@ authRouter.post(
     const subject = `local:${username}`;
 
     // 条件 PoW：IP 维度或账号维度失败超阈值（账号维度防跨 IP 分布式撞库）
-    enforcePow(req, body, false, subject);
+    await enforcePow(req, body, false, subject);
 
-    const user = loadUserByUsername(username);
-    const hash = user ? getLocalPasswordHash(user.id) : null;
+    const user = await loadUserByUsername(username);
+    const hash = user ? await getLocalPasswordHash(user.id) : null;
     const ok = await verifyPassword(password, hash);
     if (!user || !ok) {
       if (!user) await dummyVerify(password);
-      const fail = recordFailure(ip, subject, 'bad-credentials');
-      audit(subject, ip, 'login.fail', { reason: 'bad-credentials', failures: fail.failures });
+      const fail = await recordFailure(ip, subject, 'bad-credentials');
+      await audit(subject, ip, 'login.fail', { reason: 'bad-credentials', failures: fail.failures });
       // 不回 failures/banned（防攻击者探测同 IP 失败计数与封禁态控制爆破节奏）
       throw new HttpError(401, 'BAD_CREDENTIALS', '用户名或密码错误', {
-        ...(needsPow(ip) ? { action: 'pow', challenge: issueChallenge(ip) } : {}),
+        ...(await needsPow(ip) ? { action: 'pow', challenge: await issueChallenge(ip) } : {}),
       });
     }
     if (user.status === 'disabled') {
-      audit(subject, ip, 'login.fail', { reason: 'disabled' });
+      await audit(subject, ip, 'login.fail', { reason: 'disabled' });
       throw new HttpError(403, 'ACCOUNT_DISABLED', '账号已被禁用');
     }
 
-    recordSuccess(ip, subject);
+    await recordSuccess(ip, subject);
 
     // 管理员首次登录：删除一次性凭据文件（F3）
     if (user.role === 'admin' && user.mustChangePassword) {
@@ -353,8 +348,8 @@ authRouter.post(
     // 登录即授予步升窗口（密码为刚验证因子，强制绑 MFA 可立即进行）
     const mfaEnabled = user.mfaEnabled;
     const authState = mfaEnabled ? 'password_ok' : 'full';
-    createSession(res, { id: user.id }, { ip, userAgent: req.headers['user-agent'], authState, grantStepUp: true });
-    audit(subject, ip, mfaEnabled ? 'login.password_ok' : 'local.login', { userId: user.id });
+    await createSession(res, { id: user.id }, { ip, userAgent: req.headers['user-agent'], authState, grantStepUp: true });
+    await audit(subject, ip, mfaEnabled ? 'login.password_ok' : 'local.login', { userId: user.id });
 
     res.json({
       user: publicUserOf(user),
@@ -374,24 +369,24 @@ authRouter.post(
     if (!u) throw new HttpError(401, 'UNAUTHENTICATED', '请先登录');
     if (u.authState !== 'full') throw new HttpError(403, 'MFA_REQUIRED', '请先完成多因子认证', { action: 'mfa' });
     const body = (req.body ?? {}) as { password?: string };
-    const hash = getLocalPasswordHash(u.id);
+    const hash = await getLocalPasswordHash(u.id);
     const ok = await verifyPassword(String(body.password ?? ''), hash);
     if (!ok) {
-      audit(`${u.kind}:${u.id}`, req.clientIp ?? null, 'auth.stepup.fail', { via: 'password' });
+      await audit(`${u.kind}:${u.id}`, req.clientIp ?? null, 'auth.stepup.fail', { via: 'password' });
       throw new HttpError(401, 'BAD_CREDENTIALS', '密码错误');
     }
-    const until = markStepUp(u.sessionId);
-    audit(`${u.kind}:${u.id}`, req.clientIp ?? null, 'auth.stepup', { via: 'password' });
+    const until = await markStepUp(u.sessionId);
+    await audit(`${u.kind}:${u.id}`, req.clientIp ?? null, 'auth.stepup', { via: 'password' });
     res.json({ stepUpUntil: until });
   }),
 );
 
 // GET 登出：统一页面元素（chrome）用；next 仅允许站内 / 与 /app/ 路径
-authRouter.get('/auth/logout', (req, res) => {
+authRouter.get('/auth/logout', async (req, res) => {
   if (req.user) {
-    audit(`${req.user.kind}:${req.user.id}`, req.clientIp ?? null, 'logout', { via: 'chrome' });
+    await audit(`${req.user.kind}:${req.user.id}`, req.clientIp ?? null, 'logout', { via: 'chrome' });
   }
-  destroySession(req, res);
+  await destroySession(req, res);
   const next = String((req.query.next as string | undefined) ?? '/');
   const safe = next.startsWith('/app/') || next === '/' || next.startsWith('/?');
   res.redirect(302, safe ? next : '/');
@@ -401,9 +396,9 @@ authRouter.post(
   '/auth/logout',
   h(async (req, res) => {
     if (req.user) {
-      audit(`${req.user.kind}:${req.user.id}`, req.clientIp ?? null, 'logout', {});
+      await audit(`${req.user.kind}:${req.user.id}`, req.clientIp ?? null, 'logout', {});
     }
-    destroySession(req, res);
+    await destroySession(req, res);
     res.json({ ok: true });
   }),
 );
@@ -421,7 +416,7 @@ authRouter.get(
       res.status(403).json({ error: { code: 'MFA_REQUIRED', message: '需要完成多因子认证', action: 'mfa' } });
       return;
     }
-    const row = loadUserById(u.id);
+    const row = await loadUserById(u.id);
     const info: SessionInfo = {
       user: publicUserOf(row),
       authState: u.authState,
@@ -447,14 +442,15 @@ authRouter.get('/auth/oidc/callback', h(async (req, res) => {
   try {
     const profile = await exchangeCallback(req, req.query as { code?: string; state?: string });
     // 按 subject upsert（统一 users 表，无 (kind,uid) 串号面）
-    let row = getDb().select().from(users).where(eq(users.subject, profile.subject)).get();
+    let row = (await getDb().select().from(users).where(eq(users.subject, profile.subject)))[0];
     const now = Date.now();
     if (!row) {
-      const promote = isAdminSubject(profile);
+      const promote = await isAdminSubject(profile);
+      const membershipSelectionRequired = (await listPlans(true)).length > 0;
       // 准入策略（OIDC 新账户）：管理员批准 → 创建待批准账号，不建会话
       const policy = getSetting('OIDC_NEW_USER_POLICY') || 'admin_approval';
       if (policy === 'admin_approval' && !promote) {
-        const info = getDb()
+        const [created] = await getDb()
           .insert(users)
           .values({
             kind: 'oidc',
@@ -463,17 +459,19 @@ authRouter.get('/auth/oidc/callback', h(async (req, res) => {
             name: profile.name,
             role: 'user',
             status: 'pending_approval',
-            membershipSelectionRequired: true,
+            membershipSelectionRequired,
+            pointsBalance: Math.max(0, getSettingInt('REGISTRATION_POINTS_GIFT', 0)),
             createdAt: now,
           })
-          .run();
-        const userId = Number(info.lastInsertRowid);
-        getDb().update(users).set({ avatar: defaultAvatarForUser(userId) }).where(eq(users.id, userId)).run();
-        audit(`oidc:${profile.subject}`, ip, 'user.oidc.pending_approval', { userId });
+          .returning({ id: users.id });
+        if (!created) throw new Error('Failed to create OIDC user');
+        const userId = created.id;
+        await getDb().update(users).set({ avatar: defaultAvatarForUser(userId) }).where(eq(users.id, userId));
+        await audit(`oidc:${profile.subject}`, ip, 'user.oidc.pending_approval', { userId });
         res.redirect(302, '/login?error=oidc_pending');
         return;
       }
-      const info = getDb()
+      const [created] = await getDb()
         .insert(users)
         .values({
           kind: 'oidc',
@@ -481,34 +479,34 @@ authRouter.get('/auth/oidc/callback', h(async (req, res) => {
           email: profile.email,
           name: profile.name,
           role: promote ? 'admin' : 'user',
-          membershipSelectionRequired: !promote,
+          membershipSelectionRequired: !promote && membershipSelectionRequired,
+          pointsBalance: Math.max(0, getSettingInt('REGISTRATION_POINTS_GIFT', 0)),
           createdAt: now,
         })
-        .run();
-        const userId = Number(info.lastInsertRowid);
-        getDb().update(users).set({ avatar: defaultAvatarForUser(userId) }).where(eq(users.id, userId)).run();
-        row = getDb().select().from(users).where(eq(users.id, userId)).get();
+        .returning({ id: users.id });
+        if (!created) throw new Error('Failed to create OIDC user');
+        const userId = created.id;
+        await getDb().update(users).set({ avatar: defaultAvatarForUser(userId) }).where(eq(users.id, userId));
+        row = (await getDb().select().from(users).where(eq(users.id, userId)))[0];
       // 白名单内的待批准账号：自动激活并提升
       if (promote && row!.status === 'pending_approval') {
-        getDb().update(users).set({ role: 'admin', status: 'active' }).where(eq(users.id, row!.id)).run();
-        audit(`oidc:${profile.subject}`, ip, 'user.oidc.admin_approved', { userId: row!.id });
+        await getDb().update(users).set({ role: 'admin', status: 'active' }).where(eq(users.id, row!.id));
+        await audit(`oidc:${profile.subject}`, ip, 'user.oidc.admin_approved', { userId: row!.id });
       }
       // 默认订阅分组：新 OIDC 账号自动加入（可见性/额度随分组）
       const defaultGroup = getSettingInt('OIDC_DEFAULT_GROUP_ID', 0);
       if (defaultGroup > 0) {
-        getDb()
+        await getDb()
           .insert(userGroupMembers)
           .values({ groupId: defaultGroup, userId: row!.id, createdAt: Date.now() })
-          .onConflictDoNothing()
-          .run();
+          .onConflictDoNothing();
       }
-      audit(`oidc:${profile.subject}`, ip, 'user.oidc.created', { userId: row!.id, promoted: promote });
+      await audit(`oidc:${profile.subject}`, ip, 'user.oidc.created', { userId: row!.id, promoted: promote });
     } else {
-      getDb()
+      await getDb()
         .update(users)
         .set({ email: profile.email ?? row.email, name: profile.name || row.name, lastLoginAt: now, lastIp: ip })
-        .where(eq(users.id, row.id))
-        .run();
+        .where(eq(users.id, row.id));
     }
     if (row!.status === 'disabled') {
       res.redirect(302, '/login?error=account_disabled');
@@ -516,13 +514,13 @@ authRouter.get('/auth/oidc/callback', h(async (req, res) => {
     }
     if (row!.status === 'pending_approval') {
       // 待批准账号重复登录：不下发会话（会话装载器会即刻作废 pending 会话），干净回到待批提示
-      audit(`oidc:${profile.subject}`, ip, 'user.oidc.pending_approval_retry', { userId: row!.id });
+      await audit(`oidc:${profile.subject}`, ip, 'user.oidc.pending_approval_retry', { userId: row!.id });
       res.redirect(302, '/login?error=oidc_pending');
       return;
     }
-    recordSuccess(ip, `oidc:${profile.subject}`);
-    createSession(res, { id: row!.id }, { ip, userAgent: req.headers['user-agent'], authState: 'full', grantStepUp: true });
-    audit(`oidc:${profile.subject}`, ip, 'oidc.login', { userId: row!.id });
+    await recordSuccess(ip, `oidc:${profile.subject}`);
+    await createSession(res, { id: row!.id }, { ip, userAgent: req.headers['user-agent'], authState: 'full', grantStepUp: true });
+    await audit(`oidc:${profile.subject}`, ip, 'oidc.login', { userId: row!.id });
     res.redirect(302, '/');
   } catch (err) {
     if (err instanceof HttpError) {
@@ -565,14 +563,14 @@ authRouter.post(
   h(async (req, res) => {
     const ip = req.clientIp ?? 'unknown';
     const body = (req.body ?? {}) as { email?: string } & PowBody;
-    enforcePow(req, body, true);
+    await enforcePow(req, body, true);
     await enforceTurnstile(req, body);
 
     const email = String(body.email ?? '').trim().toLowerCase();
     if (!EMAIL_RE.test(email)) throw new HttpError(400, 'INVALID_EMAIL', '邮箱格式不正确');
 
     // 无论是否存在都返回 ok（防枚举）；存在才真正发码
-    const user = getDb().select({ id: users.id }).from(users).where(eq(users.email, email)).get();
+    const user = (await getDb().select({ id: users.id }).from(users).where(eq(users.email, email)))[0];
     if (user) {
       try {
         await issueCode('email', email, 'reset', ip);
@@ -582,7 +580,7 @@ authRouter.post(
         // （静默跳过发送），否则「存在 → 429 / 不存在 → 200」构成确定性账号枚举
         // oracle（终审 P1-4）。内部事件留审计；发信失败等其他错误照常抛出。
         if (err instanceof HttpError && (err.code === 'CODE_RESEND_TOO_FAST' || err.code === 'CODE_DAILY_LIMIT')) {
-          audit(`reset:${maskEmail(email)}`, ip, 'auth.forgot.send_suppressed', { reason: err.code });
+          await audit(`reset:${maskEmail(email)}`, ip, 'auth.forgot.send_suppressed', { reason: err.code });
         } else {
           throw err;
         }
@@ -607,15 +605,15 @@ authRouter.post(
       throw new HttpError(400, 'INVALID_PASSWORD', '密码长度需 8-128 位');
     }
 
-    const user = getDb().select().from(users).where(and(eq(users.email, email), eq(users.kind, 'local'))).get();
+    const user = (await getDb().select().from(users).where(and(eq(users.email, email), eq(users.kind, 'local'))))[0];
     // 用户不存在时也走一次码校验（时序一致）；实际不会有有效码
-    const result = verifyCode('email', email, 'reset', String(body.code ?? '').trim());
+    const result = await verifyCode('email', email, 'reset', String(body.code ?? '').trim());
     if (!user || !result.ok) {
       if (!result.ok) {
         const fails = recordResetCodeFail(email);
         if (fails >= RESET_FAIL_LIMIT) {
           // 错猜超限：作废该邮箱全部待用重置码（防在线爆破）
-          getDb()
+          await getDb()
             .delete(verificationCodes)
             .where(
               and(
@@ -624,23 +622,22 @@ authRouter.post(
                 eq(verificationCodes.purpose, 'reset'),
                 isNull(verificationCodes.consumedAt),
               ),
-            )
-            .run();
-          audit(`reset:${email}`, ip, 'auth.reset.code.invalidated', { fails });
+            );
+          await audit(`reset:${email}`, ip, 'auth.reset.code.invalidated', { fails });
           throw new HttpError(400, 'CODE_TOO_MANY_ATTEMPTS', '验证码错误次数过多，请重新获取', { invalidated: true });
         }
         // 错猜计入登录失败队列（超阈值触发 PoW / IP 自动封禁）
-        recordFailure(ip, `reset:${email}`, 'reset-code-mismatch');
+        await recordFailure(ip, `reset:${email}`, 'reset-code-mismatch');
       }
       throw new HttpError(400, result.ok ? 'RESET_FAILED' : result.error, '重置失败：验证码错误或已过期');
     }
     resetFails.delete(email);
 
     await writeLocalCredentials(user.id, newPassword);
-    getDb().update(users).set({ mustChangePassword: false }).where(eq(users.id, user.id)).run();
+    await getDb().update(users).set({ mustChangePassword: false }).where(eq(users.id, user.id));
     // 全端踢下线
-    getDb().delete(sessions).where(eq(sessions.userId, user.id)).run();
-    audit(`local:${user.username}`, ip, 'local.password.reset', { userId: user.id });
+    await getDb().delete(sessions).where(eq(sessions.userId, user.id));
+    await audit(`local:${user.username}`, ip, 'local.password.reset', { userId: user.id });
     res.json({ ok: true });
   }),
 );
@@ -659,20 +656,19 @@ authRouter.post(
     if (newPassword.length < 8 || newPassword.length > 128) {
       throw new HttpError(400, 'INVALID_PASSWORD', '密码长度需 8-128 位');
     }
-    const hash = getLocalPasswordHash(u.id);
+    const hash = await getLocalPasswordHash(u.id);
     const ok = await verifyPassword(String(body.currentPassword ?? ''), hash);
     if (!ok) {
-      audit(`${u.kind}:${u.id}`, req.clientIp ?? null, 'local.password.change.fail', {});
+      await audit(`${u.kind}:${u.id}`, req.clientIp ?? null, 'local.password.change.fail', {});
       throw new HttpError(401, 'BAD_CREDENTIALS', '当前密码错误');
     }
     await writeLocalCredentials(u.id, newPassword);
-    getDb().update(users).set({ mustChangePassword: false }).where(eq(users.id, u.id)).run();
+    await getDb().update(users).set({ mustChangePassword: false }).where(eq(users.id, u.id));
     // 其他会话全部踢下线，保留当前会话
-    getDb()
+    await getDb()
       .delete(sessions)
-      .where(and(eq(sessions.userId, u.id), ne(sessions.tokenHash, u.sessionId)))
-      .run();
-    audit(`${u.kind}:${u.id}`, req.clientIp ?? null, 'local.password.change', {});
+      .where(and(eq(sessions.userId, u.id), ne(sessions.tokenHash, u.sessionId)));
+    await audit(`${u.kind}:${u.id}`, req.clientIp ?? null, 'local.password.change', {});
     res.json({ ok: true });
   }),
 );
@@ -685,14 +681,12 @@ function registrationMode(): 'closed' | 'open' | 'invite' {
 // 废弃注册清理（A2），挂进统一清理循环：
 //  - 已完成行（completedAt 非空）：超过 24h 即删——同 IP 24h 名额计数窗口不再引用它；
 //  - 未完成行：沿用 REGISTRATION_PENDING_TTL_DAYS（按 createdAt 计）
-registerPurgeTask((now) => {
+registerPurgeTask(async (now) => {
   const ttlDays = getSettingInt('REGISTRATION_PENDING_TTL_DAYS', 7);
-  getDb()
+  await getDb()
     .delete(registrations)
-    .where(lt(registrations.completedAt, now - 24 * 3600_000))
-    .run();
-  getDb()
+    .where(lt(registrations.completedAt, now - 24 * 3600_000));
+  await getDb()
     .delete(registrations)
-    .where(and(isNull(registrations.completedAt), lt(registrations.createdAt, now - ttlDays * 86_400_000)))
-    .run();
+    .where(and(isNull(registrations.completedAt), lt(registrations.createdAt, now - ttlDays * 86_400_000)));
 });

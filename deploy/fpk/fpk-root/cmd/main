@@ -3,7 +3,8 @@
 # AI超级面板 生命周期控制（start/stop/status）——飞牛 FPK 原生形态
 #
 # 运行身份：包用户（config/privilege run-as=package）
-# 数据：TRIM_PKGVAR（SQLite aap.db / 上传件 / master.key）
+# 平台数据库：外部 PostgreSQL（wizard_database_url）；TRIM_PKGVAR 保存上传件、
+# 托管应用本地状态数据库与 master.key。
 # 入口：本服务自主监听 0.0.0.0:$wizard_port（内网直连；外网走门户自带
 #       HTTPS/ACME 或用户自有反代）。桌面图标 = 打开面板的快捷方式
 #       （type=url 端口入口），不经过飞牛统一网关。
@@ -54,7 +55,8 @@ start_app() {
   # wizard_port：安装/配置向导收集的服务端口（对外主入口；默认 8080）
   # wizard_admin_password：安装向导自设的初始管理员密码；留空时服务端随机生成
   #   并写数据目录 admin-credentials.txt（两种方式首次登录均强制改密+绑 MFA）
-  PORT="${wizard_port:-8080}" DATA_DIR="$TRIM_PKGVAR" PYTHON_BIN="$PYTHON_BIN" NODE_ENV=production \
+  PORT="${wizard_port:-8080}" DATA_DIR="$TRIM_PKGVAR" DATABASE_URL="${wizard_database_url:-}" \
+    PYTHON_BIN="$PYTHON_BIN" NODE_ENV=production \
     ADMIN_INITIAL_PASSWORD="${wizard_admin_password:-}" \
     AAP_OFFICIAL_SIGN_PUBKEY="${AAP_OFFICIAL_SIGN_PUBKEY:-TZxb0LoJihvn7d0c+9D6dVY3BgbhpCUAjZiWgMw7AnE=}" \
     AAP_OFFICIAL_SIGNER_NAME="${AAP_OFFICIAL_SIGNER_NAME:-neon9809}" \
@@ -96,4 +98,3 @@ case "${1:-}" in
     exit 1
     ;;
 esac
-

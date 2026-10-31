@@ -3,8 +3,8 @@
 # build-fpk.sh — 组装 AI-SuperPanel 的飞牛 FPK 包（原生形态）
 #
 # 形态（app-develop-internal.skill §8，2026-09 定稿）：
-#   - 原生 FPK：载荷 = deploy/native 自包含包（自带 glibc Node 22 + 按目标
-#     C 库编译的 better-sqlite3），运行时依赖声明 install_dep_apps=python312
+#   - 原生 FPK：载荷 = deploy/native 自包含包（自带 glibc Node 22 和 PostgreSQL
+#     客户端应用）；平台业务数据库由管理员提供 PostgreSQL 17 服务
 #   - 入口 = 本服务自主监听端口（wizard_port，默认 8080，0.0.0.0）：
 #     内网直连，外网走门户自带 HTTPS/ACME 或用户自有反代；业务鉴权全部
 #     走门户自有账号体系。桌面图标 = type=url 快捷方式，不经飞牛统一网关
@@ -116,4 +116,3 @@ for p in $([ "$PLATFORMS" = all ] && echo "x86 arm" || echo "$PLATFORMS"); do
 done
 
 echo "⚠ 真机验证清单：安装（.fpk=tar.gz+内层app.tgz，格式已对齐官方 fnpack）→ 向导端口（wizard_port）→ 桌面图标新标签页打开 http://NAS:端口 → 启停/状态 → 初始管理员密码在数据目录 app.log（TRIM_PKGVAR）"
-

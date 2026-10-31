@@ -77,8 +77,8 @@ const OK_BODY = JSON.stringify({
 });
 
 beforeAll(async () => {
-  ({ dir } = setupTestDb());
-  seedSettings();
+  ({ dir } = await setupTestDb());
+  await seedSettings();
 
   // 上游 A：正常；上游 B：总是 500（failover 用）；上游 C：流式
   const a = await upServer((_q, res, body) => {
@@ -110,28 +110,28 @@ beforeAll(async () => {
   gwPort = (gw.address() as AddressInfo).port;
 
   // 路由与凭据
-  const aId = createUpstream('正常上游', a.baseUrl, 'sk-up-a');
-  const bId = createUpstream('必败上游', b.baseUrl, 'sk-up-b');
-  const cId = createUpstream('流式上游', c.baseUrl, 'sk-up-c');
-  createRoute({ model: 'test-model', upstreamId: aId, upstreamModel: 'real-model-a', multiplier: 100 });
-  createRoute({ model: 'failover-model', upstreamId: bId, upstreamModel: 'real-b', priority: 1 });
-  createRoute({ model: 'failover-model', upstreamId: aId, upstreamModel: 'real-model-a', priority: 2 });
-  createRoute({ model: 'stream-model', upstreamId: cId, upstreamModel: 'real-stream', multiplier: 100 });
-  createRoute({ model: 'dead-model', upstreamId: bId, upstreamModel: 'real-b' });
+  const aId = await createUpstream('正常上游', a.baseUrl, 'sk-up-a');
+  const bId = await createUpstream('必败上游', b.baseUrl, 'sk-up-b');
+  const cId = await createUpstream('流式上游', c.baseUrl, 'sk-up-c');
+  await createRoute({ model: 'test-model', upstreamId: aId, upstreamModel: 'real-model-a', multiplier: 100 });
+  await createRoute({ model: 'failover-model', upstreamId: bId, upstreamModel: 'real-b', priority: 1 });
+  await createRoute({ model: 'failover-model', upstreamId: aId, upstreamModel: 'real-model-a', priority: 2 });
+  await createRoute({ model: 'stream-model', upstreamId: cId, upstreamModel: 'real-stream', multiplier: 100 });
+  await createRoute({ model: 'dead-model', upstreamId: bId, upstreamModel: 'real-b' });
 
-  const token = createAppToken('demo', 'e2e', null);
+  const token = await createAppToken('demo', 'e2e', null);
   AUTH.authorization = `Bearer ${token}`;
 });
 
 afterAll(async () => {
   await new Promise<void>((r) => gw.close(() => r()));
   for (const s of okUpstreams) await new Promise<void>((r) => s.close(() => r()));
-  closeDb();
-  teardownTestDb(dir);
+  await closeDb();
+  await teardownTestDb(dir);
 });
 
-function balanceOf(userId: number): number {
-  return cachedBalance(userId) ?? recomputeBalance(userId);
+async function balanceOf(userId: number): Promise<number> {
+  return await cachedBalance(userId) ?? await recomputeBalance(userId);
 }
 
 async function chat(payload: Record<string, unknown>, auth = AUTH): Promise<{ status: number; body: string }> {
@@ -165,24 +165,24 @@ describe('M2 LLM 网关（C1–C6）', () => {
   });
 
   it('非流式对话：转发 + usage 入账（账本 delta 为负）+ 预估事后校正', async () => {
-    grantTokens(U1, 100_000, '测试额度', 1);
-    const before = balanceOf(U1);
+    await grantTokens(U1, 100_000, '测试额度', 1);
+    const before = await balanceOf(U1);
 
     const { status, body } = await chat({ model: 'test-model', messages: [{ role: 'user', content: 'hi' }], max_tokens: 100 }, { ...AUTH, ...identityHeaders(U1) });
     expect(status).toBe(200);
     expect(JSON.parse(body).choices[0].message.content).toBe('pong');
 
     // usage: 10+5=15 → cost = ceil(15*100/100) = 15
-    expect(balanceOf(U1)).toBe(before - 15);
+    expect(await balanceOf(U1)).toBe(before - 15);
   });
 
   it('failover：主上游 5xx 自动切备用；全败 502', async () => {
-    grantTokens(U1, 100_000, 'f', 1);
-    const before = balanceOf(U1);
+    await grantTokens(U1, 100_000, 'f', 1);
+    const before = await balanceOf(U1);
     const { status, body } = await chat({ model: 'failover-model', messages: [{ role: 'user', content: 'hi' }], max_tokens: 50 }, { ...AUTH, ...identityHeaders(U1) });
     expect(status).toBe(200);
     expect(JSON.parse(body).choices[0].message.content).toBe('pong');
-    expect(balanceOf(U1)).toBeLessThan(before);
+    expect(await balanceOf(U1)).toBeLessThan(before);
 
     const dead = await chat({ model: 'dead-model', messages: [{ role: 'user', content: 'x' }], max_tokens: 10 }, { ...AUTH, ...identityHeaders(U1) });
     expect(dead.status).toBe(502);
@@ -190,20 +190,20 @@ describe('M2 LLM 网关（C1–C6）', () => {
   });
 
   it('失败路径退款：全候选失败（502）不白扣预估成本（测试内无结算循环，退款须来自即时校正）', async () => {
-    grantTokens(U1, 100_000, 'refund', 1);
-    const before = balanceOf(U1);
+    await grantTokens(U1, 100_000, 'refund', 1);
+    const before = await balanceOf(U1);
     // max_tokens=4096 → 预检曾扣减大额预估；修复前该扣减永久丢失
     const dead = await chat(
       { model: 'dead-model', messages: [{ role: 'user', content: 'x' }], max_tokens: 4096 },
       { ...AUTH, ...identityHeaders(U1) },
     );
     expect(dead.status).toBe(502);
-    expect(balanceOf(U1)).toBe(before);
+    expect(await balanceOf(U1)).toBe(before);
   });
 
   it('流式：SSE 透传 + 末帧 usage 捕获入账', async () => {
-    grantTokens(U1, 100_000, 's', 1);
-    const before = balanceOf(U1);
+    await grantTokens(U1, 100_000, 's', 1);
+    const before = await balanceOf(U1);
     const res = await fetch(`http://127.0.0.1:${gwPort}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...AUTH, ...identityHeaders(U1) },
@@ -215,65 +215,65 @@ describe('M2 LLM 网关（C1–C6）', () => {
     expect(text).toContain('[DONE]');
 
     // usage 7+3=10 → cost 10
-    expect(balanceOf(U1)).toBe(before - 10);
+    expect(await balanceOf(U1)).toBe(before - 10);
   });
 
   it('预检闸门：余额不足 → 402，请求不出网关', async () => {
     const U2 = 502;
-    grantTokens(U2, 5, '小额', 1);
+    await grantTokens(U2, 5, '小额', 1);
     const { status, body } = await chat({ model: 'test-model', messages: [{ role: 'user', content: 'hi' }], max_tokens: 1000 }, { ...AUTH, ...identityHeaders(U2) });
     expect(status).toBe(402);
     const err = JSON.parse(body).error;
     expect(err.code).toBe('INSUFFICIENT_BALANCE');
     expect(err.balance).toBe(5);
     // 缓存未被扣穿成负数
-    expect(balanceOf(U2)).toBe(5);
+    expect(await balanceOf(U2)).toBe(5);
   });
 
   it('调额：发放/调减 + 缓存同步（三触发之手动调额）', async () => {
     const U3 = 503;
-    grantTokens(U3, 500, 'initial', 1);
-    expect(balanceOf(U3)).toBe(500);
-    grantTokens(U3, -200, '调减', 1);
-    expect(balanceOf(U3)).toBe(300);
-    grantTokens(U3, 1000, '充值到账模拟', 1);
-    expect(balanceOf(U3)).toBe(1300);
+    await grantTokens(U3, 500, 'initial', 1);
+    expect(await balanceOf(U3)).toBe(500);
+    await grantTokens(U3, -200, '调减', 1);
+    expect(await balanceOf(U3)).toBe(300);
+    await grantTokens(U3, 1000, '充值到账模拟', 1);
+    expect(await balanceOf(U3)).toBe(1300);
     // 缓存行与重算一致
-    expect(getDb().select().from(llmBalanceCache).where(eq(llmBalanceCache.userId, U3)).get()?.balance).toBe(1300);
+    expect(await (await getDb().select().from(llmBalanceCache).where(eq(llmBalanceCache.userId, U3)))[0]?.balance).toBe(1300);
   });
 
   it('用户归因：无身份头被预检拒绝（防绕过余额闸门）；有身份头按 (kind,uid) 归因扣减', async () => {
-    grantTokens(U1, 100_000, 'anon', 1);
-    const before = balanceOf(U1);
+    await grantTokens(U1, 100_000, 'anon', 1);
+    const before = await balanceOf(U1);
     // 无身份头：网关直接 403 拒绝（ATTRIBUTION_REQUIRED），余额与上游均不可及
     const anon = await chat({ model: 'test-model', messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 });
     expect(anon.status).toBe(403);
     expect(JSON.parse(anon.body).error.code).toBe('ATTRIBUTION_REQUIRED');
-    expect(balanceOf(U1)).toBe(before);
+    expect(await balanceOf(U1)).toBe(before);
     // 带身份头（应用转发）：归因到 U1，余额扣减
     const uid = 510;
-    grantTokens(uid, 500, 'id', 1);
-    const before2 = balanceOf(uid);
+    await grantTokens(uid, 500, 'id', 1);
+    const before2 = await balanceOf(uid);
     const withId = await chat(
       { model: 'test-model', messages: [{ role: 'user', content: 'hi' }], max_tokens: 20 },
       { ...AUTH, ...identityHeaders(uid) },
     );
     expect(withId.status).toBe(200);
-    expect(balanceOf(uid)).toBeLessThan(before2);
+    expect(await balanceOf(uid)).toBeLessThan(before2);
     void setSetting;
   });
 });
 
 describe('沙箱默认模型（LLM_DEFAULT_MODEL，规范 §3.1「不填用平台默认」）', () => {
-  it('显式设置优先；未设置取模型目录排序第一个；目录空返回 null', () => {
-    setSetting('LLM_DEFAULT_MODEL', '');
+  it('显式设置优先；未设置取模型目录排序第一个；目录空返回 null', async () => {
+    await setSetting('LLM_DEFAULT_MODEL', '');
     // 目录含 dead-model / failover-model / stream-model / test-model，排序后 dead-model 第一
-    expect(resolveDefaultModel()).toBe('dead-model');
-    setSetting('LLM_DEFAULT_MODEL', 'test-model');
-    expect(resolveDefaultModel()).toBe('test-model');
-    setSetting('LLM_DEFAULT_MODEL', '  ');
-    expect(resolveDefaultModel()).toBe('dead-model');
-    setSetting('LLM_DEFAULT_MODEL', '');
+    expect(await resolveDefaultModel()).toBe('dead-model');
+    await setSetting('LLM_DEFAULT_MODEL', 'test-model');
+    expect(await resolveDefaultModel()).toBe('test-model');
+    await setSetting('LLM_DEFAULT_MODEL', '  ');
+    expect(await resolveDefaultModel()).toBe('dead-model');
+    await setSetting('LLM_DEFAULT_MODEL', '');
   });
 });
 
@@ -298,27 +298,26 @@ describe('流式无 usage 帧入账兜底（审计 P1-7：防断连免单）', (
       res.end();
     });
     okUpstreams.push(noUsage.server);
-    const upId = createUpstream('无usage上游', noUsage.baseUrl, 'sk-nousage');
-    createRoute({ model: 'nousage-model', upstreamId: upId, upstreamModel: 'nu-up', multiplier: 100 });
+    const upId = await createUpstream('无usage上游', noUsage.baseUrl, 'sk-nousage');
+    await createRoute({ model: 'nousage-model', upstreamId: upId, upstreamModel: 'nu-up', multiplier: 100 });
 
-    grantTokens(U7, 100_000, 'p1-7', 1);
-    const before = balanceOf(U7);
+    await grantTokens(U7, 100_000, 'p1-7', 1);
+    const before = await balanceOf(U7);
     const { status, text } = await streamChat('nousage-model');
     expect(status).toBe(200);
     expect(text).toContain('hello');
 
     // 账本按估算记实际 token（prompt=请求估算，completion=转发字节/4），均 > 0
-    const row = getDb()
+    const row = (await getDb()
       .select()
       .from(llmLedger)
-      .where(and(eq(llmLedger.userId, U7), eq(llmLedger.model, 'nousage-model'), eq(llmLedger.kind, 'usage')))
-      .get();
+      .where(and(eq(llmLedger.userId, U7), eq(llmLedger.model, 'nousage-model'), eq(llmLedger.kind, 'usage'))))[0];
     expect(row).toBeTruthy();
     expect(row!.promptTokens!).toBeGreaterThan(0);
     expect(row!.completionTokens!).toBeGreaterThan(0);
     // multiplier=100 → cost=prompt+completion；settle 后余额按实际扣减而非全额退回
-    expect(balanceOf(U7)).toBe(before - (row!.promptTokens! + row!.completionTokens!));
-    expect(balanceOf(U7)).toBeLessThan(before);
+    expect(await balanceOf(U7)).toBe(before - (row!.promptTokens! + row!.completionTokens!));
+    expect(await balanceOf(U7)).toBeLessThan(before);
   });
 
   it('usage 帧无结尾换行（流末残行）：仍能捕获真实 usage 入账', async () => {
@@ -329,23 +328,23 @@ describe('流式无 usage 帧入账兜底（审计 P1-7：防断连免单）', (
       res.end('data: {"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":13}}');
     });
     okUpstreams.push(rawEnd.server);
-    const upId = createUpstream('残行usage上游', rawEnd.baseUrl, 'sk-rawend');
-    createRoute({ model: 'rawend-model', upstreamId: upId, upstreamModel: 'raw-up', multiplier: 100 });
+    const upId = await createUpstream('残行usage上游', rawEnd.baseUrl, 'sk-rawend');
+    await createRoute({ model: 'rawend-model', upstreamId: upId, upstreamModel: 'raw-up', multiplier: 100 });
 
-    grantTokens(U7, 100_000, 'p1-7b', 1);
-    const before = balanceOf(U7);
+    await grantTokens(U7, 100_000, 'p1-7b', 1);
+    const before = await balanceOf(U7);
     const { status, text } = await streamChat('rawend-model');
     expect(status).toBe(200);
     expect(text).toContain('ok');
     // 真实 usage 11+13=24 → 按真实值扣 24（而非估算值/全额退回）
-    expect(balanceOf(U7)).toBe(before - 24);
+    expect(await balanceOf(U7)).toBe(before - 24);
   });
 });
 
 describe('LLM 网关超时设置（LLM_TTFB_TIMEOUT_SECONDS，即时生效）', () => {
   it('首字节超时按设置生效：小于上游延迟则切候选失败，调大后成功', async () => {
     const TUID = 520;
-    grantTokens(TUID, 100_000, 'ttfb', 1);
+    await grantTokens(TUID, 100_000, 'ttfb', 1);
     const slow = await upServer((_q, res) => {
       setTimeout(() => {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -355,10 +354,10 @@ describe('LLM 网关超时设置（LLM_TTFB_TIMEOUT_SECONDS，即时生效）', 
       }, 4000);
     });
     okUpstreams.push(slow.server);
-    const slowId = createUpstream('慢上游', slow.baseUrl, 'sk-slow');
-    createRoute({ model: 'slow-model', upstreamId: slowId, upstreamModel: 'slow-up' });
+    const slowId = await createUpstream('慢上游', slow.baseUrl, 'sk-slow');
+    await createRoute({ model: 'slow-model', upstreamId: slowId, upstreamModel: 'slow-up' });
 
-    setSetting('LLM_TTFB_TIMEOUT_SECONDS', '2');
+    await setSetting('LLM_TTFB_TIMEOUT_SECONDS', '2');
     const fast = await fetch(`http://127.0.0.1:${gwPort}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...AUTH, ...identityHeaders(TUID) },
@@ -367,7 +366,7 @@ describe('LLM 网关超时设置（LLM_TTFB_TIMEOUT_SECONDS，即时生效）', 
     await fast.text();
     expect(fast.status).toBe(502); // 2s < 上游 4s 首字节 → 超时且无候选可切
 
-    setSetting('LLM_TTFB_TIMEOUT_SECONDS', '6');
+    await setSetting('LLM_TTFB_TIMEOUT_SECONDS', '6');
     const ok = await fetch(`http://127.0.0.1:${gwPort}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...AUTH, ...identityHeaders(TUID) },
@@ -375,7 +374,7 @@ describe('LLM 网关超时设置（LLM_TTFB_TIMEOUT_SECONDS，即时生效）', 
     });
     expect(ok.status).toBe(200);
     await ok.text();
-    setSetting('LLM_TTFB_TIMEOUT_SECONDS', '');
+    await setSetting('LLM_TTFB_TIMEOUT_SECONDS', '');
   }, 20_000);
 });
 
@@ -393,7 +392,7 @@ describe('aap 代理：沙箱 max_tokens 注入策略（LLM_SANDBOX_MAX_TOKENS�
 
     // 带 llm 能力的应用（能力校验依据 apps.manifestJson）+ 真实用户（代理按 uid 重签身份）
     const { apps, users } = await import('../db/schema.js');
-    getDb()
+    await getDb()
       .insert(apps)
       .values({
         id: 'llmcapapp',
@@ -404,15 +403,13 @@ describe('aap 代理：沙箱 max_tokens 注入策略（LLM_SANDBOX_MAX_TOKENS�
         enabled: true,
         createdAt: Date.now(),
         updatedAt: Date.now(),
-      })
-      .run();
-    getDb()
+      });
+    await getDb()
       .insert(users)
-      .values({ kind: 'local', username: 'u600', name: 'u600', role: 'user', createdAt: Date.now() })
-      .run();
-    const uid = getDb().select({ id: users.id }).from(users).where(eq(users.username, 'u600')).get()!.id;
-    const token = createAppToken('llmcapapp', 'test', null);
-    grantTokens(uid, 100_000, 'cap-test', 1);
+      .values({ kind: 'local', username: 'u600', name: 'u600', role: 'user', createdAt: Date.now() });
+    const uid = await (await getDb().select({ id: users.id }).from(users).where(eq(users.username, 'u600')))[0]!.id;
+    const token = await createAppToken('llmcapapp', 'test', null);
+    await grantTokens(uid, 100_000, 'cap-test', 1);
     const auth = { 'x-aap-token': token, ...identityHeaders(uid, 'llmcapapp') };
 
     let last: Record<string, unknown> | null = null;
@@ -421,8 +418,8 @@ describe('aap 代理：沙箱 max_tokens 注入策略（LLM_SANDBOX_MAX_TOKENS�
       res.writeHead(200, { 'content-type': 'application/json' }).end(OK_BODY);
     });
     okUpstreams.push(cap.server);
-    const capId = createUpstream('捕获上游', cap.baseUrl, 'sk-cap');
-    createRoute({ model: 'cap-model', upstreamId: capId, upstreamModel: 'cap-up' });
+    const capId = await createUpstream('捕获上游', cap.baseUrl, 'sk-cap');
+    await createRoute({ model: 'cap-model', upstreamId: capId, upstreamModel: 'cap-up' });
 
     const call = async (extra: Record<string, unknown> = {}): Promise<void> => {
       const res = await fetch(`${aapBase}/api/aap/llm/chat`, {
@@ -435,12 +432,12 @@ describe('aap 代理：沙箱 max_tokens 注入策略（LLM_SANDBOX_MAX_TOKENS�
     };
 
     // 0 = 不限制：不向网关注入 max_tokens（模型自然收尾）
-    setSetting('LLM_SANDBOX_MAX_TOKENS', '0');
+    await setSetting('LLM_SANDBOX_MAX_TOKENS', '0');
     await call();
     expect(last && (last as { max_tokens?: number }).max_tokens).toBeUndefined();
 
     // 正数：注入
-    setSetting('LLM_SANDBOX_MAX_TOKENS', '500');
+    await setSetting('LLM_SANDBOX_MAX_TOKENS', '500');
     await call();
     expect(last && (last as { max_tokens?: number }).max_tokens).toBe(500);
 
@@ -448,7 +445,7 @@ describe('aap 代理：沙箱 max_tokens 注入策略（LLM_SANDBOX_MAX_TOKENS�
     await call({ max_tokens: 77 });
     expect(last && (last as { max_tokens?: number }).max_tokens).toBe(77);
 
-    setSetting('LLM_SANDBOX_MAX_TOKENS', '0');
+    await setSetting('LLM_SANDBOX_MAX_TOKENS', '0');
   });
 
   afterAll(async () => {
@@ -459,8 +456,8 @@ describe('aap 代理：沙箱 max_tokens 注入策略（LLM_SANDBOX_MAX_TOKENS�
 describe('LLM 能力声明闸（审计 F1：未声明 llm 不得直连 /v1 花余额）', () => {
   const U901 = 901;
 
-  const insertPackageApp = (id: string, capabilities: string[]): void => {
-    getDb()
+  const insertPackageApp = async (id: string, capabilities: string[]): Promise<void> => {
+    await getDb()
       .insert(apps)
       .values({
         id,
@@ -471,13 +468,12 @@ describe('LLM 能力声明闸（审计 F1：未声明 llm 不得直连 /v1 花�
         enabled: true,
         createdAt: Date.now(),
         updatedAt: Date.now(),
-      })
-      .run();
+      });
   };
 
   it('manifest 未声明 llm：/v1 直连与 aap.llm/chat 双侧 403（凭据照常签发——egress 需要）', async () => {
-    insertPackageApp('nollm-f1', ['storage']);
-    const token = createAppToken('nollm-f1', 'f1', null);
+    await insertPackageApp('nollm-f1', ['storage']);
+    const token = await createAppToken('nollm-f1', 'f1', null);
 
     const gw = await chat({}, { authorization: `Bearer ${token}` });
     expect(gw.status).toBe(403);
@@ -493,28 +489,26 @@ describe('LLM 能力声明闸（审计 F1：未声明 llm 不得直连 /v1 花�
   });
 
   it('声明 llm：/v1 直连放行并按身份归因计费；manifest 缺 capabilities 同样 403', async () => {
-    getDb()
+    await getDb()
       .insert(users)
-      .values({ id: U901, kind: 'local', username: 'u901', name: 'u901', role: 'user', createdAt: Date.now() })
-      .run();
-    grantTokens(U901, 100_000, 'f1', 1);
-    insertPackageApp('withllm-f1', ['llm']);
-    const token = createAppToken('withllm-f1', 'f1', null);
+      .values({ id: U901, kind: 'local', username: 'u901', name: 'u901', role: 'user', createdAt: Date.now() });
+    await grantTokens(U901, 100_000, 'f1', 1);
+    await insertPackageApp('withllm-f1', ['llm']);
+    const token = await createAppToken('withllm-f1', 'f1', null);
 
-    const before = balanceOf(U901);
+    const before = await balanceOf(U901);
     const res = await chat(
       { model: 'test-model', messages: [{ role: 'user', content: 'hi' }] },
       { authorization: `Bearer ${token}`, ...identityHeaders(U901, 'withllm-f1') },
     );
     expect(res.status).toBe(200);
-    expect(balanceOf(U901)).toBeLessThan(before);
+    expect(await balanceOf(U901)).toBeLessThan(before);
 
     // manifest 存在但没写 capabilities：按未声明拒绝（fail-closed）
-    getDb()
+    await getDb()
       .update(apps)
       .set({ manifestJson: JSON.stringify({ version: '1.0.0' }) })
-      .where(eq(apps.id, 'withllm-f1'))
-      .run();
+      .where(eq(apps.id, 'withllm-f1'));
     const res2 = await chat(
       { model: 'test-model', messages: [{ role: 'user', content: 'hi' }] },
       { authorization: `Bearer ${token}`, ...identityHeaders(U901, 'withllm-f1') },

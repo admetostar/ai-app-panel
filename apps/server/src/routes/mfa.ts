@@ -45,8 +45,8 @@ function requireMfaPending(req: Request, res: Response, next: NextFunction): voi
   next();
 }
 
-function requireTotpBound(userId: number): void {
-  if (!totpConfirmed(userId)) throw new HttpError(400, 'TOTP_NOT_ENROLLED', 'TOTP 未绑定');
+async function requireTotpBound(userId: number): Promise<void> {
+  if (!await totpConfirmed(userId)) throw new HttpError(400, 'TOTP_NOT_ENROLLED', 'TOTP 未绑定');
 }
 
 // ---------- TOTP 错猜节流 ----------
@@ -78,29 +78,29 @@ async function verifyTotpGuarded(req: Request, u: SessionUser, token: string): P
   const acctKey = `mfa:${u.id}`;
   // 账号维度预检：窗口内已累计 ≥5 次错猜（跨会话合计）→ 直接拒绝，
   // 恢复码兜底同样在窗口内暂停（防绕过节流）
-  if (mfaFailuresInWindow(acctKey) >= TOTP_FAIL_LIMIT) {
-    audit(`user:${u.id}`, req.clientIp ?? null, 'mfa.totp.throttled', { scope: 'account' });
+  if (await mfaFailuresInWindow(acctKey) >= TOTP_FAIL_LIMIT) {
+    await audit(`user:${u.id}`, req.clientIp ?? null, 'mfa.totp.throttled', { scope: 'account' });
     throw new HttpError(429, 'MFA_TOO_MANY_ATTEMPTS', '验证码错误次数过多，请稍后再试');
   }
   try {
     await verifyTotpForLogin(u.id, token, req.clientIp ?? null);
   } catch (err) {
-    recordMfaFailure(acctKey);
+    await recordMfaFailure(acctKey);
     const fails = recordTotpFail(u.sessionId);
     if (fails >= TOTP_FAIL_LIMIT) {
-      getDb().delete(sessions).where(eq(sessions.tokenHash, u.sessionId)).run();
-      audit(`user:${u.id}`, req.clientIp ?? null, 'mfa.totp.session_invalidated', { fails });
+      await getDb().delete(sessions).where(eq(sessions.tokenHash, u.sessionId));
+      await audit(`user:${u.id}`, req.clientIp ?? null, 'mfa.totp.session_invalidated', { fails });
       throw new HttpError(400, 'MFA_TOO_MANY_ATTEMPTS', '验证码错误次数过多，会话已作废，请重新登录', { relogin: true });
     }
     throw err;
   }
   // 成功：会话级与账号级计数一并清零（防正常用户被误锁）
   totpFails.delete(u.sessionId);
-  clearMfaFailures(acctKey);
+  await clearMfaFailures(acctKey);
 }
 
-function loadUserRow(userId: number) {
-  const row = getDb().select().from(users).where(eq(users.id, userId)).get();
+async function loadUserRow(userId: number) {
+  const row = (await getDb().select().from(users).where(eq(users.id, userId)))[0];
   if (!row) throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
   return row;
 }
@@ -112,7 +112,7 @@ mfaRouter.post(
   requireStepUp,
   h(async (req, res) => {
     const u = req.user!;
-    const { secret, otpauthUri } = enrollTotp(u.id, getSetting('SITE_NAME') || 'AI超级面板', u.username ?? u.name);
+    const { secret, otpauthUri } = await enrollTotp(u.id, getSetting('SITE_NAME') || 'AI超级面板', u.username ?? u.name);
     res.json({ secret, otpauthUri });
   }),
 );
@@ -133,7 +133,7 @@ mfaRouter.post(
   requireStepUp,
   h(async (req, res) => {
     const u = req.user!;
-    disableTotp(u.id, u.role === 'admin');
+    await disableTotp(u.id, u.role === 'admin');
     res.json({ ok: true });
   }),
 );
@@ -143,9 +143,9 @@ mfaRouter.post(
   requireStepUp,
   h(async (req, res) => {
     const u = req.user!;
-    requireTotpBound(u.id);
-    const codes = generateRecoveryCodes(u.id);
-    audit(`user:${u.id}`, req.clientIp ?? null, 'mfa.recovery.regenerated', {});
+    await requireTotpBound(u.id);
+    const codes = await generateRecoveryCodes(u.id);
+    await audit(`user:${u.id}`, req.clientIp ?? null, 'mfa.recovery.regenerated', {});
     res.json({ recoveryCodes: codes });
   }),
 );
@@ -158,9 +158,9 @@ mfaRouter.get(
   h(async (req, res) => {
     const u = req.user!;
     res.json({
-      totpConfirmed: totpConfirmed(u.id),
-      passkeys: listPasskeys(u.id),
-      recoveryRemaining: remainingRecoveryCodes(u.id),
+      totpConfirmed: await totpConfirmed(u.id),
+      passkeys: await listPasskeys(u.id),
+      recoveryRemaining: await remainingRecoveryCodes(u.id),
     });
   }),
 );
@@ -175,9 +175,9 @@ mfaRouter.post(
     if (u.authState !== 'password_ok') throw new HttpError(400, 'INVALID_STATE', '当前会话无需 MFA 验证');
     const { token } = (req.body ?? {}) as { token?: string };
     await verifyTotpGuarded(req, u, String(token ?? ''));
-    upgradeSessionToFull(u.sessionId);
+    await upgradeSessionToFull(u.sessionId);
     u.authState = 'full';
-    const row = loadUserRow(u.id);
+    const row = await loadUserRow(u.id);
     const info: SessionInfo = {
       user: publicUserOf(row),
       authState: 'full',
@@ -209,9 +209,9 @@ mfaRouter.post(
     const u2 = req.user!;
     if (u2.authState === 'password_ok' && u2.id === result.userId) {
       // 二次因子：升级当前会话
-      upgradeSessionToFull(u2.sessionId);
+      await upgradeSessionToFull(u2.sessionId);
       u2.authState = 'full';
-      const row = loadUserRow(u2.id);
+      const row = await loadUserRow(u2.id);
       const info: SessionInfo & { mfaRequired: boolean } = {
         user: publicUserOf(row),
         authState: 'full',
@@ -255,7 +255,7 @@ mfaRouter.get(
   '/auth/mfa/passkeys',
   requireAuth,
   h(async (req, res) => {
-    res.json({ passkeys: listPasskeys(req.user!.id) });
+    res.json({ passkeys: await listPasskeys(req.user!.id) });
   }),
 );
 
@@ -264,7 +264,7 @@ mfaRouter.delete(
   requireStepUp,
   h(async (req, res) => {
     const u = req.user!;
-    deletePasskey(u.id, String(req.params.id ?? ''), u.role === 'admin', totpConfirmed(u.id));
+    await deletePasskey(u.id, String(req.params.id ?? ''), u.role === 'admin', await totpConfirmed(u.id));
     res.json({ ok: true });
   }),
 );
@@ -287,11 +287,11 @@ mfaRouter.post(
       response?: AuthenticationResponseJSON;
     };
     const result = await passkeyAuthVerify(req, String(requestId ?? ''), response!);
-    const row = getDb().select().from(users).where(eq(users.id, result.userId)).get();
+    const row = (await getDb().select().from(users).where(eq(users.id, result.userId)))[0];
     if (!row || row.status !== 'active') throw new HttpError(403, 'ACCOUNT_DISABLED', '账号不可用');
     const ip = req.clientIp ?? null;
-    createSession(res, { id: row.id }, { ip, userAgent: req.headers['user-agent'], authState: 'full', grantStepUp: true });
-    audit(`user:${row.id}`, ip, 'login.passkey', { credentialId: result.credentialId });
+    await createSession(res, { id: row.id }, { ip, userAgent: req.headers['user-agent'], authState: 'full', grantStepUp: true });
+    await audit(`user:${row.id}`, ip, 'login.passkey', { credentialId: result.credentialId });
     const info: SessionInfo & { mfaRequired: boolean } = {
       user: publicUserOf(row),
       authState: 'full',
@@ -311,11 +311,11 @@ mfaRouter.post(
   requireAuth,
   h(async (req, res) => {
     const u = req.user!;
-    requireTotpBound(u.id);
+    await requireTotpBound(u.id);
     const { token } = (req.body ?? {}) as { token?: string };
     await verifyTotpGuarded(req, u, String(token ?? ''));
-    const until = markStepUp(u.sessionId);
-    audit(`user:${u.id}`, req.clientIp ?? null, 'auth.stepup', { via: 'totp' });
+    const until = await markStepUp(u.sessionId);
+    await audit(`user:${u.id}`, req.clientIp ?? null, 'auth.stepup', { via: 'totp' });
     res.json({ stepUpUntil: until, ttlSec: stepUpTtlSec() });
   }),
 );
@@ -337,8 +337,8 @@ mfaRouter.post(
     const { requestId, response } = (req.body ?? {}) as { requestId?: string; response?: AuthenticationResponseJSON };
     const result = await passkeyAuthVerify(req, String(requestId ?? ''), response!);
     if (result.userId !== u.id) throw new HttpError(403, 'FORBIDDEN', '凭据不属于当前用户');
-    const until = markStepUp(u.sessionId);
-    audit(`user:${u.id}`, req.clientIp ?? null, 'auth.stepup', { via: 'passkey' });
+    const until = await markStepUp(u.sessionId);
+    await audit(`user:${u.id}`, req.clientIp ?? null, 'auth.stepup', { via: 'passkey' });
     res.json({ stepUpUntil: until, ttlSec: stepUpTtlSec() });
   }),
 );

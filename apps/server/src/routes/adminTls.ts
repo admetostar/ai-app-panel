@@ -40,7 +40,7 @@ adminTlsRouter.delete(
   '/admin/tls',
   h(async (req, res) => {
     tls.remove();
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'tls.cert.removed', { by: 'admin' });
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'tls.cert.removed', { by: 'admin' });
     res.json({ ok: true });
   }),
 );
@@ -57,10 +57,10 @@ adminTlsRouter.post(
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       throw new HttpError(400, 'INVALID_EMAIL', '邮箱格式不正确');
     }
-    setSetting('ACME_DOMAIN', domain);
-    setSetting('ACME_EMAIL', email);
-    if (body.staging !== undefined) setSetting('ACME_STAGING', body.staging ? 'true' : 'false');
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'tls.acme.start', { domain, staging: body.staging });
+    await setSetting('ACME_DOMAIN', domain);
+    await setSetting('ACME_EMAIL', email);
+    if (body.staging !== undefined) await setSetting('ACME_STAGING', body.staging ? 'true' : 'false');
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'tls.acme.start', { domain, staging: body.staging });
 
     // 异步签发（数十秒）：立即返回，管理端轮询状态
     void tls

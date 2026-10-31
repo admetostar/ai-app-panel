@@ -58,16 +58,13 @@ function relaxDirForSandbox(dir: string): void {
   }
 }
 
-/** 解压 .asp-app（html 包）到托管目录，返回解出的文件数与签名材料。
- *  entries 不含 signature.json（供规范化摘要计算）；signature 为包内自带签名（可能为 null）。 */
+/** 解压 .asp-app 到托管目录并提取 manifest；signature.json 如存在按普通包文件处理。 */
 export function storePackageFiles(
   appId: string,
   zipBuffer: Buffer,
 ): {
   files: number;
   manifest: Record<string, unknown>;
-  entries: Array<{ name: string; content: Buffer }>;
-  signature: Record<string, unknown> | null;
 } {
   // adm-zip 延迟加载（纯 JS，无原生依赖）
   const req = createRequire(import.meta.url);
@@ -79,8 +76,6 @@ export function storePackageFiles(
   relaxDirForSandbox(dir);
   let files = 0;
   let manifest: Record<string, unknown> | null = null;
-  let signature: Record<string, unknown> | null = null;
-  const entries: Array<{ name: string; content: Buffer }> = [];
   // 解压放大防护（zip 炸弹）：15MB 包体可声明任意解压体积——条目数与累计解压
   // 字节双上限，超限整包拒绝（目录就地清理，调用方 catch 转 PACKAGE_INVALID）
   const MAX_ENTRIES = 2000;
@@ -115,16 +110,6 @@ export function storePackageFiles(
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, content);
     files++;
-    if (name === 'signature.json') {
-      // 签名不参与摘要；原样落盘（自描述），解析失败按未签名处理
-      try {
-        signature = JSON.parse(content.toString('utf8')) as Record<string, unknown>;
-      } catch {
-        signature = { alg: 'broken' };
-      }
-      continue;
-    }
-    entries.push({ name, content });
     if (name === 'manifest.json') {
       try {
         manifest = JSON.parse(content.toString('utf8')) as Record<string, unknown>;
@@ -137,7 +122,7 @@ export function storePackageFiles(
     fs.rmSync(dir, { recursive: true, force: true });
     throw new Error('包内缺少 manifest.json');
   }
-  return { files, manifest, entries, signature };
+  return { files, manifest };
 }
 
 // ---------- manifest.env：应用环境变量 / 机密声明（G6） ----------
@@ -315,10 +300,10 @@ export function validateManifest(m: Record<string, unknown>): {
  * 信任内容，保持既往直出行为。沙箱（无 allow-same-origin）下包代码运行在
  * opaque origin：读 /api 受 CORS 拦、写 /api 受 CSRF Origin(null) 拦。
  */
-export function needsIframeSandbox(app: AppRow): boolean {
+export async function needsIframeSandbox(app: AppRow): Promise<boolean> {
   if (app.kind !== 'html' && app.kind !== 'package') return false;
   if (app.ownerUserId == null) return false;
-  const owner = getDb().select({ role: users.role }).from(users).where(eq(users.id, app.ownerUserId)).get();
+  const owner = (await getDb().select({ role: users.role }).from(users).where(eq(users.id, app.ownerUserId)))[0];
   return owner?.role !== 'admin';
 }
 

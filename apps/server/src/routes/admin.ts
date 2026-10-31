@@ -4,10 +4,10 @@
  */
 import { Router } from 'express';
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { AAP_VERSION } from '@aap/shared';
-import { getDb, getSqlite } from '../db/index.js';
-import { apps, inviteCodes, sessions, trustedSigningKeys, users } from '../db/schema.js';
+import { getDb } from '../db/index.js';
+import { apps, auditLogs, inviteCodes, sessions, users } from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
 import { requireAdmin } from '../lib/auth.js';
 import { publicUserOf } from './shared.js';
@@ -20,7 +20,7 @@ import { stopAllPersistent } from '../lib/sandbox.js';
 import { createGroup, deleteGroup, groupMemberIds, listGroups, setGroupMembers, updateGroup } from '../lib/groups.js';
 import { status as tlsStatus } from '../gateway/tls.js';
 import { defaultAvatarForUser } from '../lib/userAvatar.js';
-import { listPlans } from '../lib/billing.js';
+import { isFreePlan, listPlans } from '../lib/billing.js';
 
 export const adminRouter = Router();
 
@@ -31,7 +31,7 @@ adminRouter.use('/admin', requireAdmin);
 adminRouter.get(
   '/admin/users',
   h(async (_req, res) => {
-    const rows = getDb().select().from(users).orderBy(sql`id`).all();
+    const rows = await getDb().select().from(users).orderBy(sql`id`);
     res.json({ users: rows.map(publicUserOf) });
   }),
 );
@@ -46,10 +46,10 @@ adminRouter.post(
       throw new HttpError(400, 'INVALID_USERNAME', '用户名需 3-64 位小写字母/数字/_.-');
     }
     if (password.length < 8 || password.length > 128) throw new HttpError(400, 'INVALID_PASSWORD', '密码长度需 8-128 位');
-    if (getDb().select({ id: users.id }).from(users).where(eq(users.username, username)).get()) {
+    if ((await getDb().select({ id: users.id }).from(users).where(eq(users.username, username)))[0]) {
       throw new HttpError(409, 'USERNAME_TAKEN', '用户名已被占用');
     }
-    const info = getDb()
+    const [created] = await getDb()
       .insert(users)
       .values({
         kind: 'local',
@@ -59,11 +59,12 @@ adminRouter.post(
         mustChangePassword: true,
         createdAt: Date.now(),
       })
-      .run();
-    const uid = Number(info.lastInsertRowid);
-    getDb().update(users).set({ avatar: defaultAvatarForUser(uid) }).where(eq(users.id, uid)).run();
+      .returning({ id: users.id });
+    if (!created) throw new Error('Failed to create user');
+    const uid = created.id;
+    await getDb().update(users).set({ avatar: defaultAvatarForUser(uid) }).where(eq(users.id, uid));
     await writeLocalCredentials(uid, password);
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.user.created', { uid, username });
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.user.created', { uid, username });
     res.json({ ok: true, id: uid, initialPassword: password });
   }),
 );
@@ -72,7 +73,7 @@ adminRouter.put(
   '/admin/users/:id',
   h(async (req, res) => {
     const uid = Number(req.params.id);
-    const target = getDb().select().from(users).where(eq(users.id, uid)).get();
+    const target = (await getDb().select().from(users).where(eq(users.id, uid)))[0];
     if (!target) throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
     const body = (req.body ?? {}) as { status?: string; role?: string };
 
@@ -82,12 +83,12 @@ adminRouter.put(
       if (!role) throw new HttpError(400, 'INVALID_ROLE', '角色必须是 admin/user');
       if (uid === req.user!.id) throw new HttpError(400, 'CANNOT_MODIFY_SELF_ROLE', '不能修改自己的角色（防自锁）');
       if (target.role === 'admin' && role === 'user') {
-        const admins = getDb().select({ n: sql<number>`count(*)` }).from(users).where(eq(users.role, 'admin')).get()?.n ?? 0;
+        const admins = Number((await getDb().select({ n: sql<number>`count(*)` }).from(users).where(eq(users.role, 'admin')))[0]?.n ?? 0);
         if (admins <= 1) throw new HttpError(409, 'LAST_ADMIN', '至少保留一名管理员');
       }
-      getDb().update(users).set({ role }).where(eq(users.id, uid)).run();
+      await getDb().update(users).set({ role }).where(eq(users.id, uid));
       // 角色每请求随会话装载读取，变更即时生效，无需踢会话
-      audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.user.role', { uid, role });
+      await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.user.role', { uid, role });
     }
 
     if (body.status !== undefined) {
@@ -95,15 +96,15 @@ adminRouter.put(
         throw new HttpError(400, 'INVALID_STATUS', '状态必须是 active/disabled');
       }
       if (body.status === 'active' && target.status === 'pending_approval') {
-        audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.user.approved', { userId: uid });
+        await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.user.approved', { userId: uid });
       }
       // 防自锁：不能禁用自己（参考实现 H 项）
       if (uid === req.user!.id) throw new HttpError(400, 'CANNOT_DISABLE_SELF', '不能禁用自己的账号');
-      getDb().update(users).set({ status: body.status }).where(eq(users.id, uid)).run();
+      await getDb().update(users).set({ status: body.status }).where(eq(users.id, uid));
       if (body.status === 'disabled') {
-        getDb().delete(sessions).where(eq(sessions.userId, uid)).run(); // 禁用即踢下线
+        await getDb().delete(sessions).where(eq(sessions.userId, uid)); // 禁用即踢下线
       }
-      audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.user.status', { uid, status: body.status });
+      await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.user.status', { uid, status: body.status });
     }
     res.json({ ok: true });
   }),
@@ -113,16 +114,16 @@ adminRouter.post(
   '/admin/users/:id/reset-password',
   h(async (req, res) => {
     const uid = Number(req.params.id);
-    const target = getDb().select().from(users).where(eq(users.id, uid)).get();
+    const target = (await getDb().select().from(users).where(eq(users.id, uid)))[0];
     if (!target) throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
     const body = (req.body ?? {}) as { password?: string };
     const password = String(body.password ?? '') || generatePassword(12);
     if (password.length < 8 || password.length > 128) throw new HttpError(400, 'INVALID_PASSWORD', '密码长度需 8-128 位');
     // upsert：OIDC 用户没有本地凭据行，直接 UPDATE 会静默无效（下发的密码登录不上）
     await writeLocalCredentials(uid, password);
-    getDb().update(users).set({ mustChangePassword: true }).where(eq(users.id, uid)).run();
-    getDb().delete(sessions).where(eq(sessions.userId, uid)).run(); // 重置即全端踢下线
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.user.password_reset', { uid });
+    await getDb().update(users).set({ mustChangePassword: true }).where(eq(users.id, uid));
+    await getDb().delete(sessions).where(eq(sessions.userId, uid)); // 重置即全端踢下线
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.user.password_reset', { uid });
     res.json({ ok: true, password });
   }),
 );
@@ -132,10 +133,10 @@ adminRouter.delete(
   h(async (req, res) => {
     const uid = Number(req.params.id);
     if (uid === req.user!.id) throw new HttpError(400, 'CANNOT_DELETE_SELF', '不能删除自己的账号');
-    const target = getDb().select().from(users).where(eq(users.id, uid)).get();
+    const target = (await getDb().select().from(users).where(eq(users.id, uid)))[0];
     if (!target) throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
-    getDb().delete(users).where(eq(users.id, uid)).run();
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.user.deleted', { uid });
+    await getDb().delete(users).where(eq(users.id, uid));
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.user.deleted', { uid });
     res.json({ ok: true });
   }),
 );
@@ -146,7 +147,7 @@ adminRouter.get(
   '/admin/settings',
   h(async (_req, res) => {
     res.json({
-      settings: listSettingsForAdmin().map((s) => ({
+      settings: (await listSettingsForAdmin()).map((s) => ({
         key: s.key,
         value: s.value,
         label: s.def.label,
@@ -169,18 +170,20 @@ adminRouter.put(
   h(async (req, res) => {
     const body = (req.body ?? {}) as Record<string, string>;
     const keys = Object.keys(body);
-    const registrationMode = body.REGISTRATION_MODE ?? getSetting('REGISTRATION_MODE') ?? 'closed';
-    if (registrationMode === 'open' && !listPlans(true).some((plan) => plan.priceFen === 0)) {
-      throw new HttpError(409, 'FREE_PLAN_REQUIRED', '开放注册前请先创建并启用至少一个零价权益包');
-    }
     for (const key of keys) {
       if (!SETTING_DEFS[key]) throw new HttpError(400, 'UNKNOWN_SETTING', `未知配置项: ${key}`);
-      updateSettingFromAdmin(key, String(body[key] ?? ''));
+      if (key === 'REGISTRATION_POINTS_GIFT') {
+        const points = Number(body[key]);
+        if (!Number.isSafeInteger(points) || points < 0 || points > 2_147_483_647) {
+          throw new HttpError(400, 'INVALID_SETTING', '注册赠送积分必须是 0 到 2147483647 之间的整数');
+        }
+      }
+      await updateSettingFromAdmin(key, String(body[key] ?? ''));
     }
     // 轮换身份签名密钥后，passUser 沙箱 env 里还是旧密钥（spawn 时定格）：
     // 全部停掉，下次访问以新密钥重新拉起
     if (keys.includes('AAP_SIGN_SECRET')) stopAllPersistent();
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'config.update', { keys });
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'config.update', { keys });
     res.json({ ok: true });
   }),
 );
@@ -190,7 +193,7 @@ adminRouter.post(
   '/admin/mail/test',
   h(async (req, res) => {
     const body = (req.body ?? {}) as { to?: string };
-    const me = getDb().select().from(users).where(eq(users.id, req.user!.id)).get();
+    const me = (await getDb().select().from(users).where(eq(users.id, req.user!.id)))[0];
     const to = String(body.to ?? '').trim() || me?.email || getSetting('SMTP_FROM') || getSetting('RESEND_FROM') || '';
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
       throw new HttpError(400, 'NO_RECIPIENT', '没有可用收件邮箱：请填写收件地址，或先给管理员账号绑定邮箱');
@@ -199,7 +202,7 @@ adminRouter.post(
       throw new HttpError(400, 'MAIL_NOT_CONFIGURED', '尚未配置发信通道（当前为日志兜底模式：验证码会打印到服务端日志）');
     }
     await getEmailChannel().send(to, '123456', 'bind');
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.mail.test', { to });
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.mail.test', { to });
     res.json({ ok: true, to });
   }),
 );
@@ -209,7 +212,7 @@ adminRouter.post(
 adminRouter.get(
   '/admin/groups',
   h(async (_req, res) => {
-    res.json({ groups: listGroups() });
+    res.json({ groups: await listGroups() });
   }),
 );
 
@@ -218,8 +221,8 @@ adminRouter.post(
   h(async (req, res) => {
     const body = (req.body ?? {}) as { name?: string; note?: string };
     if (!body.name?.trim()) throw new HttpError(400, 'INVALID_NAME', '分组名称必填');
-    const id = createGroup(body.name, body.note ?? '');
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.group.create', { id, name: body.name });
+    const id = await createGroup(body.name, body.note ?? '');
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.group.create', { id, name: body.name });
     res.json({ ok: true, id });
   }),
 );
@@ -228,9 +231,9 @@ adminRouter.put(
   '/admin/groups/:id',
   h(async (req, res) => {
     const body = (req.body ?? {}) as { name?: string; note?: string; memberIds?: number[] };
-    updateGroup(Number(req.params.id), body);
-    if (body.memberIds !== undefined) setGroupMembers(Number(req.params.id), body.memberIds);
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.group.update', { id: Number(req.params.id) });
+    await updateGroup(Number(req.params.id), body);
+    if (body.memberIds !== undefined) await setGroupMembers(Number(req.params.id), body.memberIds);
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.group.update', { id: Number(req.params.id) });
     res.json({ ok: true });
   }),
 );
@@ -238,8 +241,8 @@ adminRouter.put(
 adminRouter.delete(
   '/admin/groups/:id',
   h(async (req, res) => {
-    deleteGroup(Number(req.params.id));
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.group.delete', { id: Number(req.params.id) });
+    await deleteGroup(Number(req.params.id));
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.group.delete', { id: Number(req.params.id) });
     res.json({ ok: true });
   }),
 );
@@ -247,7 +250,7 @@ adminRouter.delete(
 adminRouter.get(
   '/admin/groups/:id/members',
   h(async (req, res) => {
-    res.json({ memberIds: groupMemberIds(Number(req.params.id)) });
+    res.json({ memberIds: await groupMemberIds(Number(req.params.id)) });
   }),
 );
 
@@ -260,7 +263,7 @@ adminRouter.get(
     if (!def || !def.secret) throw new HttpError(404, 'NOT_SECRET', '配置项不存在或不是密钥');
     const value = getSetting(key);
     if (!value) throw new HttpError(404, 'NOT_SET', '该密钥尚未生成');
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'config.secret.revealed', { key });
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'config.secret.revealed', { key });
     res.json({ key, value });
   }),
 );
@@ -271,9 +274,18 @@ adminRouter.get(
   '/admin/audit',
   h(async (req, res) => {
     const limit = Math.min(500, Math.max(1, Number(req.query.limit ?? 100) || 100));
-    const rows = getSqlite()
-      .prepare('SELECT id, ts, actor, ip, action, detail FROM audit_logs ORDER BY id DESC LIMIT ?')
-      .all(limit) as Array<{ id: number; ts: number; actor: string; ip: string | null; action: string; detail: string | null }>;
+    const rows = await getDb()
+      .select({
+        id: auditLogs.id,
+        ts: auditLogs.ts,
+        actor: auditLogs.actor,
+        ip: auditLogs.ip,
+        action: auditLogs.action,
+        detail: auditLogs.detail,
+      })
+      .from(auditLogs)
+      .orderBy(sql`id DESC`)
+      .limit(limit);
     res.json({
       logs: rows.map((r) => ({
         ...r,
@@ -288,7 +300,7 @@ adminRouter.get(
 adminRouter.get(
   '/admin/invites',
   h(async (_req, res) => {
-    const rows = getDb().select().from(inviteCodes).orderBy(sql`created_at DESC`).limit(100).all();
+    const rows = await getDb().select().from(inviteCodes).orderBy(sql`created_at DESC`).limit(100);
     res.json({ invites: rows });
   }),
 );
@@ -301,66 +313,15 @@ adminRouter.post(
     const codes: string[] = [];
     for (let i = 0; i < count; i++) {
       const code = randomBytes(4).toString('hex').toUpperCase().replace(/(.{4})/, '$1-');
-      getDb()
+      await getDb()
         .insert(inviteCodes)
-        .values({ code, createdBy: req.user!.id, note: body.note ?? null, createdAt: Date.now() })
-        .run();
+        .values({ code, createdBy: req.user!.id, note: body.note ?? null, createdAt: Date.now() });
       codes.push(code);
     }
-    audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.invites.created', { count });
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.invites.created', { count });
     res.json({ codes });
   }),
 );
-
-// ---------- 包签名信任公钥（G4，Ed25519 信任链） ----------
-
-adminRouter.get('/admin/signing-keys', h(async (_req, res) => {
-  const keys = getDb().select().from(trustedSigningKeys).orderBy(sql`id`).all();
-  res.json({ keys });
-}));
-
-adminRouter.post('/admin/signing-keys', h(async (req, res) => {
-  const body = (req.body ?? {}) as { name?: string; publicKey?: string };
-  let raw: Buffer;
-  try {
-    raw = Buffer.from(String(body.publicKey ?? ''), 'base64');
-  } catch {
-    throw new HttpError(400, 'INVALID_KEY', '公钥不是合法 base64');
-  }
-  if (raw.length !== 32) throw new HttpError(400, 'INVALID_KEY', 'Ed25519 公钥必须是 32 字节（base64）');
-  const keyId = 'SHA256:' + createHash('sha256').update(raw).digest('hex').slice(0, 16);
-  const dup = getDb()
-    .select({ id: trustedSigningKeys.id })
-    .from(trustedSigningKeys)
-    .where(eq(trustedSigningKeys.keyId, keyId))
-    .get();
-  if (dup) throw new HttpError(409, 'KEY_EXISTS', '该公钥已在信任列表');
-  const info = getDb()
-    .insert(trustedSigningKeys)
-    .values({
-      keyId,
-      name: String(body.name ?? '').trim().slice(0, 64),
-      publicKey: raw.toString('base64'),
-      builtin: false,
-      createdAt: Date.now(),
-    })
-    .run();
-  audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'signing_key.trusted', { keyId, name: body.name });
-  res.json({ ok: true, id: Number(info.lastInsertRowid), keyId });
-}));
-
-adminRouter.delete('/admin/signing-keys/:id', h(async (req, res) => {
-  const row = getDb()
-    .select()
-    .from(trustedSigningKeys)
-    .where(eq(trustedSigningKeys.id, Number(req.params.id)))
-    .get();
-  if (!row) throw new HttpError(404, 'KEY_NOT_FOUND', '公钥不存在');
-  if (row.builtin) throw new HttpError(400, 'BUILTIN_KEY', '内置信任公钥不可删除（可通过移除 AAP_OFFICIAL_SIGN_PUBKEY 环境变量并重建数据）');
-  getDb().delete(trustedSigningKeys).where(eq(trustedSigningKeys.id, row.id)).run();
-  audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'signing_key.removed', { keyId: row.keyId });
-  res.json({ ok: true });
-}));
 
 // ---------- 首配向导总览（E2-② checklist 状态自动检测） ----------
 
@@ -368,25 +329,23 @@ adminRouter.get(
   '/admin/overview',
   h(async (req, res) => {
     const uid = req.user!.id;
-    const me = getDb().select().from(users).where(eq(users.id, uid)).get();
-    const admins = getDb().select().from(users).where(and(eq(users.role, 'admin'), eq(users.mustChangePassword, false))).all();
-    const appCount = getDb().select({ n: sql<number>`count(*)` }).from(apps).get()?.n ?? 0;
-    const liveSessions = getDb()
+    const me = (await getDb().select().from(users).where(eq(users.id, uid)))[0];
+    const admins = await getDb().select().from(users).where(and(eq(users.role, 'admin'), eq(users.mustChangePassword, false)));
+    const appCount = Number((await getDb().select({ n: sql<number>`count(*)` }).from(apps))[0]?.n ?? 0);
+    const liveSessions = Number((await getDb()
       .select({ n: sql<number>`count(*)` })
       .from(sessions)
-      .where(gt(sessions.expiresAt, Date.now()))
-      .get()?.n ?? 0;
+      .where(gt(sessions.expiresAt, Date.now())))[0]?.n ?? 0);
     const recoveryUnused = me
-      ? getDb()
+      ? Number((await getDb()
           .select({ n: sql<number>`count(*)` })
           .from(inviteCodes)
-          .where(isNull(inviteCodes.usedBy))
-          .get()?.n ?? 0
+          .where(isNull(inviteCodes.usedBy)))[0]?.n ?? 0)
       : 0;
     void recoveryUnused;
 
     res.json({
-      version: getSqlite().prepare('SELECT 1').get() ? 'ok' : 'db-down',
+      version: 'ok',
       // 服务版本与运行时长仅管理员可见（匿名 /api/health 已收敛为仅 ok）
       releaseVersion: AAP_VERSION,
       uptimeSec: Math.round(process.uptime()),
@@ -397,7 +356,7 @@ adminRouter.get(
         httpsEnabled: tlsStatus().httpsEnabled,
         certDaysRemaining: tlsStatus().cert?.daysRemaining ?? null,
         registrationMode: getSetting('REGISTRATION_MODE') ?? 'closed',
-        freePlanConfigured: listPlans(true).some((plan) => plan.priceFen === 0),
+        freePlanConfigured: await (await listPlans(true)).some(isFreePlan),
         appCount,
       },
       liveSessions,

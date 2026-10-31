@@ -57,12 +57,17 @@ export interface SessionInfo {
 
 // ---------- 用户权益 ----------
 
+export type MembershipPriceCurrency = 'CNY' | 'USD' | 'POINTS';
+
 export interface MembershipPlanSummary {
   id: number;
   name: string;
   groupName: string;
   durationDays: number;
+  priceCurrency: MembershipPriceCurrency;
   priceFen: number;
+  priceCents: number;
+  pricePoints: number;
   tokenGrant: number;
   tier: number;
   publicAppLimit: number;
@@ -74,7 +79,9 @@ export interface MembershipOrderSummary {
   kind: 'tokens' | 'membership';
   planId: number | null;
   tokens: number | null;
+  priceCurrency: 'CNY' | 'USD';
   priceFen: number;
+  priceCents: number;
   status: 'pending' | 'paid' | 'cancelled';
   createdAt: number;
 }
@@ -90,6 +97,7 @@ export interface UserMembershipData {
     remainingPublicApps: number;
   } | null;
   tokenBalance: number;
+  pointsBalance: number;
   plans: MembershipPlanSummary[];
   orders: MembershipOrderSummary[];
 }

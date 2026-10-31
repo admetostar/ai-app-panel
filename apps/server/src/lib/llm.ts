@@ -6,7 +6,7 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
-import { getDb } from '../db/index.js';
+import { getDb, type DbExecutor } from '../db/index.js';
 import { llmAppTokens, llmBalanceCache, llmLedger, llmRoutes, llmUpstreams, apps } from '../db/schema.js';
 import { decryptSecret, encryptSecret } from './cryptoSecrets.js';
 import { HttpError } from './httpError.js';
@@ -35,15 +35,15 @@ export interface AppTokenRow {
   lastUsedAt: number | null;
 }
 
-export function createAppToken(
+export async function createAppToken(
   appId: string,
   name: string,
   perMinuteLimit: number | null,
   opts?: { auto?: boolean },
-): string {
+): Promise<string> {
   const token = `aapk_${randomBytes(24).toString('base64url')}`;
   const auto = opts?.auto === true;
-  getDb()
+  await getDb()
     .insert(llmAppTokens)
     .values({
       tokenHash: hashToken(token),
@@ -54,18 +54,16 @@ export function createAppToken(
       // 自动签发的凭据：明文加密保管，供运行时（M4 沙箱）按 appId 注入，不再人工下发
       tokenEnc: auto ? encryptSecret(token) : null,
       createdAt: Date.now(),
-    })
-    .run();
+    });
   return token;
 }
 
 /** 已为应用自动签发的网关凭据（解密明文）；无则 null。M4 运行时启动注入用 */
-export function getAppLlmProvision(appId: string): { token: string; perMinuteLimit: number | null } | null {
-  const row = getDb()
+export async function getAppLlmProvision(appId: string): Promise<{ token: string; perMinuteLimit: number | null } | null> {
+  const row = (await getDb()
     .select()
     .from(llmAppTokens)
-    .where(and(eq(llmAppTokens.appId, appId), eq(llmAppTokens.auto, true), eq(llmAppTokens.enabled, true)))
-    .get();
+    .where(and(eq(llmAppTokens.appId, appId), eq(llmAppTokens.auto, true), eq(llmAppTokens.enabled, true))))[0];
   if (!row?.tokenEnc) return null;
   try {
     return { token: decryptSecret(row.tokenEnc), perMinuteLimit: row.perMinuteLimit };
@@ -81,12 +79,11 @@ export function getAppLlmProvision(appId: string): { token: string; perMinuteLim
  * llm 才放行。无 manifestJson 的应用（管理员手建 HTML/反代应用 + 手动凭据）
  * 无声明面，沿用旧行为放行；应用删除时凭据在删除路由连带吊销（app.delete）。
  */
-export function appLlmAllowed(appId: string): boolean {
-  const row = getDb()
+export async function appLlmAllowed(appId: string): Promise<boolean> {
+  const row = (await getDb()
     .select({ manifestJson: apps.manifestJson })
     .from(apps)
-    .where(eq(apps.id, appId))
-    .get();
+    .where(eq(apps.id, appId)))[0];
   // 应用行不存在：管理员手动签发的虚拟凭据（外部集成等用途，appId 可不对应
   // 已上传应用）沿用旧行为放行；已删除应用的凭据随删除路由连带吊销，不会走到这
   if (!row) return true;
@@ -102,34 +99,32 @@ export function appLlmAllowed(appId: string): boolean {
 /** 自动签发运行时凭据（幂等；重复上传复用）。对全部包签发（AAP_TOKEN 同时
  *  是 egress 凭据），LLM 花费面由 appLlmAllowed 在网关侧闸——签发广度与
  *  能力闸门解耦，勿以「未声明 llm 就不签发」来修（会断非 llm 包的出站代理）。 */
-export function ensureAutoProvisionedToken(appId: string): void {
-  const existing = getDb()
+export async function ensureAutoProvisionedToken(appId: string): Promise<void> {
+  const existing = (await getDb()
     .select()
     .from(llmAppTokens)
-    .where(and(eq(llmAppTokens.appId, appId), eq(llmAppTokens.auto, true)))
-    .get();
+    .where(and(eq(llmAppTokens.appId, appId), eq(llmAppTokens.auto, true))))[0];
   if (existing && existing.enabled) return;
-  createAppToken(appId, '自动签发（manifest llm）', null, { auto: true });
+  await createAppToken(appId, '自动签发（manifest llm）', null, { auto: true });
 }
 
 /** Bearer token → 凭据行；未命中/已吊销 → null */
-export function resolveAppToken(bearer: string | undefined | null): AppTokenRow | null {
+export async function resolveAppToken(bearer: string | undefined | null): Promise<AppTokenRow | null> {
   if (!bearer) return null;
-  const row = getDb()
+  const row = (await getDb()
     .select()
     .from(llmAppTokens)
-    .where(eq(llmAppTokens.tokenHash, hashToken(bearer)))
-    .get();
+    .where(eq(llmAppTokens.tokenHash, hashToken(bearer))))[0];
   if (!row || !row.enabled) return null;
   return row;
 }
 
-export function listAppTokens(): Array<AppTokenRow & { id: number }> {
-  return getDb().select().from(llmAppTokens).orderBy(sql`id DESC`).all();
+export async function listAppTokens(): Promise<Array<AppTokenRow & { id: number }>> {
+  return await getDb().select().from(llmAppTokens).orderBy(sql`id DESC`);
 }
 
-export function revokeAppToken(id: number): void {
-  getDb().delete(llmAppTokens).where(eq(llmAppTokens.id, id)).run();
+export async function revokeAppToken(id: number): Promise<void> {
+  await getDb().delete(llmAppTokens).where(eq(llmAppTokens.id, id));
 }
 
 // ---------- 上游与模型目录（C3） ----------
@@ -142,7 +137,7 @@ export interface UpstreamRow {
   createdAt: number;
 }
 
-export function createUpstream(name: string, baseUrl: string, apiKey: string): number {
+export async function createUpstream(name: string, baseUrl: string, apiKey: string): Promise<number> {
   let url: URL;
   try {
     url = new URL(baseUrl);
@@ -152,36 +147,36 @@ export function createUpstream(name: string, baseUrl: string, apiKey: string): n
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new HttpError(400, 'INVALID_BASE_URL', '上游协议必须是 http/https');
   }
-  const info = getDb()
+  const [created] = await getDb()
     .insert(llmUpstreams)
     .values({ name, baseUrl, apiKeyEnc: encryptSecret(apiKey), createdAt: Date.now() })
-    .run();
-  return Number(info.lastInsertRowid);
+    .returning({ id: llmUpstreams.id });
+  if (!created) throw new Error('Failed to create LLM upstream');
+  return created.id;
 }
 
-export function listUpstreams(): Array<UpstreamRow & { hasKey: boolean }> {
-  return getDb()
+export async function listUpstreams(): Promise<Array<UpstreamRow & { hasKey: boolean }>> {
+  const rows = await getDb()
     .select()
-    .from(llmUpstreams)
-    .all()
-    .map((u) => ({ id: u.id, name: u.name, baseUrl: u.baseUrl, enabled: u.enabled, createdAt: u.createdAt, hasKey: Boolean(u.apiKeyEnc) }));
+    .from(llmUpstreams);
+  return rows.map((u) => ({ id: u.id, name: u.name, baseUrl: u.baseUrl, enabled: u.enabled, createdAt: u.createdAt, hasKey: Boolean(u.apiKeyEnc) }));
 }
 
-export function updateUpstream(id: number, patch: { name?: string; baseUrl?: string; apiKey?: string; enabled?: boolean }): void {
+export async function updateUpstream(id: number, patch: { name?: string; baseUrl?: string; apiKey?: string; enabled?: boolean }): Promise<void> {
   const set: Partial<typeof llmUpstreams.$inferInsert> = {};
   if (patch.name !== undefined) set.name = patch.name;
   if (patch.baseUrl !== undefined) set.baseUrl = patch.baseUrl;
   if (patch.apiKey) set.apiKeyEnc = encryptSecret(patch.apiKey);
   if (patch.enabled !== undefined) set.enabled = patch.enabled;
-  getDb().update(llmUpstreams).set(set).where(eq(llmUpstreams.id, id)).run();
+  await getDb().update(llmUpstreams).set(set).where(eq(llmUpstreams.id, id));
 }
 
-export function deleteUpstream(id: number): void {
-  getDb().delete(llmUpstreams).where(eq(llmUpstreams.id, id)).run();
+export async function deleteUpstream(id: number): Promise<void> {
+  await getDb().delete(llmUpstreams).where(eq(llmUpstreams.id, id));
 }
 
-function upstreamApiKey(upstreamId: number): string {
-  const row = getDb().select().from(llmUpstreams).where(eq(llmUpstreams.id, upstreamId)).get();
+async function upstreamApiKey(upstreamId: number): Promise<string> {
+  const row = (await getDb().select().from(llmUpstreams).where(eq(llmUpstreams.id, upstreamId)))[0];
   if (!row) throw new HttpError(502, 'UPSTREAM_GONE', '上游已删除');
   return decryptSecret(row.apiKeyEnc);
 }
@@ -197,12 +192,12 @@ export interface RouteRow {
   enabled: boolean;
 }
 
-export function listRoutes(): RouteRow[] {
-  return getDb().select().from(llmRoutes).all();
+export async function listRoutes(): Promise<RouteRow[]> {
+  return await getDb().select().from(llmRoutes);
 }
 
-export function createRoute(r: { model: string; upstreamId: number; upstreamModel: string; multiplier?: number; priority?: number; weight?: number }): void {
-  getDb()
+export async function createRoute(r: { model: string; upstreamId: number; upstreamModel: string; multiplier?: number; priority?: number; weight?: number }): Promise<void> {
+  await getDb()
     .insert(llmRoutes)
     .values({
       model: r.model.trim(),
@@ -212,39 +207,37 @@ export function createRoute(r: { model: string; upstreamId: number; upstreamMode
       priority: r.priority ?? 100,
       weight: r.weight ?? 100,
       createdAt: Date.now(),
-    })
-    .run();
+    });
 }
 
-export function deleteRoute(id: number): void {
-  getDb().delete(llmRoutes).where(eq(llmRoutes.id, id)).run();
+export async function deleteRoute(id: number): Promise<void> {
+  await getDb().delete(llmRoutes).where(eq(llmRoutes.id, id));
 }
 
 /** aap.llm.chat 的平台默认模型（规范 §3.1「不填用平台默认」）：
  *  显式设置 LLM_DEFAULT_MODEL 优先，否则模型目录排序第一个；目录为空返回 null */
-export function resolveDefaultModel(): string | null {
+export async function resolveDefaultModel(): Promise<string | null> {
   const configured = (getSetting('LLM_DEFAULT_MODEL') ?? '').trim();
   if (configured) return configured;
-  return modelCatalog()[0] ?? null;
+  return (await modelCatalog())[0] ?? null;
 }
 
 /** 聚合模型目录（C1 /v1/models 数据源） */
-export function modelCatalog(): string[] {
+export async function modelCatalog(): Promise<string[]> {
+  const rows = await getDb()
+    .select({ m: llmRoutes.model })
+    .from(llmRoutes)
+    .where(eq(llmRoutes.enabled, true));
   return [
     ...new Set(
-      getDb()
-        .select({ m: llmRoutes.model })
-        .from(llmRoutes)
-        .where(eq(llmRoutes.enabled, true))
-        .all()
-        .map((r) => r.m),
+      rows.map((r) => r.m),
     ),
   ].sort();
 }
 
 /** 按模型解析 failover 候选：priority 升序，同优先级按 weight 加权随机 */
-export function resolveRouteCandidates(model: string): Array<{ upstreamId: number; upstreamModel: string; multiplier: number; upstreamBaseUrl: string; apiKey: string }> {
-  const rows = getDb()
+export async function resolveRouteCandidates(model: string): Promise<Array<{ upstreamId: number; upstreamModel: string; multiplier: number; upstreamBaseUrl: string; apiKey: string }>> {
+  const rows = await getDb()
     .select({
       id: llmRoutes.id,
       model: llmRoutes.model,
@@ -258,8 +251,7 @@ export function resolveRouteCandidates(model: string): Array<{ upstreamId: numbe
     })
     .from(llmRoutes)
     .innerJoin(llmUpstreams, eq(llmRoutes.upstreamId, llmUpstreams.id))
-    .where(and(eq(llmRoutes.model, model), eq(llmRoutes.enabled, true)))
-    .all();
+    .where(and(eq(llmRoutes.model, model), eq(llmRoutes.enabled, true)));
 
   const live = rows.filter((r) => r.upstreamEnabled);
   if (live.length === 0) return [];
@@ -289,7 +281,7 @@ export function resolveRouteCandidates(model: string): Array<{ upstreamId: numbe
       upstreamModel: chosen.upstreamModel,
       multiplier: chosen.multiplier,
       upstreamBaseUrl: chosen.baseUrl,
-      apiKey: upstreamApiKey(chosen.upstreamId),
+      apiKey: await upstreamApiKey(chosen.upstreamId),
     });
   }
   return candidates;
@@ -298,8 +290,8 @@ export function resolveRouteCandidates(model: string): Array<{ upstreamId: numbe
 // ---------- 计量与预检（C5/C6） ----------
 
 /** 余额缓存读数（无行 = 未初始化，由结算重算） */
-export function cachedBalance(userId: number): number | null {
-  const row = getDb().select().from(llmBalanceCache).where(eq(llmBalanceCache.userId, userId)).get();
+export async function cachedBalance(userId: number): Promise<number | null> {
+  const row = (await getDb().select().from(llmBalanceCache).where(eq(llmBalanceCache.userId, userId)))[0];
   return row ? row.balance : null;
 }
 
@@ -323,18 +315,16 @@ export function hasInFlightRequests(userId: number): boolean {
 
 /** 从账本重算余额并写缓存（结算语义：读流水算余额；供事件失效与定时校正调用）。
  *  在途预估成本不在账本，重算时补减，避免对账/查账抹掉预检扣减。 */
-export function recomputeBalance(userId: number): number {
-  const row = getDb()
+export async function recomputeBalance(userId: number, executor: DbExecutor = getDb()): Promise<number> {
+  const row = (await executor
     .select({ sum: sql<number>`coalesce(sum(delta), 0)` })
     .from(llmLedger)
-    .where(eq(llmLedger.userId, userId))
-    .get();
+    .where(eq(llmLedger.userId, userId)))[0];
   const balance = Number(row?.sum ?? 0) - (inFlightEstimate.get(userId) ?? 0);
-  getDb()
+  await executor
     .insert(llmBalanceCache)
     .values({ userId, balance, updatedAt: Date.now() })
-    .onConflictDoUpdate({ target: llmBalanceCache.userId, set: { balance, updatedAt: Date.now() } })
-    .run();
+    .onConflictDoUpdate({ target: llmBalanceCache.userId, set: { balance, updatedAt: Date.now() } });
   return balance;
 }
 
@@ -353,8 +343,8 @@ export interface LedgerAppend {
   note?: string | null;
 }
 
-export function appendLedger(e: LedgerAppend): number {
-  const info = getDb()
+export async function appendLedger(e: LedgerAppend, executor: DbExecutor = getDb()): Promise<number> {
+  const [created] = await executor
     .insert(llmLedger)
     .values({
       ts: Date.now(),
@@ -370,27 +360,28 @@ export function appendLedger(e: LedgerAppend): number {
       requestId: e.requestId ?? null,
       note: e.note ?? null,
     })
-    .run();
-  return Number(info.lastInsertRowid);
+    .returning({ id: llmLedger.id });
+  if (!created) throw new Error('Failed to append LLM ledger entry');
+  return created.id;
 }
 
 /** 管理员调额/发放（写账本 + 失效缓存——缓存同步三触发之一） */
-export function grantTokens(userId: number, delta: number, note: string, byUserId: number): number {
-  const id = appendLedger({ kind: delta >= 0 ? 'grant' : 'adjust', delta, userId, note, status: 'ok' });
-  recomputeBalance(userId);
-  auditGrant(userId, delta, note, byUserId);
+export async function grantTokens(userId: number, delta: number, note: string, byUserId: number, executor: DbExecutor = getDb()): Promise<number> {
+  const id = await appendLedger({ kind: delta >= 0 ? 'grant' : 'adjust', delta, userId, note, status: 'ok' }, executor);
+  await recomputeBalance(userId, executor);
+  await auditGrant(userId, delta, note, byUserId);
   return id;
 }
 
 import { audit } from './audit.js';
-function auditGrant(userId: number, delta: number, note: string, by: number): void {
-  audit(`admin:${by}`, null, 'llm.balance.adjust', { userId, delta, note });
+async function auditGrant(userId: number, delta: number, note: string, by: number): Promise<void> {
+  await audit(`admin:${by}`, null, 'llm.balance.adjust', { userId, delta, note });
 }
 
 /** 预检闸门（C6）：原子递减预估成本；余额不足 → 402，请求不出网关。
  *  无用户归因（userId=null）默认拒绝（403）：否则任何持 app token 者可绕过
  *  全部余额闸门免费调用（已实测利用路径）；可信内网应用可由管理员切 'allow'。 */
-export function precheck(userId: number | null, estimatedCost: number): void {
+export async function precheck(userId: number | null, estimatedCost: number): Promise<void> {
   if (userId === null) {
     if (getSetting('LLM_UNATTRIBUTED_POLICY') !== 'allow') {
       throw new HttpError(403, 'ATTRIBUTION_REQUIRED', '该调用未携带用户身份归因（X-AAP-Identity），网关拒绝无归因请求；如确需应用级匿名调用，请在计费设置中调整');
@@ -398,20 +389,20 @@ export function precheck(userId: number | null, estimatedCost: number): void {
     return;
   }
   const db = getDb();
-  const row = db.select().from(llmBalanceCache).where(eq(llmBalanceCache.userId, userId)).get();
+  const row = (await db.select().from(llmBalanceCache).where(eq(llmBalanceCache.userId, userId)))[0];
   if (!row) {
     // 缓存未初始化：先按流水重算建行（避免首请求误拒），随后与其他请求
     // 走同一条条件递减路径（首请求同样占用预估）
-    recomputeBalance(userId);
+    await recomputeBalance(userId);
   }
   // 原子条件递减：balance >= est 才扣
-  const res = db
+  const res = await db
     .update(llmBalanceCache)
     .set({ balance: sql`balance - ${estimatedCost}`, updatedAt: Date.now() })
     .where(and(eq(llmBalanceCache.userId, userId), sql`balance >= ${estimatedCost}`))
-    .run();
-  if (res.changes === 0) {
-    throw insufficient(cachedBalance(userId) ?? 0);
+    .returning({ userId: llmBalanceCache.userId });
+  if (res.length === 0) {
+    throw insufficient(await cachedBalance(userId) ?? 0);
   }
   addInFlightEstimate(userId, estimatedCost);
 }
@@ -424,16 +415,15 @@ function insufficient(balance: number): HttpError {
 
 /** 事后校正：实际扣费与预估的差值补回/补扣（不动账本——账本只记实际用量）；
  *  同时释放在途预估占用。 */
-export function settleEstimate(userId: number | null, estimatedCost: number, actualCost: number): void {
+export async function settleEstimate(userId: number | null, estimatedCost: number, actualCost: number): Promise<void> {
   if (userId === null) return;
   releaseInFlightEstimate(userId, estimatedCost);
   const diff = estimatedCost - actualCost;
   if (diff === 0) return;
-  getDb()
+  await getDb()
     .update(llmBalanceCache)
     .set({ balance: sql`balance + ${diff}`, updatedAt: Date.now() })
-    .where(eq(llmBalanceCache.userId, userId))
-    .run();
+    .where(eq(llmBalanceCache.userId, userId));
 }
 
 /** 事件总线：缓存失效三触发（扣款欠费/充值到账/手动调额）统一走这里 */
@@ -442,13 +432,13 @@ const listeners = new Set<BalanceListener>();
 export function onBalanceInvalidate(fn: BalanceListener): void {
   listeners.add(fn);
 }
-export function invalidateBalance(userId: number): void {
-  recomputeBalance(userId);
+export async function invalidateBalance(userId: number): Promise<void> {
+  await recomputeBalance(userId);
   for (const fn of listeners) fn(userId);
 }
 
 /** 用量入账（请求完成后调用；实际用量落账本） */
-export function recordUsage(e: {
+export async function recordUsage(e: {
   userId: number | null;
   appId: string;
   model: string;
@@ -458,9 +448,9 @@ export function recordUsage(e: {
   latencyMs: number;
   status: 'ok' | 'error';
   requestId: string;
-}): number {
+}): Promise<number> {
   const cost = Math.ceil(((e.promptTokens + e.completionTokens) * e.multiplier) / 100);
-  const id = appendLedger({
+  const id = await appendLedger({
     kind: 'usage',
     delta: -cost,
     userId: e.userId,
@@ -474,8 +464,8 @@ export function recordUsage(e: {
   });
   if (e.userId !== null) {
     // 实际扣费与缓存的校正走 settleEstimate；这里触发一次余额缓存事件（持久化视角刷新）
-    const row = getDb().select().from(llmBalanceCache).where(eq(llmBalanceCache.userId, e.userId)).get();
-    if (!row) recomputeBalance(e.userId);
+    const row = (await getDb().select().from(llmBalanceCache).where(eq(llmBalanceCache.userId, e.userId)))[0];
+    if (!row) await recomputeBalance(e.userId);
   }
   return cost;
 }

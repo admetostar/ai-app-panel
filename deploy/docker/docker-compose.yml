@@ -1,10 +1,27 @@
 ﻿# AI超级面板 — Docker Compose
 # 用法：cd deploy/docker && docker compose up -d
-# 数据在 ../data（SQLite、证书、密钥）；首次启动看日志获取初始管理员密码：
+# PostgreSQL 数据库与 ../data（证书、密钥）独立持久化；首次启动看日志获取初始管理员密码：
 #   docker compose logs | grep -A4 "初始管理员凭据"
 name: ai-superpanel
 
 services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: ai-superpanel-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ai_app_portal}
+      POSTGRES_USER: ${POSTGRES_USER:-aap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in deploy/docker/.env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   portal:
     build:
       context: ../..
@@ -14,6 +31,9 @@ services:
     image: ai-superpanel:latest
     container_name: ai-superpanel
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "80:8080"     # 业务入口（门户 + /app/<id>/ 应用网关 + ACME HTTP-01 挑战）
       - "443:8443"    # HTTPS（配置证书后启用）
@@ -25,19 +45,17 @@ services:
       # .asp-app Python 运行时入口：容器内 REPO_ROOT 推导失效（代码在 /out），
       # 必须显式指定，否则所有 Python 包执行报 runner.py 缺失
       AAP_RUNNER: "/out/aap-sdk/aap_runtime/runner.py"
-      # 官方发布者公钥预置（每次启动自动种入信任列表，builtin 不可删——
-      # 该 key 签名的 .asp-app 包上传即 verified 免审；私钥由发布者线下保管）
-      AAP_OFFICIAL_SIGN_PUBKEY: "TZxb0LoJihvn7d0c+9D6dVY3BgbhpCUAjZiWgMw7AnE="
-      AAP_OFFICIAL_SIGNER_NAME: "neon9809"
       # 沙箱降权（默认开启）：Python 包进程以预建非特权用户 aap(10001) 运行。
       # 存量部署升级时需一次性迁移数据卷属主：chown -R 10001:10001 ../data/appsites
       # （开放注册 + 允许用户上传包的部署必须启用，否则任意注册用户可读全站凭据哈希）
       SANDBOX_UID: "10001"
       SANDBOX_GID: "10001"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-aap}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_app_portal}"
+      MIGRATIONS_DIR: "/out/drizzle-pg"
       # 进一步加固（可选）：以非 root 运行主进程（注意先把数据卷属主改为 10001:10001）
       # user: "10001:10001"
       # 初始管理员密码（仅首启生效；不填则随机生成并打印到日志）
       # ADMIN_INITIAL_PASSWORD: ""
-      # 数据库（默认 SQLite；FPK/外部库场景示例）：
-      # DATABASE_URL: "mysql://user:pass@mariadb:3306/ai_app_portal"
 
+volumes:
+  postgres-data:

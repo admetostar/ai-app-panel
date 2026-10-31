@@ -24,7 +24,7 @@ const USER_HTML = '<!doctype html><html><body><h1>USERRAW-INDEX</h1><script>void
 const ADMIN_HTML = '<!doctype html><html><body><h1>ADMINRAW-INDEX</h1></body></html>';
 
 beforeAll(async () => {
-  ({ dir } = setupTestDb());
+  ({ dir } = await setupTestDb());
 
   const cfg = { ...loadConfig({}), webDist: null };
   gw = http.createServer(createApp(cfg));
@@ -33,27 +33,27 @@ beforeAll(async () => {
 
   // 管理员（id=1）与普通用户（html 包归属者，非管理员 → 触发 iframe 沙箱隔离）
   const now = Date.now();
-  getDb().insert(users).values({ kind: 'local', username: 'admin', name: '管理员', role: 'admin', createdAt: now }).run();
-  const u = getDb().insert(users).values({ kind: 'local', username: 'uploader', name: '上传者', role: 'user', createdAt: now }).run();
-  const uploaderId = Number(u.lastInsertRowid);
+  await getDb().insert(users).values({ kind: 'local', username: 'admin', name: '管理员', role: 'admin', createdAt: now });
+  const [u] = await getDb().insert(users).values({ kind: 'local', username: 'uploader', name: '上传者', role: 'user', createdAt: now }).returning({ id: users.id });
+  const uploaderId = Number(u!.id);
 
   writeHtmlApp('usrhtml', USER_HTML);
-  getDb().insert(apps).values({
+  await getDb().insert(apps).values({
     id: 'usrhtml', name: '用户HTML', visibility: 'public', upstream: '', kind: 'html',
     ownerUserId: uploaderId, createdAt: now, updatedAt: now,
-  }).run();
+  });
 
   writeHtmlApp('admhtml', ADMIN_HTML);
-  getDb().insert(apps).values({
+  await getDb().insert(apps).values({
     id: 'admhtml', name: '管理员HTML', visibility: 'public', upstream: '', kind: 'html',
     ownerUserId: 1, createdAt: now, updatedAt: now,
-  }).run();
+  });
 }, 30_000);
 
 afterAll(async () => {
   await new Promise<void>((r) => gw.close(() => r()));
-  closeDb();
-  teardownTestDb(dir);
+  await closeDb();
+  await teardownTestDb(dir);
 });
 
 describe('raw 通道浏览器侧沙箱（P0）', () => {

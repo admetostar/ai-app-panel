@@ -1,8 +1,9 @@
 import type { Request, Response } from 'express';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
 import { setupTestDb, teardownTestDb } from './testkit.js';
-import { getDb, getSqlite } from '../db/index.js';
-import { users } from '../db/schema.js';
+import { getDb } from '../db/index.js';
+import { sessions, users } from '../db/schema.js';
 import type { SessionUser } from '../types.js';
 import {
   createSession,
@@ -29,73 +30,74 @@ function stubRes(): { res: Response; cookie: () => { name: string; value: string
   return { res, cookie: () => holder.cookie };
 }
 
-function insertUser(username: string, status = 'active'): number {
-  const info = getDb()
+async function insertUser(username: string, status = 'active'): Promise<number> {
+  const [info] = await getDb()
     .insert(users)
     .values({ kind: 'local', username, name: username, role: 'user', status, createdAt: Date.now() })
-    .run();
-  return Number(info.lastInsertRowid);
+    .returning({ id: users.id });
+  return info!.id;
 }
 
-beforeAll(() => {
-  ({ dir } = setupTestDb());
+beforeAll(async () => {
+  ({ dir } = await setupTestDb());
 });
-afterAll(() => teardownTestDb(dir));
+afterAll(async () => await teardownTestDb(dir));
 
 describe('session（统一 users 表）', () => {
-  it('创建→装载→登出 全链路', () => {
-    const uid = insertUser('alice');
+  it('创建→装载→登出 全链路', async () => {
+    const uid = await insertUser('alice');
     const { res, cookie } = stubRes();
-    const token = createSession(res, { id: uid }, { ip: '1.2.3.4', userAgent: 'vitest' });
+    const token = await createSession(res, { id: uid }, { ip: '1.2.3.4', userAgent: 'vitest' });
     expect(cookie()).toMatchObject({ name: 'aap_sid' });
 
-    const u = loadSessionByToken(token);
+    const u = await loadSessionByToken(token);
     expect(u).not.toBeNull();
     expect(u!.id).toBe(uid);
     expect(u!.kind).toBe('local');
     expect(u!.subject).toBe('local:alice');
     expect(u!.authState).toBe('full');
 
-    destroySessionByToken(token);
-    expect(loadSessionByToken(token)).toBeNull();
+    await destroySessionByToken(token);
+    expect(await loadSessionByToken(token)).toBeNull();
   });
 
-  it('半登录态（password_ok）被原样装载（W4 状态机数据基础）', () => {
-    const uid = insertUser('bob');
+  it('半登录态（password_ok）被原样装载（W4 状态机数据基础）', async () => {
+    const uid = await insertUser('bob');
     const { res } = stubRes();
-    const token = createSession(res, { id: uid }, { authState: 'password_ok' });
-    expect(loadSessionByToken(token)!.authState).toBe('password_ok');
+    const token = await createSession(res, { id: uid }, { authState: 'password_ok' });
+    expect((await loadSessionByToken(token))!.authState).toBe('password_ok');
   });
 
-  it('过期会话装载即删', () => {
-    const uid = insertUser('carol');
+  it('过期会话装载即删', async () => {
+    const uid = await insertUser('carol');
     const token = 'tok-expired-test';
-    getSqlite()
-      .prepare(
-        `INSERT INTO sessions(token_hash, user_id, auth_state, created_at, last_seen_at, expires_at)
-         VALUES (?, ?, 'full', ?, ?, ?)`,
-      )
-      .run(hashToken(token), uid, Date.now(), Date.now(), Date.now() - 1000);
-    expect(loadSessionByToken(token)).toBeNull();
-    expect(
-      getSqlite().prepare('SELECT COUNT(*) n FROM sessions WHERE token_hash = ?').get(hashToken(token)),
-    ).toMatchObject({ n: 0 });
+    const now = Date.now();
+    await getDb().insert(sessions).values({
+      tokenHash: hashToken(token),
+      userId: uid,
+      authState: 'full',
+      createdAt: now,
+      lastSeenAt: now,
+      expiresAt: now - 1000,
+    });
+    expect(await loadSessionByToken(token)).toBeNull();
+    expect(await getDb().select().from(sessions).where(eq(sessions.tokenHash, hashToken(token)))).toHaveLength(0);
   });
 
-  it('禁用用户会话即刻作废', () => {
-    const uid = insertUser('dave', 'disabled');
+  it('禁用用户会话即刻作废', async () => {
+    const uid = await insertUser('dave', 'disabled');
     const { res } = stubRes();
-    const token = createSession(res, { id: uid }, {});
-    expect(loadSessionByToken(token)).toBeNull();
+    const token = await createSession(res, { id: uid }, {});
+    expect(await loadSessionByToken(token)).toBeNull();
   });
 
-  it('token 只存 SHA-256 哈希', () => {
-    const uid = insertUser('erin');
+  it('token 只存 SHA-256 哈希', async () => {
+    const uid = await insertUser('erin');
     const { res } = stubRes();
-    const token = createSession(res, { id: uid }, {});
-    const rows = getSqlite().prepare('SELECT token_hash FROM sessions').all() as Array<{ token_hash: string }>;
-    expect(rows.some((r) => r.token_hash === token)).toBe(false);
-    expect(rows.some((r) => r.token_hash === hashToken(token))).toBe(true);
+    const token = await createSession(res, { id: uid }, {});
+    const rows = await getDb().select({ tokenHash: sessions.tokenHash }).from(sessions);
+    expect(rows.some((r) => r.tokenHash === token)).toBe(false);
+    expect(rows.some((r) => r.tokenHash === hashToken(token))).toBe(true);
   });
 });
 

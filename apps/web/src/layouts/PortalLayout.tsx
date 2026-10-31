@@ -66,6 +66,7 @@ export function PortalLayout() {
 
   const branding = data?.branding;
   const isHome = location.pathname === '/';
+  const isMembershipSelectionPage = location.pathname === '/membership-selection';
   const isAuthPage = ['/login', '/register'].includes(location.pathname);
   const isGuidePage = location.pathname === '/guide';
   const isAccountPage = location.pathname === '/account';
@@ -117,7 +118,7 @@ export function PortalLayout() {
 
   return (
     <div
-      className={`aap-shell aap-background-shell${isHome ? ' aap-home-shell' : ''}${isGuidePage ? ' aap-guide-shell' : ''}${isAuthPage ? ' aap-auth-shell' : ''}${isAccountPage ? ' aap-account-shell' : ''}${isMyApplicationsPage ? ' aap-my-apps-shell' : ''}${isLegalPage ? ' aap-legal-shell' : ''}${isUserPage ? ' aap-user-page-shell' : ''}`}
+      className={`aap-shell aap-background-shell${isHome || isMembershipSelectionPage ? ' aap-home-shell' : ''}${isGuidePage ? ' aap-guide-shell' : ''}${isAuthPage ? ' aap-auth-shell' : ''}${isAccountPage ? ' aap-account-shell' : ''}${isMyApplicationsPage ? ' aap-my-apps-shell' : ''}${isLegalPage ? ' aap-legal-shell' : ''}${isUserPage ? ' aap-user-page-shell' : ''}${isMembershipSelectionPage ? ' aap-membership-selection-shell' : ''}`}
       data-user-theme={isUserPage ? activeUserPageTheme : undefined}
     >
       {!isAuthPage ? <header className="aap-header">

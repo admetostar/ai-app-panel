@@ -8,7 +8,8 @@
  */
 import { randomBytes } from 'node:crypto';
 import { and, eq, gt, ne, sql } from 'drizzle-orm';
-import { getDb } from '../db/index.js';
+import type { MembershipPriceCurrency } from '@aap/shared';
+import { getDb, type DbExecutor } from '../db/index.js';
 import { apps, llmBalanceCache, llmLedger, llmRoutes, membershipPlans, topupOrders, userGroupMembers, users } from '../db/schema.js';
 import { HttpError } from './httpError.js';
 import { grantTokens, recomputeBalance } from './llm.js';
@@ -16,6 +17,7 @@ import { audit } from './audit.js';
 
 export type OrderKind = 'tokens' | 'membership';
 export type OrderStatus = 'pending' | 'paid' | 'cancelled';
+const MAX_INTEGER_PRICE = 2_147_483_647;
 
 // ---------- 套餐（D1） ----------
 
@@ -24,25 +26,30 @@ export interface PlanRow {
   name: string;
   groupId: number;
   durationDays: number;
+  priceCurrency: MembershipPriceCurrency;
   priceFen: number;
+  priceCents: number;
+  pricePoints: number;
   tokenGrant: number;
   tier: number;
   publicAppLimit: number;
   enabled: boolean;
 }
 
-export function listPlans(onlyEnabled = false): PlanRow[] {
-  const rows = getDb()
+export async function listPlans(onlyEnabled = false): Promise<PlanRow[]> {
+  const rows = await getDb()
     .select()
     .from(membershipPlans)
-    .orderBy(sql`price_fen`)
-    .all();
+    .orderBy(sql`price_fen`);
   return (onlyEnabled ? rows.filter((r) => r.enabled) : rows).map((r) => ({
     id: r.id,
     name: r.name,
     groupId: r.groupId,
     durationDays: r.durationDays,
+    priceCurrency: r.priceCurrency,
     priceFen: r.priceFen,
+    priceCents: r.priceCents,
+    pricePoints: r.pricePoints,
     tokenGrant: r.tokenGrant,
     tier: r.tier,
     publicAppLimit: r.publicAppLimit,
@@ -50,32 +57,82 @@ export function listPlans(onlyEnabled = false): PlanRow[] {
   }));
 }
 
-export function createPlan(p: { name: string; groupId: number; durationDays: number; priceFen: number; tokenGrant?: number; tier?: number; publicAppLimit?: number }): number {
-  const info = getDb()
+export function isFreePlan(plan: Pick<PlanRow, 'priceCurrency' | 'priceFen' | 'priceCents' | 'pricePoints'>): boolean {
+  if (plan.priceCurrency === 'POINTS') return plan.pricePoints === 0;
+  if (plan.priceCurrency === 'USD') return plan.priceCents === 0;
+  if (plan.priceCurrency === 'CNY') return plan.priceFen === 0;
+  return false;
+}
+
+export async function createPlan(p: {
+  name: string;
+  groupId: number;
+  durationDays: number;
+  priceCurrency?: MembershipPriceCurrency;
+  priceFen?: number;
+  priceCents?: number;
+  pricePoints?: number;
+  tokenGrant?: number;
+  tier?: number;
+  publicAppLimit?: number;
+}): Promise<number> {
+  const priceCurrency = p.priceCurrency ?? 'CNY';
+  if (!['CNY', 'USD', 'POINTS'].includes(priceCurrency)) throw new HttpError(400, 'INVALID_CURRENCY', '不支持的套餐计价单位');
+  for (const [label, amount] of [['人民币价格', p.priceFen ?? 0], ['美元价格', p.priceCents ?? 0], ['积分价格', p.pricePoints ?? 0]] as const) {
+    if (!Number.isSafeInteger(amount) || amount < 0 || amount > MAX_INTEGER_PRICE) {
+      throw new HttpError(400, 'INVALID_PRICE', `${label}必须是 0 到 ${MAX_INTEGER_PRICE} 之间的整数`);
+    }
+  }
+  const [created] = await getDb()
     .insert(membershipPlans)
     .values({
       name: p.name.trim().slice(0, 64),
       groupId: p.groupId,
       durationDays: Math.max(1, p.durationDays),
-      priceFen: Math.max(0, p.priceFen),
+      priceCurrency,
+      priceFen: Math.max(0, p.priceFen ?? 0),
+      priceCents: Math.max(0, p.priceCents ?? 0),
+      pricePoints: Math.max(0, p.pricePoints ?? 0),
       tokenGrant: Math.max(0, p.tokenGrant ?? 0),
       tier: Math.min(5, Math.max(0, Math.trunc(p.tier ?? 0))),
       publicAppLimit: Math.max(0, p.publicAppLimit ?? 10),
       createdAt: Date.now(),
     })
-    .run();
-  return Number(info.lastInsertRowid);
+    .returning({ id: membershipPlans.id });
+  if (!created) throw new Error('Failed to create membership plan');
+  return created.id;
 }
 
-export function updatePlan(id: number, patch: { name?: string; durationDays?: number; priceFen?: number; tokenGrant?: number; publicAppLimit?: number; enabled?: boolean }): void {
+export async function updatePlan(id: number, patch: {
+  name?: string;
+  durationDays?: number;
+  priceCurrency?: MembershipPriceCurrency;
+  priceFen?: number;
+  priceCents?: number;
+  pricePoints?: number;
+  tokenGrant?: number;
+  publicAppLimit?: number;
+  enabled?: boolean;
+}): Promise<void> {
   const set: Partial<typeof membershipPlans.$inferInsert> = {};
   if (patch.name !== undefined) set.name = patch.name.trim().slice(0, 64);
   if (patch.durationDays !== undefined) set.durationDays = Math.max(1, patch.durationDays);
+  if (patch.priceCurrency !== undefined) {
+    if (!['CNY', 'USD', 'POINTS'].includes(patch.priceCurrency)) throw new HttpError(400, 'INVALID_CURRENCY', '不支持的套餐计价单位');
+    set.priceCurrency = patch.priceCurrency;
+  }
   if (patch.priceFen !== undefined) set.priceFen = Math.max(0, patch.priceFen);
+  if (patch.priceCents !== undefined) set.priceCents = Math.max(0, patch.priceCents);
+  if (patch.pricePoints !== undefined) set.pricePoints = Math.max(0, patch.pricePoints);
+  for (const [label, amount] of [['人民币价格', patch.priceFen], ['美元价格', patch.priceCents], ['积分价格', patch.pricePoints]] as const) {
+    if (amount !== undefined && (!Number.isSafeInteger(amount) || amount < 0 || amount > MAX_INTEGER_PRICE)) {
+      throw new HttpError(400, 'INVALID_PRICE', `${label}必须是 0 到 ${MAX_INTEGER_PRICE} 之间的整数`);
+    }
+  }
   if (patch.tokenGrant !== undefined) set.tokenGrant = Math.max(0, patch.tokenGrant);
   if (patch.publicAppLimit !== undefined) set.publicAppLimit = Math.max(0, patch.publicAppLimit);
   if (patch.enabled !== undefined) set.enabled = patch.enabled;
-  getDb().update(membershipPlans).set(set).where(eq(membershipPlans.id, id)).run();
+  await getDb().update(membershipPlans).set(set).where(eq(membershipPlans.id, id));
 }
 
 export interface PublicAppQuota {
@@ -84,37 +141,35 @@ export interface PublicAppQuota {
   remaining: number;
 }
 
-export function getPublicAppQuota(userId: number, excludingAppId?: string): PublicAppQuota {
+export async function getPublicAppQuota(userId: number, excludingAppId?: string): Promise<PublicAppQuota> {
   const db = getDb();
-  const user = db
+  const user = (await db
     .select({ membershipPlanId: users.membershipPlanId, membershipExpiresAt: users.membershipExpiresAt })
     .from(users)
-    .where(eq(users.id, userId))
-    .get();
+    .where(eq(users.id, userId)))[0];
   const plan = user?.membershipPlanId && user.membershipExpiresAt && user.membershipExpiresAt > Date.now()
-    ? db.select().from(membershipPlans).where(eq(membershipPlans.id, user.membershipPlanId)).get()
+    ? (await db.select().from(membershipPlans).where(eq(membershipPlans.id, user.membershipPlanId)))[0]
     : undefined;
   const predicates = [eq(apps.ownerUserId, userId), eq(apps.visibility, 'public')];
   if (excludingAppId) predicates.push(ne(apps.id, excludingAppId));
-  const used = db
+  const used = Number((await db
     .select({ count: sql<number>`count(*)` })
     .from(apps)
-    .where(and(...predicates))
-    .get()?.count ?? 0;
+    .where(and(...predicates)))[0]?.count ?? 0);
   const limit = plan?.publicAppLimit ?? 0;
   return { limit, used, remaining: Math.max(0, limit - used) };
 }
 
-export function assertPublicAppQuota(userId: number, excludingAppId?: string): PublicAppQuota {
-  const quota = getPublicAppQuota(userId, excludingAppId);
+export async function assertPublicAppQuota(userId: number, excludingAppId?: string): Promise<PublicAppQuota> {
+  const quota = await getPublicAppQuota(userId, excludingAppId);
   if (quota.remaining <= 0) {
     throw new HttpError(403, 'PUBLIC_APP_LIMIT_REACHED', '当前订阅的公开应用数量已用完，请升级订阅计划');
   }
   return quota;
 }
 
-export function deletePlan(id: number): void {
-  getDb().delete(membershipPlans).where(eq(membershipPlans.id, id)).run();
+export async function deletePlan(id: number): Promise<void> {
+  await getDb().delete(membershipPlans).where(eq(membershipPlans.id, id));
 }
 
 // ---------- 订单（D2/D3） ----------
@@ -129,7 +184,9 @@ export interface OrderRow {
   kind: OrderKind;
   planId: number | null;
   tokens: number | null;
+  priceCurrency: 'CNY' | 'USD';
   priceFen: number;
+  priceCents: number;
   channel: string;
   status: OrderStatus;
   note: string | null;
@@ -137,23 +194,22 @@ export interface OrderRow {
   paidAt: number | null;
 }
 
-export function listOrders(status: OrderStatus | 'all' = 'all', limit = 100): OrderRow[] {
+export async function listOrders(status: OrderStatus | 'all' = 'all', limit = 100): Promise<OrderRow[]> {
   const base = getDb().select().from(topupOrders);
   const rows =
     status === 'all'
-      ? base.orderBy(sql`id DESC`).limit(limit).all()
-      : base.where(eq(topupOrders.status, status)).orderBy(sql`id DESC`).limit(limit).all();
+      ? await base.orderBy(sql`id DESC`).limit(limit)
+      : await base.where(eq(topupOrders.status, status)).orderBy(sql`id DESC`).limit(limit);
   return rows as OrderRow[];
 }
 
-export function listUserOrders(userId: number, limit = 20): OrderRow[] {
-  return getDb()
+export async function listUserOrders(userId: number, limit = 20): Promise<OrderRow[]> {
+  return await getDb()
     .select()
     .from(topupOrders)
     .where(eq(topupOrders.userId, userId))
     .orderBy(sql`id DESC`)
-    .limit(limit)
-    .all() as OrderRow[];
+    .limit(limit) as OrderRow[];
 }
 
 export interface PaymentAdapter {
@@ -177,13 +233,27 @@ export function paymentAdapters(): PaymentAdapter[] {
 }
 
 /** 用户创建订单（tokens：按 TOPUP_TOKENS_PER_FEN 折算；membership：按套餐价格） */
-export function createOrder(
+export async function createOrder(
   userId: number,
   kind: OrderKind,
-  opts: { priceFen: number; tokens?: number; planId?: number; channel?: string },
-): OrderRow {
+  opts: { priceFen: number; priceCents?: number; priceCurrency?: 'CNY' | 'USD'; tokens?: number; planId?: number; channel?: string },
+  executor?: DbExecutor,
+): Promise<OrderRow> {
+  const priceCents = opts.priceCents ?? 0;
+  if (!['CNY', 'USD'].includes(opts.priceCurrency ?? 'CNY')) throw new HttpError(400, 'INVALID_CURRENCY', '不支持的订单计价单位');
+  if (
+    !Number.isSafeInteger(opts.priceFen) ||
+    opts.priceFen < 0 ||
+    opts.priceFen > MAX_INTEGER_PRICE ||
+    !Number.isSafeInteger(priceCents) ||
+    priceCents < 0 ||
+    priceCents > MAX_INTEGER_PRICE
+  ) {
+    throw new HttpError(400, 'INVALID_PRICE', `订单金额必须是 0 到 ${MAX_INTEGER_PRICE} 之间的整数`);
+  }
   const id = newOrderId();
-  getDb()
+  const db = executor ?? getDb();
+  const [order] = await db
     .insert(topupOrders)
     .values({
       id,
@@ -191,73 +261,79 @@ export function createOrder(
       kind,
       planId: opts.planId ?? null,
       tokens: opts.tokens ?? null,
+      priceCurrency: opts.priceCurrency ?? 'CNY',
       priceFen: Math.max(0, Math.round(opts.priceFen)),
+      priceCents,
       channel: opts.channel ?? 'manual',
       status: 'pending',
       createdAt: Date.now(),
     })
-    .run();
-  audit(`user:${userId}`, null, 'billing.order.create', { id, kind, priceFen: opts.priceFen });
-  // 按主键回查（此前取「最新一行再 find」，并发建单时可能拿到 undefined）
-  return getDb().select().from(topupOrders).where(eq(topupOrders.id, id)).get() as OrderRow;
+    .returning();
+  if (!order) throw new Error('Failed to create top-up order');
+  if (!executor) await audit(`user:${userId}`, null, 'billing.order.create', {
+    id,
+    kind,
+    priceCurrency: opts.priceCurrency ?? 'CNY',
+    priceFen: opts.priceFen,
+    priceCents: opts.priceCents ?? 0,
+  });
+  return order as OrderRow;
 }
 
 /** 开通/续费会员：顺延到期 + 入组 + 赠送额度（单事务；部分失败整体回滚） */
-export function activateMembership(userId: number, planId: number): string {
-  const plan = getDb().select().from(membershipPlans).where(eq(membershipPlans.id, planId)).get();
-  if (!plan) throw new HttpError(404, 'PLAN_NOT_FOUND', '套餐不存在');
-  const me = getDb().select().from(users).where(eq(users.id, userId)).get();
-  if (!me) throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
+export async function activateMembership(userId: number, planId: number, executor?: DbExecutor): Promise<string> {
+  const apply = async (tx: DbExecutor): Promise<string> => {
+    const plan = (await tx.select().from(membershipPlans).where(eq(membershipPlans.id, planId)))[0];
+    if (!plan) throw new HttpError(404, 'PLAN_NOT_FOUND', '套餐不存在');
+    const me = (await tx.select().from(users).where(eq(users.id, userId)))[0];
+    if (!me) throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
 
-  // 到期续费从当前到期时间顺延；新购从现在起算
-  const base = me.membershipExpiresAt && me.membershipPlanId === planId ? me.membershipExpiresAt : Date.now();
-  const expiresAt = base + plan.durationDays * 86_400_000;
-  getDb().transaction(() => {
-    getDb()
+    const base = me.membershipExpiresAt && me.membershipPlanId === planId ? me.membershipExpiresAt : Date.now();
+    const expiresAt = base + plan.durationDays * 86_400_000;
+    await tx
       .update(users)
       .set({ membershipPlanId: planId, membershipExpiresAt: expiresAt, plan: 'member' })
-      .where(eq(users.id, userId))
-      .run();
-    // 加入套餐分组（可见性权益），重复加入幂等
-    getDb()
+      .where(eq(users.id, userId));
+    await tx
       .insert(userGroupMembers)
       .values({ groupId: plan.groupId, userId, createdAt: Date.now() })
-      .onConflictDoNothing()
-      .run();
+      .onConflictDoNothing();
     if (plan.tokenGrant > 0) {
-      grantTokens(userId, plan.tokenGrant, `功能订阅赠送（${plan.name}）`, 0);
+      await grantTokens(userId, plan.tokenGrant, `功能订阅赠送（${plan.name}）`, 0, tx);
     }
-  });
-  return plan.name;
+    return plan.name;
+  };
+  return executor ? apply(executor) : getDb().transaction((tx) => apply(tx));
 }
 
 /** 确认到账（D3 manual 确认点；真实渠道 adapter 回调最终也走这里）。
  *  单事务：置 paid 与入账/开通同生共死，杜绝「已收款未入账」的崩溃窗口
  *  （如套餐被删，订单回滚为 pending，可处理后重新确认）。 */
-export function confirmOrder(orderId: string, byUserId: number): OrderRow {
+export async function confirmOrder(orderId: string, byUserId: number): Promise<OrderRow> {
   const db = getDb();
-  const order = db.select().from(topupOrders).where(eq(topupOrders.id, orderId)).get() as OrderRow | undefined;
-  if (!order) throw new HttpError(404, 'ORDER_NOT_FOUND', '订单不存在');
-  if (order.status !== 'pending') throw new HttpError(400, 'ORDER_STATE', '订单已处理');
-  db.transaction(() => {
-    db.update(topupOrders).set({ status: 'paid', paidAt: Date.now() }).where(eq(topupOrders.id, orderId)).run();
+  const order = await db.transaction(async (tx) => {
+    const order = (await tx.select().from(topupOrders).where(eq(topupOrders.id, orderId)).for('update'))[0] as OrderRow | undefined;
+    if (!order) throw new HttpError(404, 'ORDER_NOT_FOUND', '订单不存在');
+    if (order.status !== 'pending') throw new HttpError(400, 'ORDER_STATE', '订单已处理');
+    await tx.update(topupOrders).set({ status: 'paid', paidAt: Date.now() }).where(eq(topupOrders.id, orderId));
     if (order.kind === 'tokens' && order.tokens) {
-      grantTokens(order.userId, order.tokens, `充值到账 ${orderId}`, byUserId);
+      await grantTokens(order.userId, order.tokens, `充值到账 ${orderId}`, byUserId, tx);
     } else if (order.kind === 'membership' && order.planId) {
-      activateMembership(order.userId, order.planId);
+      await activateMembership(order.userId, order.planId, tx);
     }
+    return order;
   });
-  audit(`admin:${byUserId}`, null, 'billing.order.paid', { orderId, userId: order.userId });
-  return db.select().from(topupOrders).where(eq(topupOrders.id, orderId)).get() as OrderRow;
+  await audit(`admin:${byUserId}`, null, 'billing.order.paid', { orderId, userId: order.userId });
+  return (await db.select().from(topupOrders).where(eq(topupOrders.id, orderId)))[0] as OrderRow;
 }
 
-export function cancelOrder(orderId: string, byUserId: number, byAdmin: boolean): void {
-  const order = getDb().select().from(topupOrders).where(eq(topupOrders.id, orderId)).get() as OrderRow | undefined;
+export async function cancelOrder(orderId: string, byUserId: number, byAdmin: boolean): Promise<void> {
+  const order = (await getDb().select().from(topupOrders).where(eq(topupOrders.id, orderId)))[0] as OrderRow | undefined;
   if (!order) throw new HttpError(404, 'ORDER_NOT_FOUND', '订单不存在');
   if (!byAdmin && order.userId !== byUserId) throw new HttpError(403, 'FORBIDDEN', '只能取消自己的订单');
   if (order.status !== 'pending') throw new HttpError(400, 'ORDER_STATE', '订单已处理');
-  getDb().update(topupOrders).set({ status: 'cancelled' }).where(eq(topupOrders.id, orderId)).run();
-  audit(`user:${byUserId}`, null, 'billing.order.cancel', { orderId, byAdmin });
+  await getDb().update(topupOrders).set({ status: 'cancelled' }).where(eq(topupOrders.id, orderId));
+  await audit(`user:${byUserId}`, null, 'billing.order.cancel', { orderId, byAdmin });
 }
 
 // ---------- 结算循环（D2a：对账 + 到期降级） ----------
@@ -265,64 +341,60 @@ export function cancelOrder(orderId: string, byUserId: number, byAdmin: boolean)
 const DAY_MS = 86_400_000;
 
 /** 到期降级：会员到期 → 清订阅字段 + 移出套餐分组（保留数据，可见性随分组收回） */
-export function downgradeExpired(now = Date.now()): number {
-  const expired = getDb()
+export async function downgradeExpired(now = Date.now()): Promise<number> {
+  const expired = await getDb()
     .select()
     .from(users)
-    .where(and(sql`membership_expires_at IS NOT NULL`, sql`membership_expires_at < ${now}`))
-    .all();
+    .where(and(sql`membership_expires_at IS NOT NULL`, sql`membership_expires_at < ${now}`));
   let n = 0;
   for (const u of expired) {
     const plan = u.membershipPlanId
-      ? getDb().select().from(membershipPlans).where(eq(membershipPlans.id, u.membershipPlanId)).get()
+      ? (await getDb().select().from(membershipPlans).where(eq(membershipPlans.id, u.membershipPlanId)))[0]
       : null;
-    getDb()
+    await getDb()
       .update(users)
       .set({ membershipPlanId: null, membershipExpiresAt: null, plan: 'free' })
-      .where(eq(users.id, u.id))
-      .run();
+      .where(eq(users.id, u.id));
     if (plan) {
-      getDb()
+      await getDb()
         .delete(userGroupMembers)
-        .where(and(eq(userGroupMembers.groupId, plan.groupId), eq(userGroupMembers.userId, u.id)))
-        .run();
+        .where(and(eq(userGroupMembers.groupId, plan.groupId), eq(userGroupMembers.userId, u.id)));
     }
-    audit(`user:${u.id}`, null, 'billing.subscription.expired', { planId: u.membershipPlanId });
+    await audit(`user:${u.id}`, null, 'billing.subscription.expired', { planId: u.membershipPlanId });
     n++;
   }
   return n;
 }
 
 /** 对账：近期有流水/缓存缺失的用户重算余额（吸收崩溃漂移；打穿为负 = 欠费态被预检拦截） */
-export function reconcileRecent(): number {
-  const rows = getDb()
+export async function reconcileRecent(): Promise<number> {
+  const rows = await getDb()
     .select({ userId: llmLedger.userId })
     .from(llmLedger)
     .where(and(sql`user_id IS NOT NULL`, gt(llmLedger.ts, Date.now() - 10 * 60_000)))
-    .groupBy(llmLedger.userId)
-    .all();
+    .groupBy(llmLedger.userId);
   let n = 0;
   for (const r of rows) {
     if (r.userId === null) continue;
-    recomputeBalance(r.userId);
+    await recomputeBalance(r.userId);
     n++;
   }
   return n;
 }
 
 let settleTimer: NodeJS.Timeout | null = null;
-export function startBillingLoop(): void {
+export async function startBillingLoop(): Promise<void> {
   if (settleTimer) return;
-  const run = () => {
+  const run = async () => {
     try {
-      const downgraded = downgradeExpired();
-      const reconciled = reconcileRecent();
+      const downgraded = await downgradeExpired();
+      const reconciled = await reconcileRecent();
       if (downgraded || reconciled) console.log(`[billing] 降级 ${downgraded} 人，对账 ${reconciled} 人`);
     } catch (err) {
       console.error('[billing] 结算失败:', err);
     }
   };
-  run();
+  await run();
   settleTimer = setInterval(run, 60_000);
   settleTimer.unref();
 }
@@ -342,28 +414,26 @@ export interface OpsStats {
 }
 
 /** 运营面板：余额/消耗排行、应用热度、收入与成本（30 天窗口；成本按路由 costPer1k 折算） */
-export function opsStats(): OpsStats {
+export async function opsStats(): Promise<OpsStats> {
   const db = getDb();
   const since = Date.now() - 30 * DAY_MS;
 
-  const balanceTop = db
+  const balanceTop = await db
     .select({ userId: llmBalanceCache.userId, balance: llmBalanceCache.balance })
     .from(llmBalanceCache)
     .orderBy(sql`balance DESC`)
-    .limit(10)
-    .all();
+    .limit(10);
 
-  const spentTop = db
+  const spentRows = await db
     .select({ userId: llmLedger.userId, spent: sql<number>`sum(-delta)` })
     .from(llmLedger)
     .where(and(eq(llmLedger.kind, 'usage'), sql`user_id IS NOT NULL`, gt(llmLedger.ts, since)))
     .groupBy(llmLedger.userId)
     .orderBy(sql`sum(-delta) DESC`)
-    .limit(10)
-    .all()
-    .map((r) => ({ userId: r.userId ?? 0, spent: Number(r.spent) }));
+    .limit(10);
+  const spentTop = spentRows.map((r) => ({ userId: r.userId ?? 0, spent: Number(r.spent) }));
 
-  const appHot = db
+  const appHotRows = await db
     .select({
       appId: llmLedger.appId,
       calls: sql<number>`count(*)`,
@@ -373,28 +443,25 @@ export function opsStats(): OpsStats {
     .where(and(eq(llmLedger.kind, 'usage'), gt(llmLedger.ts, since)))
     .groupBy(llmLedger.appId)
     .orderBy(sql`count(*) DESC`)
-    .limit(10)
-    .all()
-    .map((r) => ({ appId: r.appId ?? '—', calls: Number(r.calls), tokens: Number(r.tokens) }));
+    .limit(10);
+  const appHot = appHotRows.map((r) => ({ appId: r.appId ?? '—', calls: Number(r.calls), tokens: Number(r.tokens) }));
 
   // 收入 = 用量按收入倍率折算的扣减；成本 = 用量按路由成本价折算
-  const rev = db
+  const rev = (await db
     .select({ v: sql<number>`coalesce(sum(-delta), 0)` })
     .from(llmLedger)
-    .where(and(eq(llmLedger.kind, 'usage'), gt(llmLedger.ts, since)))
-    .get();
+    .where(and(eq(llmLedger.kind, 'usage'), gt(llmLedger.ts, since))))[0];
   const revenue30d = Number(rev?.v ?? 0);
 
-  const routes = db.select().from(llmRoutes).all();
+  const routes = await db.select().from(llmRoutes);
   let cost30d = 0;
   for (const r of routes) {
-    const row = db
+    const row = (await db
       .select({
         tokens: sql<number>`coalesce(sum(prompt_tokens + completion_tokens), 0)`,
       })
       .from(llmLedger)
-      .where(and(eq(llmLedger.kind, 'usage'), eq(llmLedger.model, r.model), gt(llmLedger.ts, since)))
-      .get();
+      .where(and(eq(llmLedger.kind, 'usage'), eq(llmLedger.model, r.model), gt(llmLedger.ts, since))))[0];
     cost30d += Math.ceil((Number(row?.tokens ?? 0) * r.costPer1k) / 1000);
   }
 

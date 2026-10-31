@@ -44,13 +44,13 @@ function REQ_SKIP_KEYS(): string[] {
 }
 
 /** 从裸 Cookie 头取会话 token（复用 session 哈希查询；cookie 名与配置保持一致） */
-function userFromCookieHeader(cookieHeader: string | undefined): SessionUser | null {
+async function userFromCookieHeader(cookieHeader: string | undefined): Promise<SessionUser | null> {
   if (!cookieHeader) return null;
   for (const part of cookieHeader.split(';')) {
     const eq = part.indexOf('=');
     if (eq <= 0) continue;
     const name = part.slice(0, eq).trim();
-    if (name === config.sessionCookieName) return loadSessionByToken(part.slice(eq + 1).trim());
+    if (name === config.sessionCookieName) return await loadSessionByToken(part.slice(eq + 1).trim());
   }
   return null;
 }
@@ -63,7 +63,7 @@ function reject(socket: Duplex, code: number, reason: string): void {
 
 export function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
   Promise.resolve()
-    .then(() => upgrade(req, socket, head))
+    .then(async () => await upgrade(req, socket, head))
     .catch((err) => {
       console.error('[wsproxy] upgrade error:', err);
       reject(socket, 500, 'Internal Server Error');
@@ -108,11 +108,11 @@ async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Prom
   const id = m[1]!;
   const sub = (m[2] ?? '/').replace(/^\/+/, '');
 
-  const app: AppRow | null = findApp(id);
+  const app: AppRow | null = await findApp(id);
   if (!app || !app.enabled) return reject(socket, 404, 'Not Found');
 
-  const user = userFromCookieHeader(req.headers.cookie);
-  if (!canAccess(app, user ?? null)) {
+  const user = await userFromCookieHeader(req.headers.cookie);
+  if (!await canAccess(app, user ?? null)) {
     return reject(socket, user ? 403 : 401, user ? 'Forbidden' : 'Unauthorized');
   }
 

@@ -4,33 +4,19 @@ import { ArrowRightOutlined, SearchOutlined } from '@ant-design/icons';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import type { AppCard, PortalBootstrap } from '@aap/shared';
+import type { AppCard, MembershipPlanSummary, PortalBootstrap } from '@aap/shared';
 import { api } from '../api/client';
 import { useSession } from '../state/session';
 import { GUIDE_FAQ_ITEMS } from '../lib/guideFaq';
+import { formatMembershipPlanPrice } from '../lib/membershipPricing';
 import { PortalAppCard } from '../components/PortalAppCard';
 import { TierBadge } from '../components/TierBadge';
-
-interface PublicPlan {
-  id: number;
-  name: string;
-  groupName: string;
-  durationDays: number;
-  priceFen: number;
-  tokenGrant: number;
-  tier: number;
-  publicAppLimit: number;
-}
 
 function planDurationLabel(days: number): string {
   if (days === 30) return '月度权益';
   if (days === 90) return '季度权益';
   if (days === 365) return '年度权益';
   return days >= 100_000 ? '长期权益' : `${days} 天`;
-}
-
-function formatPrice(fen: number): string {
-  return `¥${(fen / 100).toFixed(2)}`;
 }
 
 export function HomePage() {
@@ -49,9 +35,10 @@ export function HomePage() {
   });
   const plans = useQuery({
     queryKey: ['portal-plans'],
-    queryFn: () => api<{ plans: PublicPlan[] }>('/api/portal/plans'),
+    queryFn: () => api<{ plans: MembershipPlanSummary[] }>('/api/portal/plans'),
   });
   const planRows = plans.data?.plans ?? [];
+  const siteName = boot.data?.branding.siteName ?? 'AI超级面板';
 
   useEffect(() => {
     if (!location.hash) return;
@@ -79,15 +66,15 @@ export function HomePage() {
     <div className="aap-home-page">
       <section className="aap-home-hero">
         <div className="aap-home-hero__content">
-          <span className="aap-home-kicker">AI Super Panel</span>
+          <span className="aap-home-kicker">{siteName}</span>
           <Typography.Title className="aap-home-title" level={1}>
-            你好{me ? `，${me.user.name}` : ''}，欢迎来到 {boot.data?.branding.siteName ?? 'AI超级面板'}
+            您好，欢迎来到 {siteName}
           </Typography.Title>
           <Typography.Paragraph className="aap-home-description">
             {boot.data?.needsInit
               ? '⚠ 站点尚未初始化：请首次启动时按容器日志中的初始凭据登录完成引导。'
               : <>
-                  <strong>AI超级面板（AI-SuperPanel）</strong> 是一个应用托管平台。你让自己的 AI 助手（agent）写好一个小工具，打包成 <strong>.asp-app</strong> 文件上传到平台后，即可分享给任何人使用。
+                  <strong>{siteName}（AI-SuperPanel）</strong> 是一个应用托管仓库。您让自己的 AI 助手（agent）写好一个小工具，自动打包成 <strong>.asp-app</strong> 文件上传到{siteName}后，即可向其他人展示您的创作。
                 </>}
           </Typography.Paragraph>
           <Input
@@ -163,7 +150,7 @@ export function HomePage() {
                     <TierBadge tier={plan.tier} size={26} />
                     <Typography.Title level={3}>{plan.name}</Typography.Title>
                   </Space>
-                  <div className="aap-home-plan-card__price">{formatPrice(plan.priceFen)}<span> / 套</span></div>
+                  <div className="aap-home-plan-card__price">{formatMembershipPlanPrice(plan)}<span> / 套</span></div>
                   <div className="aap-home-plan-card__features">
                     <div><span>权益分组</span><strong>{plan.groupName}</strong></div>
                     <div><span>应用发布</span><strong>{plan.publicAppLimit} 个</strong></div>
