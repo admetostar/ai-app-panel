@@ -16,10 +16,6 @@ export PYTHONPATH="$DIR/aap-sdk"
 export AAP_RUNNER="$DIR/aap-sdk/aap_runtime/runner.py"
 export TZ="${TZ:-Asia/Shanghai}"
 
-# 官方发布公钥内置信任（G4）：官方签名 .asp-app 包免审；与 docker-compose.yml 同源，env 可覆盖
-export AAP_OFFICIAL_SIGN_PUBKEY="${AAP_OFFICIAL_SIGN_PUBKEY:-TZxb0LoJihvn7d0c+9D6dVY3BgbhpCUAjZiWgMw7AnE=}"
-export AAP_OFFICIAL_SIGNER_NAME="${AAP_OFFICIAL_SIGNER_NAME:-neon9809}"
-
 mkdir -p "$DATA_DIR"
 
 # 平台预置 Python 框架自检补装（契约 §五「平台预置框架」= flask）：docker 镜像构建期

@@ -24,10 +24,12 @@ RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
 COPY packages ./packages
 COPY apps ./apps
 COPY docs ./docs
+COPY scripts ./scripts
 COPY README.md ./README.md
 # 依次构建：shared（被 server/web 引用）→ server → web
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
-    pnpm --filter @aap/shared build \
+    pnpm skills:sync \
+ && pnpm --filter @aap/shared build \
  && pnpm --filter @aap/server build \
  && pnpm --filter @aap/web build
 # 产出自包含的服务端部署目录（含 workspace 依赖 @aap/shared）
@@ -38,7 +40,7 @@ RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
 FROM node:22-alpine
 RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.cloud.tencent.com#g' /etc/apk/repositories \
  && apk add --no-cache tini python3 py3-pip py3-flask \
- # py3-pip：.asp-app 声明制依赖（manifest.requirements）上传时 pip --target 安装必需
+ # py3-pip：AWPK Python 应用的 manifest.requirements 在上传时由 pip --target 安装
  # （alpine 的 python3 不带 pip）；musl 仅能装 wheel，无 musllinux wheel 的 C 扩展包
  # 会在上传时报错——属预期行为
  # 沙箱可选降权：预建非特权用户；运行时加 SANDBOX_UID=10001 SANDBOX_GID=10001 生效
@@ -52,14 +54,16 @@ COPY --from=build /app/apps/server/dist ./dist
 COPY --from=build /app/apps/server/drizzle-pg ./drizzle-pg
 # 前端构建产物（server 生产托管 + SPA 兜底）
 COPY --from=build /app/apps/web/dist ./public
-# .asp-app 运行时 SDK（M4：aap 对象 + runner）
+# AWPK Python 运行时 SDK（aap 对象 + runner）
 COPY --from=build /app/packages/aap-sdk ./aap-sdk
 ENV PYTHONPATH=/out/aap-sdk \
     PYTHON_BIN=python3
 
 # 开发指南与平台文档（右上角「开发指南」页数据源；同时保留下载用 skill 压缩包）
-COPY --from=build /app/docs/app-develop.skill-v0.2.md ./assets/app-develop.skill-v0.2.md
-COPY --from=build /app/docs/asp-app-develop.skill ./assets/asp-app-develop.skill
+COPY --from=build /app/apps/server/assets/app-develop.skill-v0.3.md ./assets/app-develop.skill-v0.3.md
+COPY --from=build /app/apps/server/assets/awpk-app-develop.skill ./assets/awpk-app-develop.skill
+COPY --from=build /app/apps/server/assets/awpk-app-develop.zip ./assets/awpk-app-develop.zip
+COPY --from=build /app/apps/server/assets/awpk-app-develop.md ./assets/awpk-app-develop.md
 COPY --from=build /app/README.md ./assets/README.md
 COPY --from=build /app/docs/app-develop-internal.skill.md ./assets/app-develop-internal.skill.md
 
@@ -69,9 +73,6 @@ ENV NODE_ENV=production \
     PORT=8080 \
     HTTPS_PORT=8443 \
     TZ=Asia/Shanghai
-ENV AAP_OFFICIAL_SIGN_PUBKEY="TZxb0LoJihvn7d0c+9D6dVY3BgbhpCUAjZiWgMw7AnE=" \
-    AAP_OFFICIAL_SIGNER_NAME="neon9809"
-
 VOLUME ["/data"]
 EXPOSE 8080 8443
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

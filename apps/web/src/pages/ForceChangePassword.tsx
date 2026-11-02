@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { usePostAuthRedirect, useSession } from '../state/session';
+import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '@aap/shared';
 
 export function ForceChangePasswordPage() {
   const [searchParams] = useSearchParams();
@@ -53,9 +54,17 @@ export function ForceChangePasswordPage() {
         <Form.Item
           name="newPassword"
           label="新密码"
-          rules={[{ required: true, message: '请输入新密码' }, { min: 8, max: 128, message: '8-128 位' }]}
+          rules={[
+            { required: true, message: '请输入新密码' },
+            {
+              validator: (_, value: string | undefined) =>
+                !value || isPasswordValid(value)
+                  ? Promise.resolve()
+                  : Promise.reject(new Error(PASSWORD_POLICY_MESSAGE)),
+            },
+          ]}
         >
-          <Input.Password />
+          <Input.Password placeholder="8-128 位，含大写、小写字母和数字" />
         </Form.Item>
         <Form.Item
           name="newPassword2"

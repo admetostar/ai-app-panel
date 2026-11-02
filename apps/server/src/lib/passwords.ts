@@ -5,7 +5,7 @@
  * verifyPassword 为异步实现，避免同步 scrypt 阻塞事件循环导致登录串行化；
  * dummyVerify 供「用户不存在」分支消耗等量 CPU，消除用户名枚举时序侧信道。
  */
-import { randomBytes, scrypt as scryptCb, timingSafeEqual, createHash } from 'node:crypto';
+import { randomBytes, randomInt, scrypt as scryptCb, timingSafeEqual, createHash } from 'node:crypto';
 
 const KEYLEN = 32;
 
@@ -46,11 +46,24 @@ export async function dummyVerify(password: string): Promise<boolean> {
 
 /** 随机口令：无易混淆字符，便于人工抄录（Docker 首启初始密码用） */
 export function generatePassword(len = 12): string {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
-  let out = '';
-  const bytes = randomBytes(len);
-  for (let i = 0; i < len; i++) out += alphabet[bytes[i]! % alphabet.length];
-  return out;
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghijkmnpqrstuvwxyz';
+  const digits = '23456789';
+  const alphabet = `${upper}${lower}${digits}`;
+  if (len < 3) {
+    return Array.from({ length: len }, () => alphabet[randomInt(alphabet.length)]!).join('');
+  }
+  const chars = [
+    upper[randomInt(upper.length)]!,
+    lower[randomInt(lower.length)]!,
+    digits[randomInt(digits.length)]!,
+  ];
+  while (chars.length < len) chars.push(alphabet[randomInt(alphabet.length)]!);
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j]!, chars[i]!];
+  }
+  return chars.join('');
 }
 
 /** 通用随机令牌（hex） */

@@ -58,8 +58,6 @@ start_app() {
   PORT="${wizard_port:-8080}" DATA_DIR="$TRIM_PKGVAR" DATABASE_URL="${wizard_database_url:-}" \
     PYTHON_BIN="$PYTHON_BIN" NODE_ENV=production \
     ADMIN_INITIAL_PASSWORD="${wizard_admin_password:-}" \
-    AAP_OFFICIAL_SIGN_PUBKEY="${AAP_OFFICIAL_SIGN_PUBKEY:-TZxb0LoJihvn7d0c+9D6dVY3BgbhpCUAjZiWgMw7AnE=}" \
-    AAP_OFFICIAL_SIGNER_NAME="${AAP_OFFICIAL_SIGNER_NAME:-neon9809}" \
     setsid bash "$APP_DIR/start.sh" >> "$LOG_FILE" 2>&1 &
   echo "$!" > "$PID_FILE"
 }

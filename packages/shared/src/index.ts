@@ -68,9 +68,10 @@ export interface MembershipPlanSummary {
   priceFen: number;
   priceCents: number;
   pricePoints: number;
+  redeemUrl: string | null;
   tokenGrant: number;
   tier: number;
-  publicAppLimit: number;
+  appUploadLimit: number;
   enabled: boolean;
 }
 
@@ -92,9 +93,9 @@ export interface UserMembershipData {
     tier: number;
     groupName: string;
     expiresAt: number;
-    publicAppLimit: number;
-    publicAppsUsed: number;
-    remainingPublicApps: number;
+    appUploadLimit: number;
+    appsUsed: number;
+    remainingUploadApps: number;
   } | null;
   tokenBalance: number;
   pointsBalance: number;
@@ -124,6 +125,10 @@ export type RegistrationMode = 'closed' | 'open' | 'invite';
 /** 门户公共引导信息（未登录可读） */
 export interface PortalBootstrap {
   branding: BrandingInfo;
+  /** Root hostname used for per-application subdomains; localhost when unset for local development. */
+  appDomainRoot: string;
+  /** Local server port for *.localhost in development; null means use the current public port. */
+  appPort: number | null;
   registration: {
     mode: RegistrationMode;
     turnstileEnabled: boolean;
@@ -160,6 +165,10 @@ export interface AppCard {
 export interface OwnedAppCard extends AppCard {
   enabled: boolean;
   updatedAt: number;
+  installedAt: number;
+  version: string | null;
+  packageSizeBytes: number | null;
+  capabilities: string[];
   signatureStatus: string | null;
 }
 
@@ -178,6 +187,18 @@ export const IDENTITY_TTL_MS = 10 * 60 * 1000;
 export const SESSION_COOKIE = 'aap_sid';
 
 export const APP_PATH_PREFIX = '/app';
+
+export const PASSWORD_MIN_LENGTH = 8;
+export const PASSWORD_MAX_LENGTH = 128;
+export const PASSWORD_POLICY_MESSAGE = '密码需为 8-128 位，并至少包含大写字母、小写字母和数字';
+
+export function isPasswordValid(password: string): boolean {
+  return password.length >= PASSWORD_MIN_LENGTH
+    && password.length <= PASSWORD_MAX_LENGTH
+    && /[A-Z]/.test(password)
+    && /[a-z]/.test(password)
+    && /[0-9]/.test(password);
+}
 
 /** 内置主题 id 契约（web 端 theme 包实现，品牌 settings 引用 id） */
 export const BUILTIN_THEME_IDS = [

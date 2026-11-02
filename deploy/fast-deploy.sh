@@ -29,6 +29,7 @@ REMOTE_DIR="/opt/AI-SuperPanel"
 CONTAINER="AI-SuperPanel"
 
 echo "==> [1/3] 本地构建 shared -> server -> web"
+pnpm skills:sync
 pnpm --filter @aap/shared build
 pnpm --filter @aap/server build
 pnpm --filter @aap/web build
@@ -56,8 +57,10 @@ docker cp "$REMOTE_DIR/apps/server/dist/."           "$CONTAINER:/out/dist/"
 docker cp "$REMOTE_DIR/apps/web/dist/."              "$CONTAINER:/out/public/"
 docker cp "$REMOTE_DIR/packages/aap-sdk/."           "$CONTAINER:/out/aap-sdk/"
 docker cp "$REMOTE_DIR/apps/server/drizzle/."        "$CONTAINER:/out/drizzle/"
-docker cp "$REMOTE_DIR/docs/app-develop.skill-v0.2.md"     "$CONTAINER:/out/assets/app-develop.skill-v0.2.md"
-docker cp "$REMOTE_DIR/docs/asp-app-develop.skill"         "$CONTAINER:/out/assets/asp-app-develop.skill"
+docker cp "$REMOTE_DIR/apps/server/assets/app-develop.skill-v0.3.md" "$CONTAINER:/out/assets/app-develop.skill-v0.3.md"
+docker cp "$REMOTE_DIR/apps/server/assets/awpk-app-develop.skill"    "$CONTAINER:/out/assets/awpk-app-develop.skill"
+docker cp "$REMOTE_DIR/apps/server/assets/awpk-app-develop.zip"      "$CONTAINER:/out/assets/awpk-app-develop.zip"
+docker cp "$REMOTE_DIR/apps/server/assets/awpk-app-develop.md"       "$CONTAINER:/out/assets/awpk-app-develop.md"
 docker cp "$REMOTE_DIR/docs/app-develop-internal.skill.md" "$CONTAINER:/out/assets/app-develop-internal.skill.md"
 docker cp "$REMOTE_DIR/README.md"                    "$CONTAINER:/out/assets/README.md"
 docker restart "$CONTAINER" >/dev/null
@@ -69,4 +72,3 @@ echo
 REMOTE_SCRIPT
 
 echo "==> 部署完成"
-

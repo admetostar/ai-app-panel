@@ -26,7 +26,19 @@ interface EnvData {
   undeclared: string[];
 }
 
-export function AppEnvModal({ appId, appName, open, onClose }: { appId: string; appName: string; open: boolean; onClose: () => void }): ReactNode {
+export interface AppEnvSaveRef {
+  current: (() => Promise<boolean>) | null;
+}
+
+export function AppEnvModal({ appId, appName, open, onClose, theme, embedded = false, saveRef }: {
+  appId: string;
+  appName: string;
+  open: boolean;
+  onClose: () => void;
+  theme?: 'light' | 'dark';
+  embedded?: boolean;
+  saveRef?: AppEnvSaveRef;
+}): ReactNode {
   const [data, setData] = useState<EnvData | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -55,8 +67,11 @@ export function AppEnvModal({ appId, appName, open, onClose }: { appId: string; 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, appId]);
 
-  async function save(): Promise<void> {
-    if (!data) return;
+  async function save(): Promise<boolean> {
+    if (!data) {
+      message.error('环境变量尚未加载完成，请稍后重试');
+      return false;
+    }
     setSaving(true);
     try {
       const payload: Record<string, string> = {};
@@ -73,16 +88,105 @@ export function AppEnvModal({ appId, appName, open, onClose }: { appId: string; 
         json: { values: payload },
       });
       const n = r.saved.length + r.cleared.length;
-      message.success(n > 0 ? '已保存，下次沙箱启动生效' : '无变更');
-      onClose();
+      if (!embedded) message.success(n > 0 ? '已保存，下次沙箱启动生效' : '无变更');
+      if (embedded) void load();
+      else onClose();
+      return true;
     } catch (err) {
       message.error(err instanceof Error ? err.message : '保存失败');
+      return false;
     } finally {
       setSaving(false);
     }
   }
 
+  if (saveRef) saveRef.current = save;
+
+  useEffect(() => () => {
+    if (saveRef) saveRef.current = null;
+  }, [saveRef]);
+
   const hasVars = (data?.declared.length ?? 0) > 0 || (data?.undeclared.length ?? 0) > 0;
+  const content = loading ? (
+    <div style={{ textAlign: 'center', padding: 32 }}>
+      <Spin />
+    </div>
+  ) : !hasVars ? (
+    <Empty description="该包的 manifest 未声明任何环境变量" />
+  ) : (
+    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
+        值加密存储；沙箱（按调用执行 / 持久服务）启动时注入为进程环境变量。机密变量保存后不可再查看。
+      </Typography.Paragraph>
+      {data!.declared.map((v) => (
+        <div key={v.name}>
+          <Space size="small" wrap style={{ marginBottom: 4 }}>
+            {v.required ? <span className="aap-env-required-mark" aria-label="必填">*</span> : null}
+            <Typography.Text code strong>
+              {v.name}
+            </Typography.Text>
+            {v.secret ? (
+              <Tag color="purple" style={{ fontSize: 11 }}>
+                密钥
+              </Tag>
+            ) : null}
+            {v.description ? (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {v.description}
+              </Typography.Text>
+            ) : null}
+          </Space>
+          {v.secret ? (
+            <Space.Compact style={{ width: '100%' }}>
+              <Input.Password
+                value={secretClears[v.name] ? '' : values[v.name] ?? ''}
+                placeholder={v.configured ? `已设置 ${v.hint ?? ''}（留空保持不变）` : '未设置，请输入'}
+                onChange={(e) => {
+                  setValues((p) => ({ ...p, [v.name]: e.target.value }));
+                  if (secretClears[v.name]) setSecretClears((p) => ({ ...p, [v.name]: false }));
+                }}
+                autoComplete="new-password"
+              />
+              {v.configured ? (
+                <Button
+                  danger={secretClears[v.name]}
+                  onClick={() => setSecretClears((p) => ({ ...p, [v.name]: !p[v.name] }))}
+                >
+                  {secretClears[v.name] ? '取消清除' : '清除'}
+                </Button>
+              ) : null}
+            </Space.Compact>
+          ) : (
+            <Input
+              value={values[v.name] ?? ''}
+              placeholder={v.default != null ? `默认值：${v.default}` : '未设置'}
+              onChange={(e) => setValues((p) => ({ ...p, [v.name]: e.target.value }))}
+            />
+          )}
+          {v.pattern ? (
+            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+              格式校验：{v.pattern}
+            </Typography.Text>
+          ) : null}
+        </div>
+      ))}
+      {data!.undeclared.length > 0 ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={`以下变量已存储但当前包版本不再声明（可忽略，或重新配置同名变量以清除）：${data!.undeclared.join('、')}`}
+        />
+      ) : null}
+    </Space>
+  );
+
+  if (embedded) {
+    return (
+      <div className={`aap-app-env-editor${theme ? ` aap-account-modal--${theme}` : ''}`}>
+        {content}
+      </div>
+    );
+  }
 
   return (
     <Modal
@@ -90,6 +194,7 @@ export function AppEnvModal({ appId, appName, open, onClose }: { appId: string; 
       open={open}
       onCancel={onClose}
       width={640}
+      rootClassName={theme ? `aap-account-modal aap-account-modal--${theme}` : undefined}
       footer={
         hasVars
           ? [
@@ -107,80 +212,7 @@ export function AppEnvModal({ appId, appName, open, onClose }: { appId: string; 
             ]
       }
     >
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: 32 }}>
-          <Spin />
-        </div>
-      ) : !hasVars ? (
-        <Empty description="该包的 manifest 未声明任何环境变量" />
-      ) : (
-        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-          <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
-            值加密存储；沙箱（按调用执行 / 持久服务）启动时注入为进程环境变量。机密变量保存后不可再查看。
-          </Typography.Paragraph>
-          {data!.declared.map((v) => (
-            <div key={v.name}>
-              <Space size="small" wrap style={{ marginBottom: 4 }}>
-                <Typography.Text code strong>
-                  {v.name}
-                </Typography.Text>
-                <Tag color={v.required ? 'orange' : 'default'} style={{ fontSize: 11 }}>
-                  {v.required ? '必填' : '可选'}
-                </Tag>
-                {v.secret ? (
-                  <Tag color="purple" style={{ fontSize: 11 }}>
-                    密钥
-                  </Tag>
-                ) : null}
-                {v.description ? (
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {v.description}
-                  </Typography.Text>
-                ) : null}
-              </Space>
-              {v.secret ? (
-                <Space.Compact style={{ width: '100%' }}>
-                  <Input.Password
-                    value={secretClears[v.name] ? '' : values[v.name] ?? ''}
-                    placeholder={v.configured ? `已设置 ${v.hint ?? ''}（留空保持不变）` : '未设置，请输入'}
-                    onChange={(e) => {
-                      setValues((p) => ({ ...p, [v.name]: e.target.value }));
-                      if (secretClears[v.name]) setSecretClears((p) => ({ ...p, [v.name]: false }));
-                    }}
-                    autoComplete="new-password"
-                  />
-                  {v.configured ? (
-                    <Button
-                      danger={secretClears[v.name]}
-                      onClick={() => setSecretClears((p) => ({ ...p, [v.name]: !p[v.name] }))}
-                    >
-                      {secretClears[v.name] ? '取消清除' : '清除'}
-                    </Button>
-                  ) : null}
-                </Space.Compact>
-              ) : (
-                <Input
-                  value={values[v.name] ?? ''}
-                  placeholder={v.default != null ? `默认值：${v.default}` : '未设置'}
-                  onChange={(e) => setValues((p) => ({ ...p, [v.name]: e.target.value }))}
-                />
-              )}
-              {v.pattern ? (
-                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                  格式校验：{v.pattern}
-                </Typography.Text>
-              ) : null}
-            </div>
-          ))}
-          {data!.undeclared.length > 0 ? (
-            <Alert
-              type="warning"
-              showIcon
-              message={`以下变量已存储但当前包版本不再声明（可忽略，或重新配置同名变量以清除）：${data!.undeclared.join('、')}`}
-            />
-          ) : null}
-        </Space>
-      )}
+      {content}
     </Modal>
   );
 }

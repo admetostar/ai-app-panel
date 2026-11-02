@@ -65,8 +65,10 @@ cp "$ROOT/deploy/native/README-NATIVE.md" "$BUNDLE/README-NATIVE.md"
 # 开发指南/平台文档随包（guideRouter 定位 <载荷根>/assets/，三件与 Dockerfile 同源；
 # 此前遗漏导致原生形态「开发指南」404）
 mkdir -p "$BUNDLE/assets"
-cp "$ROOT/docs/app-develop.skill-v0.2.md" "$BUNDLE/assets/"
-cp "$ROOT/docs/asp-app-develop.skill" "$BUNDLE/assets/"
+cp "$SRC/apps/server/assets/app-develop.skill-v0.3.md" "$BUNDLE/assets/"
+cp "$SRC/apps/server/assets/awpk-app-develop.skill" "$BUNDLE/assets/"
+cp "$SRC/apps/server/assets/awpk-app-develop.zip" "$BUNDLE/assets/"
+cp "$SRC/apps/server/assets/awpk-app-develop.md" "$BUNDLE/assets/"
 cp "$ROOT/README.md" "$BUNDLE/assets/README.md"
 cp "$ROOT/docs/app-develop-internal.skill.md" "$BUNDLE/assets/"
 

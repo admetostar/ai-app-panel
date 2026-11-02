@@ -42,12 +42,14 @@ describe('W1 冒烟', () => {
     const body = (await res.json()) as PortalBootstrap;
     expect(body.branding.siteName).toBe('AI超级面板');
     expect(body.registration.mode).toBe('closed');
+    expect(body.appDomainRoot).toBe('localhost');
+    expect(body.appPort).toBe(8080);
     expect(body.needsInit).toBe(true);
   });
 
   it('GET /api/portal/plans 匿名返回管理员启用的权益套餐', async () => {
     const groupId = await createGroup('公开套餐分组', '');
-    await createPlan({ name: '可见权益包', groupId, durationDays: 30, priceFen: 1200, tokenGrant: 500, tier: 4, publicAppLimit: 2 });
+    await createPlan({ name: '可见权益包', groupId, durationDays: 30, priceFen: 1200, tokenGrant: 500, tier: 4, appUploadLimit: 2 });
     const hiddenPlanId = await createPlan({ name: '停售权益包', groupId, durationDays: 30, priceFen: 1000 });
     await updatePlan(hiddenPlanId, { enabled: false });
 

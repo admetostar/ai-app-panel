@@ -10,7 +10,7 @@
  * E2 七条：①同源主题 ②首配向导（左侧竖向） ③一句话说明+默认值标注+高级折叠
  * ④危险操作防呆 ⑤状态仪表卡 ⑥移动端可看状态 ⑦保存即生效+测试按钮
  */
-import type { ReactNode } from 'react';
+import type { ChangeEvent, ReactNode } from 'react';
 import { withBase } from '../lib/base';
 import {
   Alert,
@@ -33,7 +33,8 @@ import {
   Typography,
   message,
 } from 'antd';
-import { useEffect, useState } from 'react';
+import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '@aap/shared';
+import { useEffect, useRef, useState } from 'react';
 import { CopyOutlined } from '@ant-design/icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
@@ -67,6 +68,7 @@ interface GroupRow {
   id: number;
   name: string;
   note: string;
+  appPublishRewardPoints: number;
   memberCount: number;
 }
 interface SettingRow {
@@ -106,6 +108,19 @@ interface AuditRow {
   action: string;
   detail: unknown;
 }
+interface AppRuntimeEvent {
+  id: number;
+  appId: string;
+  ts: number;
+  level: 'info' | 'warn' | 'error';
+  event: string;
+  userId: number | null;
+  method: string | null;
+  path: string | null;
+  statusCode: number | null;
+  durationMs: number | null;
+  details: unknown;
+}
 interface Invite {
   code: string;
   usedBy: number | null;
@@ -137,6 +152,8 @@ function SettingsForm({
   });
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const logoInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (settingsQ.data) {
@@ -184,6 +201,43 @@ function SettingsForm({
     }
   }
 
+  async function uploadLogo(event: ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    event.target.value = '';
+    if (file.size > 5 * 1024 * 1024) {
+      message.error('Logo 图片不能超过 5 MB');
+      return;
+    }
+
+    setLogoUploading(true);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(reader.error ?? new Error('读取图片失败'));
+        reader.onload = () => {
+          if (typeof reader.result !== 'string') {
+            reject(new Error('读取图片失败'));
+            return;
+          }
+          resolve(reader.result);
+        };
+        reader.readAsDataURL(file);
+      });
+      const dataBase64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+      const result = await api<{ path: string }>('/api/admin/site-logo', {
+        method: 'POST',
+        json: { dataBase64 },
+      });
+      form.setFieldsValue({ LOGO: result.path });
+      message.success('Logo 已上传，请保存站点设置后生效');
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : 'Logo 上传失败');
+    } finally {
+      setLogoUploading(false);
+    }
+  }
+
   function renderItem(s: SettingRow): ReactNode {
     return (
       <Form.Item
@@ -193,7 +247,30 @@ function SettingsForm({
         tooltip={s.desc}
         valuePropName={s.type === 'bool' ? 'checked' : 'value'}
       >
-        {renderControl(s, form)}
+        {s.key === 'LOGO' ? (
+          <Input
+            placeholder={s.defaultsWork ? '（默认值即可）' : ''}
+            addonAfter={
+              <>
+                <Button
+                  type="link"
+                  loading={logoUploading}
+                  disabled={logoUploading}
+                  onClick={() => logoInputRef.current?.click()}
+                >
+                  上传
+                </Button>
+                <input
+                  ref={logoInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  onChange={(event) => void uploadLogo(event)}
+                  style={{ display: 'none' }}
+                />
+              </>
+            }
+          />
+        ) : renderControl(s, form)}
       </Form.Item>
     );
   }
@@ -509,10 +586,19 @@ function AppsTab(): ReactNode {
   const [pkgPreview, setPkgPreview] = useState<PkgPreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [envApp, setEnvApp] = useState<AdminApp | null>(null);
+  const [runtimeAppId, setRuntimeAppId] = useState('');
+  const [runtimeLevel, setRuntimeLevel] = useState('');
 
   const groupsQ = useQuery({ queryKey: ['admin-groups'], queryFn: () => api<{ groups: GroupRow[] }>('/api/admin/groups') });
   const usersQ = useQuery({ queryKey: ['admin-users'], queryFn: () => api<{ users: PublicUser[] }>('/api/admin/users') });
   const appsQ = useQuery({ queryKey: ['admin-apps'], queryFn: () => api<{ apps: AdminApp[]; signSecret?: string }>('/api/admin/apps') });
+  const runtimeEventsQ = useQuery({
+    queryKey: ['admin-app-runtime-events', runtimeAppId, runtimeLevel],
+    queryFn: () => api<{ events: AppRuntimeEvent[] }>(
+      `/api/admin/apps/runtime-events?limit=200${runtimeAppId ? `&appId=${encodeURIComponent(runtimeAppId)}` : ''}${runtimeLevel ? `&level=${runtimeLevel}` : ''}`,
+    ),
+    refetchInterval: 30_000,
+  });
   // passUser 开关实时跟随表单；勾选时展示身份签名密钥供上游应用复制
   const passUserOn = Form.useWatch('passUser', form);
   const signSecret = appsQ.data?.signSecret ?? '';
@@ -561,7 +647,7 @@ function AppsTab(): ReactNode {
 
   async function uploadPackage(): Promise<void> {
     if (!pkgFile) {
-      message.warning('请先选择 .asp-app 包文件');
+      message.warning('请先选择 .awpk 包文件');
       return;
     }
     try {
@@ -647,7 +733,7 @@ function AppsTab(): ReactNode {
           <Space size="small">
             <Button type="primary" onClick={() => { form.resetFields(); setVisMode('login'); setPkgFile(null); setPkgPreview(null); setEditing(null); setCreating('upstream'); }}>接入上游应用</Button>
             <Button onClick={() => { form.resetFields(); setVisMode('restricted'); setEditing(null); setCreating('html'); }}>接入 HTML 页</Button>
-            <Button onClick={() => { form.resetFields(); setVisMode('private'); setPkgFile(null); setPkgPreview(null); setEditing(null); setCreating('package'); }}>上传 .asp-app</Button>
+            <Button onClick={() => { form.resetFields(); setVisMode('private'); setPkgFile(null); setPkgPreview(null); setEditing(null); setCreating('package'); }}>上传 .awpk</Button>
           </Space>
         }
       >
@@ -663,9 +749,20 @@ function AppsTab(): ReactNode {
             { title: '上游', dataIndex: 'upstream', ellipsis: true, render: (v: string) => v || '—' },
             {
               title: '可见性',
-              width: 100,
+              width: 160,
               render: (_, r) => (
-                <Tag>{r.visibility === 'public' ? '公开' : r.visibility === 'restricted' ? '指定可见' : r.visibility === 'private' ? '仅自己' : '登录'}</Tag>
+                <Tag
+                  color={r.visibility === 'public' ? 'green' : r.visibility === 'private' ? 'default' : 'blue'}
+                  title={r.visibility === 'restricted' ? '仅满足指定分组或账号条件的登录用户可访问' : undefined}
+                >
+                  {r.visibility === 'public'
+                    ? '公开'
+                    : r.visibility === 'private'
+                      ? '仅自己'
+                      : r.visibility === 'restricted'
+                        ? '需登录（指定范围）'
+                        : '需登录'}
+                </Tag>
               ),
             },
             { title: '健康', width: 90, render: (_, r) => dot(r.healthState) },
@@ -718,6 +815,73 @@ function AppsTab(): ReactNode {
         ))}
       </Card>
 
+      <Card
+        size="small"
+        title="应用运行事件（最近 200 条）"
+        extra={
+          <Space size="small">
+            <Select
+              allowClear
+              placeholder="全部应用"
+              value={runtimeAppId || undefined}
+              onChange={(value) => setRuntimeAppId(String(value ?? ''))}
+              options={(appsQ.data?.apps ?? []).map((app) => ({ value: app.id, label: `${app.name}（${app.id}）` }))}
+              style={{ minWidth: 200 }}
+            />
+            <Select
+              allowClear
+              placeholder="全部级别"
+              value={runtimeLevel || undefined}
+              onChange={(value) => setRuntimeLevel(String(value ?? ''))}
+              options={[
+                { value: 'error', label: '错误' },
+                { value: 'warn', label: '警告' },
+                { value: 'info', label: '信息' },
+              ]}
+              style={{ width: 110 }}
+            />
+            <Button size="small" loading={runtimeEventsQ.isFetching} onClick={() => void runtimeEventsQ.refetch()}>刷新</Button>
+          </Space>
+        }
+      >
+        {runtimeEventsQ.isError ? <Alert type="error" showIcon message="运行事件加载失败" description={runtimeEventsQ.error instanceof Error ? runtimeEventsQ.error.message : '请稍后重试'} /> : null}
+        <Table<AppRuntimeEvent>
+          rowKey="id"
+          size="small"
+          dataSource={runtimeEventsQ.data?.events ?? []}
+          loading={runtimeEventsQ.isLoading}
+          pagination={{ pageSize: 20, showSizeChanger: false }}
+          scroll={{ x: 1000 }}
+          columns={[
+            { title: '时间', width: 160, render: (_, row) => new Date(row.ts).toLocaleString() },
+            { title: '应用', dataIndex: 'appId', width: 150, ellipsis: true },
+            {
+              title: '级别',
+              dataIndex: 'level',
+              width: 80,
+              render: (level: AppRuntimeEvent['level']) => <Tag color={level === 'error' ? 'red' : level === 'warn' ? 'orange' : 'blue'}>{level.toUpperCase()}</Tag>,
+            },
+            { title: '事件', dataIndex: 'event', width: 150 },
+            { title: '用户', dataIndex: 'userId', width: 75, render: (value: number | null) => value ?? '—' },
+            {
+              title: '请求',
+              width: 240,
+              render: (_, row) => row.method ? <Typography.Text code>{row.method} {row.path}</Typography.Text> : '—',
+            },
+            { title: '状态', dataIndex: 'statusCode', width: 75, render: (value: number | null) => value ?? '—' },
+            { title: '耗时', dataIndex: 'durationMs', width: 85, render: (value: number | null) => value == null ? '—' : `${value} ms` },
+            {
+              title: '详情',
+              ellipsis: true,
+              render: (_, row) => row.details ? <Typography.Text code style={{ fontSize: 11 }}>{JSON.stringify(row.details)}</Typography.Text> : '—',
+            },
+          ]}
+        />
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          记录应用进程生命周期、HTTP 错误及耗时至少 1 秒的请求；请求超时会在 25 秒内返回 504 并记录事件。不保存请求/响应正文、Cookie 或认证信息。保留期限沿用“审计保留（天）”设置。
+        </Typography.Text>
+      </Card>
+
       <AppEnvModal appId={envApp?.id ?? ''} appName={envApp?.name ?? ''} open={envApp != null} onClose={() => setEnvApp(null)} />
 
       <Card size="small" title="网关限流与超时" extra={<Tag bordered={false} color="green" style={{ fontSize: 11 }}>默认值即可跑</Tag>}>
@@ -726,7 +890,7 @@ function AppsTab(): ReactNode {
 
       {/* 接入 / 编辑 弹窗 */}
       <Modal
-        title={editing ? `编辑应用：${editing.name}` : creating === 'html' ? '接入 HTML 页' : creating === 'package' ? '上传 .asp-app 包' : '接入上游应用'}
+        title={editing ? `编辑应用：${editing.name}` : creating === 'html' ? '接入 HTML 页' : creating === 'package' ? '上传 .awpk 包' : '接入上游应用'}
         open={Boolean(creating) || Boolean(editing)}
         onCancel={() => { setCreating(null); setEditing(null); }}
         footer={null}
@@ -754,10 +918,10 @@ function AppsTab(): ReactNode {
           </Form.Item>
 
           {creating === 'package' ? (
-            <Form.Item label="包文件（.zip / .asp-app）" required extra="自动校验完整性与 manifest；python 包需等待 M4 运行时">
+            <Form.Item label="应用包（.awpk）" required extra="AWPK 是 ZIP 容器；平台会校验 manifest，并在安装时处理 Python 依赖">
               <input
                 type="file"
-                accept=".zip,.asp-app"
+                accept=".awpk"
                 onChange={(e) => {
                   const f = e.target.files?.[0];
                   if (!f) return;
@@ -1103,8 +1267,20 @@ function UsersRegTab(): ReactNode {
               ]}
             />
           </Form.Item>
-          <Form.Item name="password" label="初始密码" extra="留空自动生成；用户首次登录会强制改密">
-            <Input.Password />
+          <Form.Item
+            name="password"
+            label="初始密码"
+            extra="留空自动生成；手动设置需符合 8-128 位且含大写、小写字母和数字；用户首次登录会强制改密"
+            rules={[
+              {
+                validator: (_, value: string | undefined) =>
+                  !value || isPasswordValid(value)
+                    ? Promise.resolve()
+                    : Promise.reject(new Error(PASSWORD_POLICY_MESSAGE)),
+              },
+            ]}
+          >
+            <Input.Password placeholder="留空自动生成" />
           </Form.Item>
           <Button type="primary" htmlType="submit" block>创建</Button>
         </Form>
@@ -1359,6 +1535,13 @@ function TlsTab(): ReactNode {
         <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
           要求：域名已解析到本机，且 80 端口可达（HTTP-01 验证）。内网 NAS 无公网 80 时请使用下方手动上传 PEM。
         </Typography.Paragraph>
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="用户应用独立子域名需要通配证书"
+          description="配置本站域名后，每个用户应用使用「应用 ID.本站域名」。当前 ACME HTTP-01 仅签发单域名证书；生产环境请上传包含 *.本站域名的通配证书，并将通配 DNS 指向本服务。"
+        />
         <Form form={acmeForm} layout="vertical" onFinish={async (v) => {
           try {
             await api('/api/admin/tls/acme', { method: 'POST', json: v });
@@ -1702,6 +1885,7 @@ function GroupsCard(): ReactNode {
   const [form] = Form.useForm();
   const [editing, setEditing] = useState<GroupRow | null>(null);
   const [editMemberIds, setEditMemberIds] = useState<number[]>([]);
+  const [groupModalOpen, setGroupModalOpen] = useState(false);
 
   const userOptions = (usersQ.data?.users ?? []).map((u) => ({ value: u.id, label: `${u.name}（${u.username ?? u.id}）` }));
 
@@ -1717,15 +1901,11 @@ function GroupsCard(): ReactNode {
         <Button
           size="small"
           type="primary"
-          onClick={async () => {
-            const name = window.prompt('新分组名称（如：订阅-高级）');
-            if (!name) return;
-            try {
-              await api('/api/admin/groups', { method: 'POST', json: { name } });
-              void reload();
-            } catch (err) {
-              message.error(err instanceof Error ? err.message : '创建失败');
-            }
+          onClick={() => {
+            setEditing(null);
+            setEditMemberIds([]);
+            form.setFieldsValue({ name: '', note: '', appPublishRewardPoints: 0 });
+            setGroupModalOpen(true);
           }}
         >
           新建分组
@@ -1740,6 +1920,12 @@ function GroupsCard(): ReactNode {
         columns={[
           { title: '分组', dataIndex: 'name', width: 180 },
           { title: '备注', dataIndex: 'note', ellipsis: true },
+          {
+            title: '公开发布奖励',
+            dataIndex: 'appPublishRewardPoints',
+            width: 130,
+            render: (points: number) => `${points} 分/个`,
+          },
           { title: '成员数', dataIndex: 'memberCount', width: 90 },
           {
             title: '操作',
@@ -1751,10 +1937,16 @@ function GroupsCard(): ReactNode {
                   onClick={async () => {
                     const res = await api<{ memberIds: number[] }>(`/api/admin/groups/${r.id}/members`);
                     setEditMemberIds(res.memberIds);
+                    form.setFieldsValue({
+                      name: r.name,
+                      note: r.note,
+                      appPublishRewardPoints: r.appPublishRewardPoints,
+                    });
                     setEditing(r);
+                    setGroupModalOpen(true);
                   }}
                 >
-                  成员
+                  设置
                 </Button>
                 <Popconfirm title="删除分组？应用可见性配置将失去该组。" onConfirm={async () => {
                   await api(`/api/admin/groups/${r.id}`, { method: 'DELETE' });
@@ -1769,30 +1961,63 @@ function GroupsCard(): ReactNode {
       />
 
       <Modal
-        title={`分组成员：${editing?.name ?? ''}`}
-        open={Boolean(editing)}
-        onCancel={() => setEditing(null)}
+        title={editing ? `设置分组：${editing.name}` : '新建分组'}
+        open={groupModalOpen}
+        onCancel={() => setGroupModalOpen(false)}
         onOk={async () => {
-          if (!editing) return;
-          await api(`/api/admin/groups/${editing.id}`, { method: 'PUT', json: { memberIds: editMemberIds } });
-          message.success('成员已更新');
-          setEditing(null);
-          void reload();
+          try {
+            const values = await form.validateFields();
+            if (editing) {
+              await api(`/api/admin/groups/${editing.id}`, {
+                method: 'PUT',
+                json: { ...values, memberIds: editMemberIds },
+              });
+              message.success('分组设置已保存');
+            } else {
+              await api('/api/admin/groups', { method: 'POST', json: values });
+              message.success('分组已创建');
+            }
+            setGroupModalOpen(false);
+            void reload();
+          } catch (err) {
+            if (err instanceof Error) message.error(err.message);
+          }
         }}
-        okText="保存成员"
+        okText={editing ? '保存设置' : '创建分组'}
       >
-        <Select
-          mode="multiple"
-          style={{ width: '100%' }}
-          placeholder="选择该分组的成员"
-          value={editMemberIds}
-          onChange={(v) => setEditMemberIds(v as number[])}
-          options={userOptions}
-        />
+        <Form form={form} layout="vertical">
+          <Form.Item
+            name="name"
+            label="分组名称"
+            rules={[{ required: true, whitespace: true, message: '请输入分组名称' }]}
+          >
+            <Input maxLength={64} placeholder="例如：订阅-高级" />
+          </Form.Item>
+          <Form.Item name="note" label="备注">
+            <Input.TextArea maxLength={200} rows={2} placeholder="可选，简要说明分组用途" />
+          </Form.Item>
+          <Form.Item
+            name="appPublishRewardPoints"
+            label="公开发布应用奖励"
+            tooltip="该组用户首次将自己创建的应用设为公开时获得的积分；删除已获奖励的应用会扣回，余额最低为 0。"
+            rules={[{ required: true, message: '请输入积分奖励基准' }]}
+          >
+            <InputNumber min={0} max={2_147_483_647} precision={0} addonAfter="分/个" style={{ width: '100%' }} />
+          </Form.Item>
+          {editing && (
+            <Form.Item label="分组成员">
+              <Select
+                mode="multiple"
+                style={{ width: '100%' }}
+                placeholder="选择该分组的成员"
+                value={editMemberIds}
+                onChange={(v) => setEditMemberIds(v as number[])}
+                options={userOptions}
+              />
+            </Form.Item>
+          )}
+        </Form>
       </Modal>
-      <Form form={form} layout="inline" style={{ display: 'none' }}>
-        <Form.Item name="noop">{null}</Form.Item>
-      </Form>
     </Card>
   );
 }
@@ -1809,9 +2034,10 @@ interface PlanRowUI {
   priceFen: number;
   priceCents: number;
   pricePoints: number;
+  redeemUrl: string | null;
   tokenGrant: number;
   tier: number;
-  publicAppLimit: number;
+  appUploadLimit: number;
   enabled: boolean;
 }
 interface OrderRowUI {
@@ -1893,7 +2119,7 @@ function OpsTab(): ReactNode {
             { title: '权益等级', dataIndex: 'tier', width: 120, render: (tier: number) => <TierBadge tier={tier} /> },
             { title: '分组', dataIndex: 'groupName', width: 140 },
             { title: '可用时间', dataIndex: 'durationDays', width: 130, render: (v: number) => planDurationLabel(v) },
-            { title: '可公开发布应用数', dataIndex: 'publicAppLimit', width: 150 },
+            { title: '可上传应用数', dataIndex: 'appUploadLimit', width: 150 },
             { title: 'Token 额度', dataIndex: 'tokenGrant', width: 120, render: (v: number) => v.toLocaleString() },
             { title: '价格', width: 120, render: (_, r) => formatMembershipPlanPrice(r) },
             { title: '状态', width: 80, render: (_, r) => (r.enabled ? <Tag color="green">在售</Tag> : <Tag>停售</Tag>) },
@@ -1939,7 +2165,7 @@ function OpsTab(): ReactNode {
         <Form
           form={planForm}
           layout="vertical"
-          initialValues={{ durationUnit: 'month', tier: 0, publicAppLimit: 10, tokenGrant: 0, priceCurrency: 'CNY', priceAmount: 0 }}
+          initialValues={{ durationUnit: 'month', tier: 0, appUploadLimit: 10, tokenGrant: 0, priceCurrency: 'CNY', priceAmount: 0 }}
           onFinish={async (values) => {
             setPlanSaving(true);
             try {
@@ -1950,12 +2176,13 @@ function OpsTab(): ReactNode {
                   groupId: Number(values.groupId),
                   durationDays: PLAN_DURATION_DAYS[String(values.durationUnit)],
                   tier: Number(values.tier),
-                  publicAppLimit: Number(values.publicAppLimit),
+                  appUploadLimit: Number(values.appUploadLimit),
                   tokenGrant: Number(values.tokenGrant ?? 0),
                   priceCurrency: values.priceCurrency,
                   priceFen: values.priceCurrency === 'CNY' ? Math.round(Number(values.priceAmount ?? 0) * 100) : 0,
                   priceCents: values.priceCurrency === 'USD' ? Math.round(Number(values.priceAmount ?? 0) * 100) : 0,
                   pricePoints: values.priceCurrency === 'POINTS' ? Number(values.priceAmount ?? 0) : 0,
+                  redeemUrl: values.redeemUrl?.trim() || null,
                 },
               });
               message.success('套餐已创建');
@@ -1986,7 +2213,7 @@ function OpsTab(): ReactNode {
           <Form.Item name="durationUnit" label="可用时间" rules={[{ required: true }]}>
             <Select options={[{ value: 'month', label: '月（30 天）' }, { value: 'quarter', label: '季度（90 天）' }, { value: 'year', label: '年（365 天）' }]} />
           </Form.Item>
-          <Form.Item name="publicAppLimit" label="可公开发布应用数量" rules={[{ required: true, message: '请设置公开应用数量' }]}>
+          <Form.Item name="appUploadLimit" label="可上传应用数量" rules={[{ required: true, message: '请设置可上传应用数量' }]}>
             <InputNumber min={0} precision={0} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="tokenGrant" label="Token 额度">
@@ -2010,6 +2237,26 @@ function OpsTab(): ReactNode {
               precision={priceCurrency === 'POINTS' ? 0 : 2}
               style={{ width: '100%' }}
             />
+          </Form.Item>
+          <Form.Item
+            name="redeemUrl"
+            label="兑换码链接"
+            rules={[{
+              validator: async (_, value?: string) => {
+                if (!value?.trim()) return;
+                let url: URL;
+                try {
+                  url = new URL(value.trim());
+                } catch {
+                  throw new Error('请输入有效的 http 或 https 链接');
+                }
+                if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+                  throw new Error('请输入有效的 http 或 https 链接');
+                }
+              },
+            }]}
+          >
+            <Input maxLength={2048} placeholder="https://example.com/redeem（选填）" />
           </Form.Item>
         </Form>
       </Modal>

@@ -2,10 +2,13 @@
  * 管理后台 API（E1）：用户管理、运行时安全策略（settings）、审计查询、
  * 首配向导总览（E2-②）、邀请码签发。
  */
-import { Router } from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
+import express, { Router } from 'express';
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
-import { AAP_VERSION } from '@aap/shared';
+import { isIP } from 'node:net';
+import { AAP_VERSION, isPasswordValid, PASSWORD_POLICY_MESSAGE } from '@aap/shared';
 import { getDb } from '../db/index.js';
 import { apps, auditLogs, inviteCodes, sessions, users } from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
@@ -17,14 +20,92 @@ import { writeLocalCredentials } from '../lib/bootstrap.js';
 import { listSettingsForAdmin, updateSettingFromAdmin, SETTING_DEFS, getSetting } from '../lib/settings.js';
 import { audit } from '../lib/audit.js';
 import { stopAllPersistent } from '../lib/sandbox.js';
-import { createGroup, deleteGroup, groupMemberIds, listGroups, setGroupMembers, updateGroup } from '../lib/groups.js';
+import {
+  createGroup,
+  deleteGroup,
+  groupMemberIds,
+  listGroups,
+  parseAppPublishRewardPoints,
+  setGroupMembers,
+  updateGroup,
+} from '../lib/groups.js';
 import { status as tlsStatus } from '../gateway/tls.js';
 import { defaultAvatarForUser } from '../lib/userAvatar.js';
 import { isFreePlan, listPlans } from '../lib/billing.js';
+import { config } from '../config/index.js';
 
 export const adminRouter = Router();
 
+function normalizeSiteDomain(value: string): string {
+  const domain = value.trim().toLowerCase().replace(/\.$/, '');
+  if (!domain) return '';
+  if (
+    domain.length > 253 ||
+    isIP(domain) !== 0 ||
+    domain.includes('://') ||
+    domain.includes('/') ||
+    domain.includes(':') ||
+    domain.includes('*') ||
+    domain.split('.').some((label) => !/^(?=.{1,63}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label))
+  ) {
+    throw new HttpError(400, 'INVALID_SETTING', '本站域名必须是有效的主机名，不要包含协议、端口、路径或通配符');
+  }
+  return domain;
+}
+
 adminRouter.use('/admin', requireAdmin);
+
+adminRouter.post(
+  '/admin/site-logo',
+  express.json({ limit: '8mb' }),
+  h(async (req, res) => {
+    const body = (req.body ?? {}) as { dataBase64?: unknown };
+    const encoded = body.dataBase64;
+    const maxBytes = 5 * 1024 * 1024;
+    const maxBase64Length = Math.ceil(maxBytes / 3) * 4;
+    if (
+      typeof encoded !== 'string' ||
+      encoded.length === 0 ||
+      encoded.length > maxBase64Length ||
+      encoded.length % 4 !== 0 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)
+    ) {
+      throw new HttpError(400, 'INVALID_LOGO', '请上传有效的图片文件（最大 5 MB）');
+    }
+
+    const image = Buffer.from(encoded, 'base64');
+    if (image.length === 0 || image.length > maxBytes || image.toString('base64') !== encoded) {
+      throw new HttpError(400, 'INVALID_LOGO', '请上传有效的图片文件（最大 5 MB）');
+    }
+
+    const extension = image.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      ? 'png'
+      : image.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))
+        ? 'jpg'
+        : image.subarray(0, 6).toString('ascii').match(/^GIF8[79]a$/)
+          ? 'gif'
+          : image.length >= 12 &&
+              image.subarray(0, 4).toString('ascii') === 'RIFF' &&
+              image.subarray(8, 12).toString('ascii') === 'WEBP'
+            ? 'webp'
+            : null;
+    if (!extension) {
+      throw new HttpError(400, 'UNSUPPORTED_LOGO_FORMAT', 'Logo 仅支持 PNG、JPEG、GIF 或 WebP 图片');
+    }
+
+    const filename = `logo-${randomBytes(16).toString('hex')}.${extension}`;
+    const logoDir = path.join(config.dataDir, 'admin', 'site-logo');
+    fs.mkdirSync(logoDir, { recursive: true });
+    fs.writeFileSync(path.join(logoDir, filename), image, { flag: 'wx', mode: 0o644 });
+
+    const logoPath = `/uploads/sitelogo/${filename}`;
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'config.logo.uploaded', {
+      bytes: image.length,
+      extension,
+    });
+    res.json({ path: logoPath });
+  }),
+);
 
 // ---------- 用户管理 ----------
 
@@ -45,7 +126,7 @@ adminRouter.post(
     if (!/^[a-z0-9][a-z0-9_.-]{2,63}$/.test(username)) {
       throw new HttpError(400, 'INVALID_USERNAME', '用户名需 3-64 位小写字母/数字/_.-');
     }
-    if (password.length < 8 || password.length > 128) throw new HttpError(400, 'INVALID_PASSWORD', '密码长度需 8-128 位');
+    if (!isPasswordValid(password)) throw new HttpError(400, 'INVALID_PASSWORD', PASSWORD_POLICY_MESSAGE);
     if ((await getDb().select({ id: users.id }).from(users).where(eq(users.username, username)))[0]) {
       throw new HttpError(409, 'USERNAME_TAKEN', '用户名已被占用');
     }
@@ -118,7 +199,7 @@ adminRouter.post(
     if (!target) throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
     const body = (req.body ?? {}) as { password?: string };
     const password = String(body.password ?? '') || generatePassword(12);
-    if (password.length < 8 || password.length > 128) throw new HttpError(400, 'INVALID_PASSWORD', '密码长度需 8-128 位');
+    if (!isPasswordValid(password)) throw new HttpError(400, 'INVALID_PASSWORD', PASSWORD_POLICY_MESSAGE);
     // upsert：OIDC 用户没有本地凭据行，直接 UPDATE 会静默无效（下发的密码登录不上）
     await writeLocalCredentials(uid, password);
     await getDb().update(users).set({ mustChangePassword: true }).where(eq(users.id, uid));
@@ -172,6 +253,9 @@ adminRouter.put(
     const keys = Object.keys(body);
     for (const key of keys) {
       if (!SETTING_DEFS[key]) throw new HttpError(400, 'UNKNOWN_SETTING', `未知配置项: ${key}`);
+      if (key === 'SITE_DOMAIN') {
+        body[key] = normalizeSiteDomain(String(body[key] ?? ''));
+      }
       if (key === 'REGISTRATION_POINTS_GIFT') {
         const points = Number(body[key]);
         if (!Number.isSafeInteger(points) || points < 0 || points > 2_147_483_647) {
@@ -219,9 +303,11 @@ adminRouter.get(
 adminRouter.post(
   '/admin/groups',
   h(async (req, res) => {
-    const body = (req.body ?? {}) as { name?: string; note?: string };
+    const body = (req.body ?? {}) as { name?: string; note?: string; appPublishRewardPoints?: unknown };
     if (!body.name?.trim()) throw new HttpError(400, 'INVALID_NAME', '分组名称必填');
-    const id = await createGroup(body.name, body.note ?? '');
+    const appPublishRewardPoints =
+      body.appPublishRewardPoints === undefined ? 0 : parseAppPublishRewardPoints(body.appPublishRewardPoints);
+    const id = await createGroup(body.name, body.note ?? '', appPublishRewardPoints);
     await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.group.create', { id, name: body.name });
     res.json({ ok: true, id });
   }),
@@ -230,8 +316,19 @@ adminRouter.post(
 adminRouter.put(
   '/admin/groups/:id',
   h(async (req, res) => {
-    const body = (req.body ?? {}) as { name?: string; note?: string; memberIds?: number[] };
-    await updateGroup(Number(req.params.id), body);
+    const body = (req.body ?? {}) as {
+      name?: string;
+      note?: string;
+      memberIds?: number[];
+      appPublishRewardPoints?: unknown;
+    };
+    const patch: { name?: string; note?: string; appPublishRewardPoints?: number } = {};
+    if (body.name !== undefined) patch.name = body.name;
+    if (body.note !== undefined) patch.note = body.note;
+    if (body.appPublishRewardPoints !== undefined) {
+      patch.appPublishRewardPoints = parseAppPublishRewardPoints(body.appPublishRewardPoints);
+    }
+    await updateGroup(Number(req.params.id), patch);
     if (body.memberIds !== undefined) await setGroupMembers(Number(req.params.id), body.memberIds);
     await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.group.update', { id: Number(req.params.id) });
     res.json({ ok: true });

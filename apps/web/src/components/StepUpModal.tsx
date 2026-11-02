@@ -4,33 +4,42 @@
  * withStepUp 供动作侧兜底：首个 403 STEP_UP_REQUIRED 弹窗重验后重试一次。
  */
 import { Button, Form, Input, Modal, Tabs, message } from 'antd';
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { api, ApiError } from '../api/client';
 import { useSession } from '../state/session';
 
-export function useStepUp(theme: 'light' | 'dark' = 'light'): [ReactNode, () => Promise<boolean>] {
+interface StepUpOptions {
+  force?: boolean;
+  passwordOnly?: boolean;
+}
+
+export function useStepUp(theme: 'light' | 'dark' = 'light'): [ReactNode, (options?: StepUpOptions) => Promise<boolean>] {
   const { me } = useSession();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [resolveRef, setResolveRef] = useState<((ok: boolean) => void) | null>(null);
+  const [passwordOnly, setPasswordOnly] = useState(false);
+  const resolveRef = useRef<((ok: boolean) => void) | null>(null);
+  const closeResultRef = useRef<boolean | null>(null);
   // 两个 Tab 各自独立实例：共用一个实例时 Tabs 切换后两 Form 同时挂载，
   // 提交会对隐藏 Tab 的必填字段一并校验，导致 TOTP 提交静默失败
   const [passwordForm] = Form.useForm();
   const [totpForm] = Form.useForm();
 
-  const ensure = (): Promise<boolean> => {
+  const ensure = (options: StepUpOptions = {}): Promise<boolean> => {
     // 已在步升窗口内 → 直接放行
-    if (me?.stepUpUntil && me.stepUpUntil > Date.now()) return Promise.resolve(true);
+    if (!options.force && me?.stepUpUntil && me.stepUpUntil > Date.now()) return Promise.resolve(true);
     passwordForm.resetFields();
     totpForm.resetFields();
+    setPasswordOnly(options.passwordOnly ?? false);
     setOpen(true);
-    return new Promise((resolve) => setResolveRef(() => resolve));
+    return new Promise((resolve) => {
+      resolveRef.current = resolve;
+    });
   };
 
   const close = (ok: boolean): void => {
+    closeResultRef.current = ok;
     setOpen(false);
-    resolveRef?.(ok);
-    setResolveRef(null);
   };
 
   async function submitPassword(values: { password: string }): Promise<void> {
@@ -65,6 +74,12 @@ export function useStepUp(theme: 'light' | 'dark' = 'light'): [ReactNode, () => 
       footer={null}
       destroyOnClose
       rootClassName={`aap-account-modal aap-account-modal--${theme}`}
+      afterOpenChange={(visible) => {
+        if (visible || closeResultRef.current === null) return;
+        resolveRef.current?.(closeResultRef.current);
+        resolveRef.current = null;
+        closeResultRef.current = null;
+      }}
     >
       <Tabs
         items={[
@@ -82,7 +97,7 @@ export function useStepUp(theme: 'light' | 'dark' = 'light'): [ReactNode, () => 
               </Form>
             ),
           },
-          ...(me?.user.mfaEnabled
+          ...(!passwordOnly && me?.user.mfaEnabled
             ? [
                 {
                   key: 'totp',

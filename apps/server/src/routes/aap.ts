@@ -1,5 +1,5 @@
 /**
- * .asp-app 沙箱平台侧（M4，G2/G5）：
+ * .awpk 沙箱平台侧（M4，G2/G5）：
  *  - POST /api/aap/llm/chat   沙箱内 aap.llm.chat 的平台代理：转发网关并签名归因到运行用户
  *  - POST /api/aap/egress     沙箱内 aap.http.fetch 的唯一出口：manifest 域名白名单逐请求核验
  * 认证：X-AAP-Token（应用网关凭据，运行时由平台注入沙箱环境）。

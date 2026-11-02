@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import type { PortalBootstrap } from '@aap/shared';
+import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '@aap/shared';
 import { api } from '../api/client';
 import { obtainPowToken } from '../lib/pow';
 import { usePostAuthRedirect } from '../state/session';
@@ -110,10 +111,15 @@ export function RegisterPage() {
             label="密码"
             rules={[
               { required: true, message: '请输入密码' },
-              { min: 8, max: 128, message: '8-128 位' },
+              {
+                validator: (_, value: string | undefined) =>
+                  !value || isPasswordValid(value)
+                    ? Promise.resolve()
+                    : Promise.reject(new Error(PASSWORD_POLICY_MESSAGE)),
+              },
             ]}
           >
-            <Input.Password placeholder="至少 8 位" />
+            <Input.Password placeholder="8-128 位，含大写、小写字母和数字" />
           </Form.Item>
           <Form.Item
             name="password2"

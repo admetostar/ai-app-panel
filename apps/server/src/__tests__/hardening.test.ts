@@ -35,7 +35,7 @@ import { signIdentity, verifyIdentity } from '../gateway/identity.js';
 import { hasLeadingZeroBits } from '../lib/pow.js';
 import { appendLedger, cachedBalance, createAppToken, grantTokens, precheck, recomputeBalance, settleEstimate } from '../lib/llm.js';
 import { HttpError } from '../lib/httpError.js';
-import { apps, inviteCodes, verificationCodes } from '../db/schema.js';
+import { apps, inviteCodes, userGroupMembers, userGroups, verificationCodes } from '../db/schema.js';
 import { writeLocalCredentials } from '../lib/bootstrap.js';
 
 let server: Server;
@@ -65,6 +65,33 @@ async function login(username: string, password: string): Promise<string> {
   });
   if (res.status !== 200) throw new Error(`login ${username} failed: ${res.status}`);
   return cookieOf(res);
+}
+
+function getAppHost(
+  appId: string,
+  requestPath: string,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; headers: { get(name: string): string | null }; text(): Promise<string> }> {
+  const port = new URL(base).port;
+  return new Promise((resolve, reject) => {
+    const req = http.get(
+      `http://127.0.0.1:${port}${requestPath}`,
+      { headers: { ...headers, host: `${appId}.localhost:${port}` } },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          const body = Buffer.concat(chunks).toString();
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: { get: (name) => res.headers[name.toLowerCase()]?.toString() ?? null },
+            text: async () => body,
+          });
+        });
+      },
+    );
+    req.on('error', reject);
+  });
 }
 
 beforeAll(async () => {
@@ -168,7 +195,7 @@ describe('display_name 净化（回归）', () => {
 });
 
 describe('托管应用路径越界（P1-4）', () => {
-  it('raw 通道 ../ 兄弟目录读文件被 400 拒绝', async () => {
+  it('旧 raw 通道越界请求不会跨应用读取文件', async () => {
     writeHtmlApp('trav-a', '<h1>trav-a</h1>');
     fs.mkdirSync(appSiteDir('trav-b'), { recursive: true });
     fs.writeFileSync(path.join(appSiteDir('trav-b'), 'secret.html'), 'TOPSECRET');
@@ -176,40 +203,39 @@ describe('托管应用路径越界（P1-4）', () => {
       id: 'trav-a', name: 'TravA', visibility: 'public', kind: 'html', upstream: '',
       ownerUserId: ownerId, createdAt: Date.now(), updatedAt: Date.now(),
     });
-    const res = await fetch(`${base}/app/trav-a/raw/..%2Ftrav-b%2Fsecret.html`);
-    expect(res.status).toBe(400);
+    const res = await fetch(`${base}/app/trav-a/raw/..%2Ftrav-b%2Fsecret.html`, { redirect: 'manual' });
+    expect(res.status).not.toBe(307);
+    expect(await res.text()).not.toContain('TOPSECRET');
   });
 
-  it('非 raw 通道只返回沙箱外壳（不把越界路径交给静态层）', async () => {
-    const res = await fetch(`${base}/app/trav-a/..%2Ftrav-b%2Fsecret.html`);
-    expect(res.status).toBe(200);
+  it('独立应用 origin 对越界路径直接拒绝', async () => {
+    const res = await getAppHost('trav-a', '/..%2Ftrav-b%2Fsecret.html');
+    expect(res.status).toBe(400);
     const body = await res.text();
     expect(body).not.toContain('TOPSECRET');
-    expect(body).toContain('sandbox=');
   });
 });
 
-describe('用户包 iframe 沙箱（PRD G1 / 批二）', () => {
-  it('用户上传 html：入口是外壳页（iframe sandbox + raw 指针）；raw 通道无 chrome、无同源 cookie 面', async () => {
+describe('用户应用本地路径沙箱', () => {
+  it('旧 iframe 路径直接显示沙箱外壳；应用内容不直出门户源', async () => {
     writeHtmlApp('sbx-app', '<h1 id="m">SBX-MARKER</h1><a href="/page2">inner</a>');
     await getDb().insert(apps).values({
       id: 'sbx-app', name: 'Sbx', visibility: 'public', kind: 'html', upstream: '',
       ownerUserId: ownerId, createdAt: Date.now(), updatedAt: Date.now(),
     });
 
-    const entry = await fetch(`${base}/app/sbx-app/`);
+    const entry = await fetch(`${base}/app/sbx-app/`, { redirect: 'manual' });
     expect(entry.status).toBe(200);
     const shell = await entry.text();
-    expect(shell).toContain('sandbox="allow-scripts');
-    expect(shell).not.toContain('allow-same-origin');
-    expect(shell).toContain('/app/sbx-app/raw/');
-    expect(shell).toContain('/portal-chrome.js');
+    expect(shell).toContain('<iframe data-aap-app-frame sandbox=');
+    expect(shell).not.toContain('SBX-MARKER');
 
-    const raw = await fetch(`${base}/app/sbx-app/raw/`);
-    expect(raw.status).toBe(200);
-    const rawHtml = await raw.text();
-    expect(rawHtml).toContain('SBX-MARKER');
-    expect(rawHtml).not.toContain('/portal-chrome.js');
+    const appPage = await getAppHost('sbx-app', '/');
+    expect(appPage.status).toBe(200);
+    const html = await appPage.text();
+    expect(html).toContain('SBX-MARKER');
+    expect(html).not.toContain('/portal-chrome.js');
+    expect(html).not.toContain('iframe sandbox');
   });
 
   it('压缩包条目路径逃逸被拒（不写出 appsites 根）', () => {
@@ -271,6 +297,33 @@ describe('egress 出站代理（P0-3）', () => {
 });
 
 describe('公开可见性与发布', () => {
+  it('管理员可以设置分组的公开发布积分基准', async () => {
+    const create = await fetch(`${base}/api/admin/groups`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
+      body: JSON.stringify({ name: 'admin-reward-group', note: 'test', appPublishRewardPoints: 17 }),
+    });
+    expect(create.status).toBe(200);
+    const { id } = (await create.json()) as { id: number };
+    const listed = await fetch(`${base}/api/admin/groups`, { headers: { cookie: adminCookie } });
+    expect(((await listed.json()) as { groups: Array<{ id: number; appPublishRewardPoints: number }> }).groups)
+      .toContainEqual(expect.objectContaining({ id, appPublishRewardPoints: 17 }));
+
+    const invalid = await fetch(`${base}/api/admin/groups/${id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
+      body: JSON.stringify({ appPublishRewardPoints: 1.5 }),
+    });
+    expect(invalid.status).toBe(400);
+
+    const update = await fetch(`${base}/api/admin/groups/${id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
+      body: JSON.stringify({ appPublishRewardPoints: 19 }),
+    });
+    expect(update.status).toBe(200);
+  });
+
   it('删除托管应用：要求步升认证且仅归属者可删', async () => {
     writeHtmlApp('delete-owned-app', '<h1>DELETE-ME</h1>');
     await getDb().insert(apps).values({
@@ -302,18 +355,81 @@ describe('公开可见性与发布', () => {
     expect(fs.existsSync(appSiteDir('delete-owned-app'))).toBe(false);
   });
 
+  it('首次公开应用按所属分组奖励积分，删除时最多扣至零且不重复奖励', async () => {
+    const [group] = await getDb()
+      .insert(userGroups)
+      .values({
+        name: 'publish-reward-test',
+        note: '',
+        appPublishRewardPoints: 11,
+        createdAt: Date.now(),
+      })
+      .returning({ id: userGroups.id });
+    await getDb().insert(userGroupMembers).values({
+      groupId: group!.id,
+      userId: ownerId,
+      createdAt: Date.now(),
+    });
+    await getDb().update(users).set({ pointsBalance: 0 }).where(eq(users.id, ownerId));
+    writeHtmlApp('reward-points-app', '<h1>Reward</h1>');
+    await getDb().insert(apps).values({
+      id: 'reward-points-app',
+      name: 'Reward',
+      visibility: 'private',
+      kind: 'html',
+      upstream: '',
+      ownerUserId: ownerId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    const publish = (nextVisibility: string) =>
+      fetch(`${base}/api/apps/reward-points-app/publish`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: base, cookie: ownerCookie },
+        body: JSON.stringify({ visibility: nextVisibility }),
+      });
+    const updateSettings = (nextVisibility: string) =>
+      fetch(`${base}/api/apps/reward-points-app/settings`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', origin: base, cookie: ownerCookie },
+        body: JSON.stringify({ name: 'Reward', description: '', visibility: nextVisibility }),
+      });
+    const firstPublish = await updateSettings('public');
+    expect(firstPublish.status).toBe(200);
+    expect(await firstPublish.json()).toMatchObject({ pointsAwarded: 11 });
+    expect((await getDb().select().from(apps).where(eq(apps.id, 'reward-points-app')))[0]?.publicationRewardPoints).toBe(11);
+    expect((await getDb().select().from(users).where(eq(users.id, ownerId)))[0]?.pointsBalance).toBe(11);
+
+    const repeatedPublish = await publish('public');
+    expect(await repeatedPublish.json()).toMatchObject({ pointsAwarded: 0 });
+    await updateSettings('private');
+    const republish = await publish('public');
+    expect(await republish.json()).toMatchObject({ pointsAwarded: 0 });
+    expect((await getDb().select().from(users).where(eq(users.id, ownerId)))[0]?.pointsBalance).toBe(11);
+
+    await getDb().update(users).set({ pointsBalance: 3 }).where(eq(users.id, ownerId));
+    const remove = await fetch(`${base}/api/apps/reward-points-app`, {
+      method: 'DELETE',
+      headers: { origin: base, cookie: ownerCookie },
+    });
+    expect(remove.status).toBe(200);
+    expect(await remove.json()).toMatchObject({ pointsDeducted: 3 });
+    expect((await getDb().select().from(users).where(eq(users.id, ownerId)))[0]?.pointsBalance).toBe(0);
+  });
+
   it('公开应用不受历史审核状态影响', async () => {
     writeHtmlApp('rev-app', '<h1>REV</h1>');
     await getDb().insert(apps).values({
       id: 'rev-app', name: 'Rev', visibility: 'public', kind: 'html', upstream: '',
       reviewStatus: 'approved', ownerUserId: ownerId, createdAt: Date.now(), updatedAt: Date.now(),
     });
-    expect((await fetch(`${base}/app/rev-app/`, { headers: { cookie: otherCookie } })).status).toBe(200);
+    expect((await getAppHost('rev-app', '/', { cookie: otherCookie })).status).toBe(200);
 
     await getDb().update(apps).set({ reviewStatus: 'pending' }).where(eq(apps.id, 'rev-app'));
-    expect((await fetch(`${base}/app/rev-app/`, { headers: { cookie: otherCookie } })).status).toBe(200);
-    expect((await fetch(`${base}/app/rev-app/`)).status).toBe(200);
-    expect((await fetch(`${base}/app/rev-app/`, { headers: { cookie: ownerCookie } })).status).toBe(200);
+    expect((await getAppHost('rev-app', '/', { cookie: otherCookie })).status).toBe(200);
+    expect((await getAppHost('rev-app', '/')).status).toBe(200);
+    expect((await getAppHost('rev-app', '/', { cookie: ownerCookie })).status).toBe(200);
 
     expect((await fetch(`${base}/api/apps/rev-app/meta`, { headers: { cookie: otherCookie } })).status).toBe(200);
   });
@@ -333,7 +449,7 @@ describe('公开可见性与发布', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: ownerCookie },
       body: JSON.stringify({
-        filename: 'pkg.asp-app',
+        filename: 'pkg.awpk',
         dataBase64: zipPkg({
           'manifest.json': JSON.stringify({
             name: 'rev-app',
@@ -378,7 +494,44 @@ describe('公开可见性与发布', () => {
       accessible: true,
       enabled: true,
     });
-    expect((await fetch(`${base}/app/rev-app/`)).status).toBe(200);
+    const sharedResponse = await fetch(`${base}/api/apps/shared`, { headers: { cookie: otherCookie } });
+    expect(sharedResponse.status).toBe(200);
+    const sharedBody = (await sharedResponse.json()) as { apps: Array<{ id: string }> };
+    expect(sharedBody.apps.some((item) => item.id === 'rev-app')).toBe(true);
+
+    const loginVisibility = await fetch(`${base}/api/apps/rev-app/publish`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, cookie: ownerCookie },
+      body: JSON.stringify({ visibility: 'login' }),
+    });
+    expect(loginVisibility.status).toBe(200);
+    expect(await loginVisibility.json()).toMatchObject({ visibility: 'login' });
+    const sharedLoginResponse = await fetch(`${base}/api/apps/shared`, { headers: { cookie: otherCookie } });
+    expect(((await sharedLoginResponse.json()) as { apps: Array<{ id: string }> }).apps.some((item) => item.id === 'rev-app')).toBe(true);
+
+    const privateVisibility = await fetch(`${base}/api/apps/rev-app/publish`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, cookie: ownerCookie },
+      body: JSON.stringify({ visibility: 'private' }),
+    });
+    expect(privateVisibility.status).toBe(200);
+    expect(await privateVisibility.json()).toMatchObject({ visibility: 'private' });
+    const sharedPrivateResponse = await fetch(`${base}/api/apps/shared`, { headers: { cookie: otherCookie } });
+    expect(((await sharedPrivateResponse.json()) as { apps: Array<{ id: string }> }).apps.some((item) => item.id === 'rev-app')).toBe(false);
+
+    const invalidVisibility = await fetch(`${base}/api/apps/rev-app/publish`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, cookie: ownerCookie },
+      body: JSON.stringify({ visibility: 'restricted' }),
+    });
+    expect(invalidVisibility.status).toBe(400);
+    const restorePublic = await fetch(`${base}/api/apps/rev-app/publish`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, cookie: ownerCookie },
+      body: JSON.stringify({ visibility: 'public' }),
+    });
+    expect(restorePublic.status).toBe(200);
+    expect((await getAppHost('rev-app', '/')).status).toBe(200);
   });
 });
 
@@ -549,7 +702,7 @@ describe('python 包声明制依赖（skill v0.2.6）', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
       body: JSON.stringify({
-        filename: 'deps.asp-app',
+        filename: 'deps.awpk',
         dataBase64: zipPkg({
           'manifest.json': JSON.stringify({
             name: 'deps-app-up', display_name: 'Deps', type: 'python', entry: 'mod.py', runtime: 'invoked',
@@ -578,7 +731,7 @@ describe('admin 包上传顺序（P3-14）', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
       body: JSON.stringify({
-        filename: 'pkg.asp-app',
+        filename: 'pkg.awpk',
         dataBase64: zipPkg({ 'manifest.json': JSON.stringify({ name: 'exist-up', display_name: 'Dup', type: 'html' }), 'index.html': '<h1>NEW</h1>' }).toString('base64'),
       }),
     });
@@ -742,7 +895,7 @@ describe('邀请码并发双花（批二⑧）', () => {
       const start = await fetch(`${base}/api/auth/register/start`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ username: 'harden1', password: 'harden-pass-123', email: 'harden1@example.com', inviteCode: 'HARD-CODE-01', powToken }),
+        body: JSON.stringify({ username: 'harden1', password: 'Harden-pass-123', email: 'harden1@example.com', inviteCode: 'HARD-CODE-01', powToken }),
       });
       expect(start.status).toBe(200);
       const { registrationId } = (await start.json()) as { registrationId: string };
@@ -822,8 +975,7 @@ describe('HTML 页面内容编辑（编辑弹窗数据面）', () => {
       body: JSON.stringify({ html: '<h1>V2-EDITED</h1>' }),
     });
     expect(put.status).toBe(200);
-    const file = await fetch(`${base}/app/edit-html/raw/`, { headers: { cookie: ownerCookie } });
-    // owner 是普通用户 → 走 iframe 沙箱外壳；raw 通道才直出内容
+    const file = await getAppHost('edit-html', '/', { cookie: ownerCookie });
     expect(await file.text()).toContain('V2-EDITED');
 
     const empty = await fetch(`${base}/api/admin/apps/edit-html`, {
@@ -835,12 +987,12 @@ describe('HTML 页面内容编辑（编辑弹窗数据面）', () => {
   });
 });
 
-describe('.asp-app 包预解析（上传前预览）', () => {
+describe('.awpk 包预解析（上传前预览）', () => {
   function preview(dataBase64: string): Promise<{ status: number; body: Record<string, unknown> }> {
     return fetch(`${base}/api/admin/apps/package/preview`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ filename: 'pkg.asp-app', dataBase64 }),
+      body: JSON.stringify({ filename: 'pkg.awpk', dataBase64 }),
     }).then(async (r) => ({ status: r.status, body: (await r.json()) as Record<string, unknown> }));
   }
 
@@ -953,6 +1105,26 @@ describe('登录 401 信息泄露收敛（P2-12）', () => {
     expect(anon.status).toBe(401);
     const authed = await fetch(`${base}/api/dev/guide`, { headers: { cookie: otherCookie } });
     expect(authed.status).toBe(200);
+  });
+
+  it('技能下载：匿名可下载 .skill、.zip 和 .md 三种格式', async () => {
+    for (const format of ['skill', 'zip'] as const) {
+      const response = await fetch(`${base}/api/dev/guide/download?format=${format}`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain('application/zip');
+      expect(response.headers.get('content-disposition')).toContain(`awpk-app-develop.${format}`);
+
+      const archive = new AdmZip(Buffer.from(await response.arrayBuffer()));
+      const skillEntry = archive.getEntry('SKILL.md');
+      expect(skillEntry).toBeDefined();
+      expect(skillEntry?.getData().toString('utf8').startsWith('---')).toBe(true);
+    }
+
+    const markdown = await fetch(`${base}/api/dev/guide/download?format=md`);
+    expect(markdown.status).toBe(200);
+    expect(markdown.headers.get('content-disposition')).toContain('awpk-app-develop.md');
+    expect((await markdown.text()).startsWith('---')).toBe(true);
+    expect((await fetch(`${base}/api/dev/guide/download?format=exe`)).status).toBe(400);
   });
 });
 
@@ -1109,7 +1281,7 @@ describe('上传限频与磁盘水位（生产评审 6.2①）', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie: ownerCookie, origin: base },
       body: JSON.stringify({
-        filename: 'w.zip',
+        filename: 'w.awpk',
         dataBase64: Buffer.from(zipPkg({ 'manifest.json': JSON.stringify({ name: 'wm-app', type: 'html' }), 'index.html': '<h1>w</h1>' })).toString('base64'),
       }),
     });
@@ -1126,7 +1298,7 @@ describe('上传限频与磁盘水位（生产评审 6.2①）', () => {
       const res = await fetch(`${base}/api/apps/submit`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', cookie: otherCookie, origin: base },
-        body: JSON.stringify({ filename: 'r.zip', dataBase64: b64 }),
+        body: JSON.stringify({ filename: 'r.awpk', dataBase64: b64 }),
       });
       lastStatus = res.status;
       if (res.status !== 200) lastCode = ((await res.json()) as { error?: { code?: string } }).error?.code ?? '';

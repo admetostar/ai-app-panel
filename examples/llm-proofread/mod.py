@@ -1,5 +1,5 @@
 """
-文语校对（llm-proofread）· .asp-app Python 包（persistent）
+文语校对（llm-proofread）· .awpk Python 包（persistent）
 ================================================================
 按 `docs/llm-proofread-aap-design.md` 实现（AAP 重构版，不移植原项目代码）：
 

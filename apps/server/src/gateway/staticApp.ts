@@ -1,6 +1,6 @@
 /**
  * 门户托管静态应用（P4）与应用统一页面元素（P3）。
- *  - kind='html'：门户直接托管 data/appsites/<id>/（简单 HTML 页 / .asp-app html 包）
+ *  - kind='html'：门户直接托管 data/appsites/<id>/（简单 HTML 页 / .awpk html 包）
  *  - kind='package'：python 包等待运行时（M4），占位页
  *  - 统一页面元素：HTML 响应注入 /portal-chrome.js（返回超级面板），
  *    失败静默不阻断（W0 契约：包作者不得遮挡右上角）。
@@ -58,7 +58,12 @@ function relaxDirForSandbox(dir: string): void {
   }
 }
 
-/** 解压 .asp-app 到托管目录并提取 manifest；signature.json 如存在按普通包文件处理。 */
+/** AWPK 是 ZIP 容器；只允许规范 ZIP 签名，不支持旧 .awpk 文件格式。 */
+export function isAwpkFilename(filename: unknown): filename is string {
+  return typeof filename === 'string' && /\.awpk$/i.test(filename);
+}
+
+/** 解压 AWPK 到托管目录并提取 manifest；signature.json 仅作普通包文件处理。 */
 export function storePackageFiles(
   appId: string,
   zipBuffer: Buffer,
@@ -66,6 +71,16 @@ export function storePackageFiles(
   files: number;
   manifest: Record<string, unknown>;
 } {
+  if (
+    zipBuffer.length < 4 ||
+    !(
+      zipBuffer.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])) ||
+      zipBuffer.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x05, 0x06])) ||
+      zipBuffer.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x07, 0x08]))
+    )
+  ) {
+    throw new Error('AWPK 内容必须是有效的 ZIP 容器');
+  }
   // adm-zip 延迟加载（纯 JS，无原生依赖）
   const req = createRequire(import.meta.url);
   type ZipEntry = { entryName: string; isError: boolean; getData: () => Buffer; header?: { size?: number } };
@@ -240,7 +255,7 @@ export function parseEnvSpec(value: unknown): Record<string, ManifestEnvVar> {
   return out;
 }
 
-/** 校验 .asp-app manifest（app-develop.skill v0.2 契约），返回规范化字段 */
+/** 校验 .awpk manifest（app-develop.skill v0.2 契约），返回规范化字段 */
 export function validateManifest(m: Record<string, unknown>): {
   name: string;
   displayName: string;
@@ -298,7 +313,7 @@ export function validateManifest(m: Record<string, unknown>): {
  * 用户上传的 html/package 应用必须经 iframe 沙箱隔离（PRD G1：iframe sandbox
  * 属性 + 禁同源 cookie）。判据：归属者存在且不是管理员——管理员自建应用视为
  * 信任内容，保持既往直出行为。沙箱（无 allow-same-origin）下包代码运行在
- * opaque origin：读 /api 受 CORS 拦、写 /api 受 CSRF Origin(null) 拦。
+ * opaque origin：不具备门户同源权限或 Cookie；当前应用的 raw 路径通过外壳受限桥接。
  */
 export async function needsIframeSandbox(app: AppRow): Promise<boolean> {
   if (app.kind !== 'html' && app.kind !== 'package') return false;
@@ -314,8 +329,8 @@ const RAW_PREFIX_RE = /^raw(?:\/|$)/;
 
 /** raw 通道响应的 CSP：sandbox 标志与外壳 iframe sandbox 对齐（刻意不含
  *  allow-same-origin）——受害者被诱导顶层直达 raw URL 时，包代码同样被关进
- *  opaque origin（读 /api 受 CORS 拦、写 /api 受 CSRF Origin(null) 拦、
- *  会话 cookie 不随 opaque origin 可用）。处理器内在全局通用 CSP 之后覆盖设置 */
+ *  opaque origin（门户 /api 仍不可直接访问，iframe 本身不持有会话 cookie）。
+ * 处理器内在全局通用 CSP 之后覆盖设置 */
 export const RAW_SANDBOX_CSP =
   "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads allow-pointer-lock; object-src 'none'; base-uri 'none'";
 
@@ -324,26 +339,40 @@ export function stripRawPrefix(sub: string): string {
 }
 
 /** 沙箱外壳页：iframe sandbox 承载包内容，统一页面元素挂在外壳层（包代码不可触碰） */
-export function serveSandboxShell(res: Response, appId: string, sub: string): void {
+export function sandboxShellHtml(appId: string, sub: string, query = ''): string {
+  const gatewayPrefix = config.gatewayPrefix ?? '';
   const enc = stripRawPrefix(sub)
     .split('/')
     .filter((s) => s.length > 0)
     .map((s) => encodeURIComponent(s))
     .join('/');
-  const target = `/app/${encodeURIComponent(appId)}/raw/${enc}`;
-  const html =
+  const target = `${gatewayPrefix}/app/${encodeURIComponent(appId)}/raw/${enc}`;
+  const search = query ? `?${new URLSearchParams(query).toString()}`.replace(/&/g, '&amp;') : '';
+  return (
     `<!doctype html><html><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<style>html,body{margin:0;height:100%;background:#fff}iframe{border:0;width:100%;height:100%}</style>` +
-    `<script src="/portal-chrome.js" data-aap-app="${encodeURIComponent(appId)}" defer></script>` +
+    `<script src="${gatewayPrefix}/portal-chrome.js" data-aap-app="${encodeURIComponent(appId)}" defer></script>` +
+    `<script src="${gatewayPrefix}/portal-app-bridge-host.js" data-aap-app="${encodeURIComponent(appId)}"></script>` +
     `</head><body>` +
-    `<iframe sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads allow-pointer-lock" ` +
-    `referrerpolicy="no-referrer" src="${target}" title="app"></iframe></body></html>`;
-  res.type('html').send(html);
+    `<iframe data-aap-app-frame sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads allow-pointer-lock" ` +
+    `referrerpolicy="no-referrer" src="${target}${search}" title="app"></iframe></body></html>`
+  );
+}
+
+export function serveSandboxShell(res: Response, appId: string, sub: string, query = ''): void {
+  res.type('html').send(sandboxShellHtml(appId, sub, query));
 }
 
 /** 托管应用请求处理（已过门禁与限流；sub 为 /app/<id>/ 之后的路径） */
-export function serveHtmlApp(req: Request, res: Response, app: AppRow, sub: string, noChrome = false): void {
+export function serveHtmlApp(
+  req: Request,
+  res: Response,
+  app: AppRow,
+  sub: string,
+  noChrome = false,
+  appOrigin = false,
+): void {
   // raw 通道（noChrome）：顶层直达 raw URL 时包代码在门户源裸奔执行（P0）——
   // 输出前覆盖全局通用 CSP，用 sandbox 指令把顶层导航也关进 opaque origin
   if (noChrome) res.setHeader('Content-Security-Policy', RAW_SANDBOX_CSP);
@@ -375,7 +404,7 @@ export function serveHtmlApp(req: Request, res: Response, app: AppRow, sub: stri
     if (ext === '.html' || ext === '.htm') {
       // 托管 HTML 同样注入统一页面元素（沙箱 raw 通道不注入——chrome 在外壳层）
       const html = fs.readFileSync(abs, 'utf8');
-      res.send(noChrome ? html : injectChrome(html, app.id));
+      res.send(noChrome ? injectSandboxBridge(html, app.id) : appOrigin ? html : injectChrome(html, app.id));
     } else {
       res.send(fs.readFileSync(abs));
     }
@@ -386,13 +415,23 @@ export function serveHtmlApp(req: Request, res: Response, app: AppRow, sub: stri
   const indexPath = path.join(appSiteDir(app.id), 'index.html');
   if (fs.existsSync(indexPath)) {
     const html = fs.readFileSync(indexPath, 'utf8');
-    res.type('html').send(noChrome ? html : injectChrome(html, app.id));
+    res.type('html').send(noChrome ? injectSandboxBridge(html, app.id) : appOrigin ? html : injectChrome(html, app.id));
     return;
   }
   res.status(404).type('html').send('Not Found');
 }
 
-/** 统一页面元素注入：右上角「返回超级面板」悬浮入口 */
+/** Inject the client half before app scripts so same-app fetch/XHR calls can use the shell bridge. */
+export function injectSandboxBridge(html: string, appId: string): string {
+  if (/<script\b[^>]*src=["']\/portal-app-bridge-client\.js["'][^>]*>/i.test(html)) return html;
+  const tag = `<script src="/portal-app-bridge-client.js" data-aap-app="${encodeURIComponent(appId)}"></script>`;
+  if (/<head(?:\s[^>]*)?>/i.test(html)) return html.replace(/<head(?:\s[^>]*)?>/i, (head) => head + tag);
+  if (/<!doctype[^>]*>/i.test(html)) return html.replace(/<!doctype[^>]*>/i, (doctype) => doctype + tag);
+  if (/<html(?:\s[^>]*)?>/i.test(html)) return html.replace(/<html(?:\s[^>]*)?>/i, (open) => open + tag);
+  return tag + html;
+}
+
+/** 统一页面元素注入：右下角站点名称悬浮入口 */
 export function injectChrome(html: string, appId: string): string {
   const tag = `<script src="/portal-chrome.js" data-aap-app="${encodeURIComponent(appId)}" defer></script>`;
   if (html.includes('/portal-chrome.js')) return html; // 幂等
@@ -400,14 +439,289 @@ export function injectChrome(html: string, appId: string): string {
   return tag + html;
 }
 
+/** Parent-side request bridge. It only accepts messages from this shell's app iframe. */
+export function sandboxBridgeHostJs(): string {
+  return `(function(){
+  var script=document.currentScript;
+  var appId=script&&script.dataset.aapApp;
+  if(!appId||window.__aapBridgeHost)return;
+  window.__aapBridgeHost=true;
+  var base='/app/'+encodeURIComponent(appId)+'/raw/';
+  var pending=new Map();
+  var methods=new Set(['GET','HEAD','POST','PUT','PATCH','DELETE']);
+  var deniedHeaders=new Set(['authorization','cookie','cookie2','host','origin','referer','content-length','connection','transfer-encoding','proxy-authorization']);
+  var responseHeaders=new Set(['accept-ranges','cache-control','content-language','content-length','content-range','content-type','etag','expires','last-modified','location']);
+  function reply(id,data,transfer){
+    var frame=document.querySelector('[data-aap-app-frame]');
+    if(frame&&frame.contentWindow)frame.contentWindow.postMessage(Object.assign({channel:'aap-app-bridge',id:id},data),'*',transfer||[]);
+  }
+  function validTarget(value){
+    if(typeof value!=='string'||value.length>8192)return null;
+    try{
+      var u=new URL(value,location.origin+base);
+      if(u.origin!==location.origin||u.username||u.password||!u.pathname.startsWith(base))return null;
+      var segments=u.pathname.slice(base.length).split('/');
+      for(var i=0;i<segments.length;i++){
+        var decoded=decodeURIComponent(segments[i]);
+        if(decoded==='.'||decoded==='..'||decoded.indexOf('/')>=0||decoded.indexOf('\\\\')>=0)return null;
+      }
+      u.hash='';
+      return u;
+    }catch(_){return null;}
+  }
+  function validHeaders(value){
+    if(!Array.isArray(value)||value.length>32)return null;
+    var out=new Headers(),total=0;
+    for(var i=0;i<value.length;i++){
+      var pair=value[i];
+      if(!Array.isArray(pair)||pair.length!==2||typeof pair[0]!=='string'||typeof pair[1]!=='string')return null;
+      var name=pair[0].toLowerCase();
+      total+=name.length+pair[1].length;
+      if(total>16384)return null;
+      if(!/^[!#$%&'*+.^_\`|~0-9a-z-]+$/.test(name)||name.startsWith('proxy-')||name.startsWith('sec-')||name.startsWith('x-aap-')||name.startsWith('x-forwarded-')||deniedHeaders.has(name)||pair[1].length>4096)return null;
+      try{out.append(name,pair[1]);}catch(_){return null;}
+    }
+    return out;
+  }
+  async function readBounded(response){
+    if(!response.body)return new ArrayBuffer(0);
+    var reader=response.body.getReader(),chunks=[],size=0;
+    while(true){
+      var part=await reader.read();
+      if(part.done)break;
+      size+=part.value.byteLength;
+      if(size>5*1024*1024){await reader.cancel();throw new Error('RESPONSE_TOO_LARGE');}
+      chunks.push(part.value);
+    }
+    var out=new Uint8Array(size),offset=0;
+    for(var i=0;i<chunks.length;i++){out.set(chunks[i],offset);offset+=chunks[i].byteLength;}
+    return out.buffer;
+  }
+  window.addEventListener('message',async function(event){
+    var frame=document.querySelector('[data-aap-app-frame]');
+    if(!frame)return;
+    if(event.source!==frame.contentWindow)return;
+    var data=event.data;
+    if(!data||data.channel!=='aap-app-bridge'||typeof data.id!=='string'||data.id.length>128)return;
+    if(data.type==='abort'){
+      var active=pending.get(data.id);
+      if(active)active.abort();
+      return;
+    }
+    if(data.type!=='request'||pending.has(data.id))return;
+    if(pending.size>=16){
+      reply(data.id,{type:'error',error:'TOO_MANY_REQUESTS'});
+      return;
+    }
+    var target=validTarget(data.url),method=typeof data.method==='string'?data.method.toUpperCase():'';
+    var headers=validHeaders(data.headers);
+    // Older cached child shims did not send credentials; default them to the
+    // same-origin policy rather than making an otherwise valid request fail.
+    var credentials=data.credentials==null||data.credentials==='same-origin'?'same-origin':data.credentials==='omit'?'omit':null;
+    if(!target||!methods.has(method)||!headers||!credentials){
+      reply(data.id,{type:'error',error:'INVALID_REQUEST'});
+      return;
+    }
+    if((method==='GET'||method==='HEAD')&&data.body!=null){
+      reply(data.id,{type:'error',error:'INVALID_REQUEST'});
+      return;
+    }
+    if(data.body!=null&&(!(data.body instanceof ArrayBuffer)||data.body.byteLength>1024*1024)){
+      reply(data.id,{type:'error',error:'REQUEST_TOO_LARGE'});
+      return;
+    }
+    var controller=new AbortController();
+    pending.set(data.id,controller);
+    var timer=setTimeout(function(){controller.abort();},30000);
+    var startedAt=Date.now();
+    try{
+      var response=await fetch(target.href,{method:method,headers:headers,body:data.body==null?undefined:data.body,credentials:credentials,redirect:'manual',signal:controller.signal});
+      if(response.type==='opaqueredirect'){
+        reply(data.id,{type:'error',error:'REDIRECT_BLOCKED'});
+        return;
+      }
+      var body=await readBounded(response);
+      var safeHeaders=[];
+      response.headers.forEach(function(value,name){if(name.toLowerCase()!=='content-length'&&responseHeaders.has(name.toLowerCase()))safeHeaders.push([name,value]);});
+      reply(data.id,{type:'response',status:response.status,statusText:response.statusText,headers:safeHeaders,body:body},[body]);
+    }catch(error){
+      if(!controller.signal.aborted)reply(data.id,{type:'error',error:error&&error.message==='RESPONSE_TOO_LARGE'?'RESPONSE_TOO_LARGE':'REQUEST_FAILED'});
+      else if(Date.now()>=startedAt+30000)reply(data.id,{type:'error',error:'TIMEOUT'});
+    }finally{
+      clearTimeout(timer);
+      pending.delete(data.id);
+    }
+  });
+})();`;
+}
+
+/** Child-side fetch/XHR shim. The app keeps its opaque origin and never receives portal cookies. */
+export function sandboxBridgeClientJs(): string {
+  return `(function(){
+  var script=document.currentScript;
+  var appId=script&&script.dataset.aapApp;
+  if(!appId||window.__aapBridgeClient||!window.parent||window.parent===window)return;
+  window.__aapBridgeClient=true;
+  var base='/app/'+encodeURIComponent(appId)+'/raw/';
+  var portalOrigin=new URL(location.href).origin;
+  var pending=new Map(),sequence=0;
+  var methods=new Set(['GET','HEAD','POST','PUT','PATCH','DELETE']);
+  function isAppUrl(value){
+    try{
+      var u=new URL(value,location.href);
+      return u.origin===portalOrigin&&u.pathname.startsWith(base);
+    }catch(_){return false;}
+  }
+  async function readRequestBounded(request){
+    if(!request.body)return null;
+    var reader=request.clone().body.getReader(),chunks=[],size=0;
+    while(true){
+      var part=await reader.read();
+      if(part.done)break;
+      size+=part.value.byteLength;
+      if(size>1024*1024){await reader.cancel();throw new TypeError('Application bridge request body exceeds 1 MB');}
+      chunks.push(part.value);
+    }
+    var out=new Uint8Array(size),offset=0;
+    for(var i=0;i<chunks.length;i++){out.set(chunks[i],offset);offset+=chunks[i].byteLength;}
+    return out.buffer;
+  }
+  function send(method,url,headers,body,signal,credentials){
+    method=String(method||'GET').toUpperCase();
+    if(!methods.has(method))return Promise.reject(new TypeError('Unsupported application bridge method'));
+    var requestId='r'+Date.now().toString(36)+'-'+(++sequence).toString(36);
+    return new Promise(function(resolve,reject){
+      var done=false,timer,abortHandler;
+      function finish(error,value){
+        if(done)return;
+        done=true;clearTimeout(timer);pending.delete(requestId);
+        if(signal&&abortHandler)signal.removeEventListener('abort',abortHandler);
+        error?reject(error):resolve(value);
+      }
+      pending.set(requestId,function(data){
+        if(data.type==='error'){
+          finish(data.error==='TIMEOUT'?new DOMException('The operation timed out','TimeoutError'):new TypeError('Application bridge request failed: '+data.error));
+          return;
+        }
+        if(data.type!=='response'||!Number.isInteger(data.status)||data.status<200||data.status>599||!(data.body instanceof ArrayBuffer)){
+          finish(new TypeError('Invalid application bridge response'));return;
+        }
+        try{finish(null,new Response(data.status===204||data.status===205||data.status===304?null:data.body,{status:data.status,statusText:data.statusText||'',headers:data.headers||[]}));}
+        catch(error){finish(error);}
+      });
+      timer=setTimeout(function(){window.parent.postMessage({channel:'aap-app-bridge',type:'abort',id:requestId},'*');finish(new DOMException('The operation timed out','TimeoutError'));},35000);
+      if(signal){
+        abortHandler=function(){window.parent.postMessage({channel:'aap-app-bridge',type:'abort',id:requestId},'*');finish(new DOMException('The operation was aborted','AbortError'));};
+        if(signal.aborted){abortHandler();return;}
+        signal.addEventListener('abort',abortHandler,{once:true});
+      }
+      var message={channel:'aap-app-bridge',type:'request',id:requestId,method:method,url:url,headers:headers||[],body:body||null,credentials:credentials||'same-origin'};
+      try{window.parent.postMessage(message,'*',body instanceof ArrayBuffer?[body]:[]);}
+      catch(error){finish(error);}
+    });
+  }
+  window.addEventListener('message',function(event){
+    if(event.source!==window.parent||event.origin!==portalOrigin)return;
+    var data=event.data;
+    if(data&&data.channel==='aap-app-bridge'&&typeof data.id==='string'&&pending.has(data.id))pending.get(data.id)(data);
+  });
+  var nativeFetch=window.fetch.bind(window);
+  window.fetch=function(input,init){
+    var req;
+    try{req=new Request(input,init);}catch(error){return Promise.reject(error);}
+    if(!isAppUrl(req.url))return nativeFetch(input,init);
+    if((req.method==='GET'||req.method==='HEAD')&&req.body)return Promise.reject(new TypeError('GET/HEAD requests cannot have a body'));
+    return readRequestBounded(req).then(function(body){return send(req.method,req.url,Array.from(req.headers.entries()),body,req.signal,req.credentials==='omit'?'omit':'same-origin');});
+  };
+
+  var XHR=window.XMLHttpRequest,open=XHR.prototype.open,sendNative=XHR.prototype.send,setHeader=XHR.prototype.setRequestHeader;
+  var xhrState=new WeakMap();
+  XHR.prototype.open=function(method,url,async,user,password){
+    if(async!==false&&isAppUrl(new URL(url,location.href).href)){
+      var state={method:String(method).toUpperCase(),url:new URL(url,location.href).href,headers:[],responseHeaders:[],status:0,statusText:'',responseURL:'',responseText:'',response:null,responseType:'',readyState:1,timeout:0,sent:false,done:false,controller:null,timedOut:false};
+      xhrState.set(this,state);
+      var xhr=this;
+      ['readyState','status','statusText','responseURL','responseText','response'].forEach(function(key){Object.defineProperty(xhr,key,{configurable:true,get:function(){return state[key];}});});
+      Object.defineProperty(this,'responseType',{configurable:true,get:function(){return state.responseType;},set:function(value){state.responseType=String(value);}});
+      Object.defineProperty(this,'timeout',{configurable:true,get:function(){return state.timeout;},set:function(value){state.timeout=Math.max(0,Number(value)||0);}});
+      Object.defineProperty(this,'withCredentials',{configurable:true,get:function(){return false;},set:function(){}});
+      this.dispatchEvent(new Event('readystatechange'));
+      return;
+    }
+    xhrState.delete(this);
+    return open.call(this,method,url,async,user,password);
+  };
+  XHR.prototype.setRequestHeader=function(name,value){
+    var state=xhrState.get(this);
+    if(!state)return setHeader.call(this,name,value);
+    if(state.sent)throw new DOMException('The request has already been sent','InvalidStateError');
+    state.headers.push([String(name),String(value)]);
+  };
+  XHR.prototype.send=function(body){
+    var state=xhrState.get(this);
+    if(!state)return sendNative.call(this,body);
+    if(state.sent)throw new DOMException('The request has already been sent','InvalidStateError');
+    if((state.method==='GET'||state.method==='HEAD')&&body!=null)throw new TypeError('GET/HEAD requests cannot have a body');
+    state.sent=true;state.controller=new AbortController();
+    var xhr=this,timer=null;
+    this.dispatchEvent(new Event('loadstart'));
+    if(state.timeout>0)timer=setTimeout(function(){state.timedOut=true;state.controller.abort();},state.timeout);
+    var bodyRequest;
+    try{bodyRequest=new Request(state.url,{method:state.method,headers:state.headers,body:body});}
+    catch(error){bodyRequest=Promise.reject(error);}
+    Promise.resolve(bodyRequest).then(function(request){return readRequestBounded(request).then(function(bytes){return send(state.method,state.url,Array.from(request.headers.entries()),bytes,state.controller.signal,'same-origin');});}).then(function(response){
+      if(timer)clearTimeout(timer);
+      state.readyState=2;state.status=response.status;state.statusText=response.statusText;state.responseURL=state.url;
+      response.headers.forEach(function(value,name){state.responseHeaders.push([name,value]);});
+      xhr.dispatchEvent(new Event('readystatechange'));
+      return response.arrayBuffer();
+    }).then(function(bytes){
+      state.readyState=3;state.responseText=new TextDecoder().decode(bytes);
+      state.response=state.responseType==='arraybuffer'?bytes:state.responseType==='blob'?new Blob([bytes]):state.responseType==='json'?parseJson(state.responseText):state.responseType===''||state.responseType==='text'?state.responseText:null;
+      state.readyState=4;state.done=true;xhr.dispatchEvent(new Event('readystatechange'));
+      if(state.responseType==='document'&&typeof DOMParser!=='undefined')state.response=new DOMParser().parseFromString(state.responseText,'text/html');
+      xhr.dispatchEvent(new Event('load'));xhr.dispatchEvent(new Event('loadend'));
+    }).catch(function(){
+      if(timer)clearTimeout(timer);
+      state.readyState=4;state.done=true;state.status=0;state.response=null;state.responseText='';
+      xhr.dispatchEvent(new Event('readystatechange'));
+      xhr.dispatchEvent(new Event(state.timedOut?'timeout':'error'));xhr.dispatchEvent(new Event('loadend'));
+    });
+  };
+  XHR.prototype.abort=function(){
+    var state=xhrState.get(this);
+    if(!state)return;
+    if(state.done)return;
+    if(state.controller)state.controller.abort();
+    state.readyState=0;state.status=0;
+    this.dispatchEvent(new Event('readystatechange'));this.dispatchEvent(new Event('abort'));this.dispatchEvent(new Event('loadend'));
+  };
+  var getHeader=XHR.prototype.getResponseHeader,getAll=XHR.prototype.getAllResponseHeaders;
+  XHR.prototype.getResponseHeader=function(name){
+    var state=xhrState.get(this);
+    if(!state)return getHeader.call(this,name);
+    if(state.readyState<2)return null;
+    var wanted=String(name).toLowerCase(),entry=state.responseHeaders.find(function(pair){return pair[0].toLowerCase()===wanted;});
+    return entry?entry[1]:null;
+  };
+  XHR.prototype.getAllResponseHeaders=function(){
+    var state=xhrState.get(this);
+    if(!state)return getAll.call(this);
+    return state.readyState<2?'':state.responseHeaders.map(function(pair){return pair[0]+': '+pair[1]+'\\r\\n';}).join('');
+  };
+  function parseJson(text){try{return JSON.parse(text);}catch(_){return null;}}
+})();`;
+}
+
 /** /portal-chrome.js 静态内容（小而自包含） */
-export function portalChromeJs(): string {
+export function portalChromeJs(siteName: string): string {
   return `(function(){
   if (window.__aapChrome) return;
   window.__aapChrome = true;
+  var siteName = ${JSON.stringify(siteName)};
   var style = document.createElement('style');
   style.textContent = [
-    '#aap-chrome{position:fixed;top:10px;right:10px;z-index:2147483000;display:flex;gap:6px;',
+    '#aap-chrome{position:fixed;right:16px;bottom:16px;z-index:2147483000;display:flex;gap:6px;',
     'align-items:center;background:rgba(255,255,255,.92);border:1px solid rgba(0,0,0,.08);',
     'border-radius:999px;padding:4px 8px;font:12px/1.6 system-ui,-apple-system,sans-serif;',
     'box-shadow:0 2px 8px rgba(0,0,0,.12)}',
@@ -417,7 +731,10 @@ export function portalChromeJs(): string {
   document.head.appendChild(style);
   var bar = document.createElement('div');
   bar.id = 'aap-chrome';
-  bar.innerHTML = '<a href="/">返回超级面板</a>';
+  var link = document.createElement('a');
+  link.href = '/';
+  link.textContent = siteName;
+  bar.appendChild(link);
   document.body.appendChild(bar);
 })();`;
 }

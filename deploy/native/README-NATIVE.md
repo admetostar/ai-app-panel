@@ -10,7 +10,7 @@
 > 仍不行请 `apt install python3-pip`；需要宿主可访问 pip 源，可用环境变量
 > `PIP_INDEX_URL` 指定国内镜像；补装失败不阻断启动，flask 类 persistent 包会
 > 503 并在日志留线索）。
-> .asp-app 包自身的第三方依赖走 manifest `requirements` 声明制，上传时自动
+> .awpk 包自身的第三方依赖走 manifest `requirements` 声明制，上传时自动
 > 安装（同样经宿主 pip，装到应用数据目录，平台升级不丢）。
 
 ## 快速开始

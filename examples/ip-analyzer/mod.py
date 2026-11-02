@@ -1,5 +1,5 @@
 """
-IP 安全分析（ip-analyzer）· .asp-app Python 包示例（persistent）
+IP 安全分析（ip-analyzer）· .awpk Python 包示例（persistent）
 ================================================================
 移植自 github.com/neon9809/ip-analyzer（Flask + AbuseIPDB），按平台规范改造：
 

@@ -8,6 +8,7 @@ apt-get install -y -qq python3 >/dev/null
 corepack enable
 cd /app
 pnpm install --frozen-lockfile
+pnpm skills:sync
 pnpm --filter @aap/shared build
 pnpm --filter @aap/server build
 pnpm --filter @aap/web build

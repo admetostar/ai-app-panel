@@ -1,23 +1,32 @@
 /**
- * .asp-app 运行与发布（M4，G3/G4/G5）：
+ * .awpk 运行与发布（M4，G3/G4/G5）：
  *  - POST /api/apps/:id/run            invoked 执行（requireAuth + 可见性门禁；运行记录入 app_runs + 审计）
  *  - GET  /api/apps/:id/meta           执行页元数据（入参 schema 等；匿名按可见性门禁可读公开应用）
- *  - POST /api/apps/submit             用户上传 .asp-app（requireAuth；必须可信签名；默认私有可见，归属=上传者；
+ *  - POST /api/apps/submit             用户上传 .awpk（requireAuth；默认私有可见，归属=上传者；
  *                                      正式目录写入一律在归属校验之后，防止同名包清空他人应用）
- *  - POST /api/apps/:id/publish        用户发布为公开（requireAuth + 订阅额度校验）
+ *  - POST /api/apps/:id/publish        用户设置应用可见范围（默认公开，requireAuth）
  *  - GET  /api/apps/mine               我的应用（requireAuth）
  */
 import fs, { statfsSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import path from 'node:path';
 import express, { Router } from 'express';
-import { and, eq, ne, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, ne, sql } from 'drizzle-orm';
 import type { AppCard, OwnedAppCard } from '@aap/shared';
 import { getDb } from '../db/index.js';
-import { appRuns, apps, llmAppTokens } from '../db/schema.js';
+import {
+  appRuns,
+  apps,
+  llmAppTokens,
+  membershipPlans,
+  userGroupMembers,
+  userGroups,
+  users,
+} from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
 import { requireAuth, requireStepUp } from '../lib/auth.js';
-import { canAccess } from '../gateway/registry.js';
-import { appSiteDir } from '../gateway/staticApp.js';
+import { canAccess, isVisibleInPortal } from '../gateway/registry.js';
+import { appSiteDir, isAwpkFilename } from '../gateway/staticApp.js';
 import { loopbackPlatformPort, runInvoked } from '../lib/sandbox.js';
 import { ensureAutoProvisionedToken } from '../lib/llm.js';
 import { config } from '../config/index.js';
@@ -28,7 +37,8 @@ import { missingRequiredEnv } from '../lib/appEnv.js';
 import { stopPersistentFor } from '../lib/sandbox.js';
 import { getSettingInt } from '../lib/settings.js';
 import { appEnvVars } from '../db/schema.js';
-import { assertPublicAppQuota } from '../lib/billing.js';
+import { assertAppUploadQuota } from '../lib/billing.js';
+import { installPyDeps } from '../lib/pydeps.js';
 
 // ---------- 上传限频（每用户每日；内存计数，重启归零，软防护） ----------
 
@@ -55,6 +65,127 @@ export const appsRunRouter = Router();
 async function loadApp(id: string) {
   return (await getDb().select().from(apps).where(eq(apps.id, id)))[0];
 }
+
+export function appIconDir(appId: string): string {
+  const directoryId = createHash('sha256').update(appId).digest('hex');
+  return path.join(config.dataDir, 'app-private', 'icons', directoryId);
+}
+
+function iconFilenameFor(app: { id: string; icon: string | null }): string | null {
+  const prefix = `/api/apps/${encodeURIComponent(app.id)}/icon/`;
+  if (!app.icon?.startsWith(prefix)) return null;
+  const filename = app.icon.slice(prefix.length);
+  return /^icon-[a-f0-9]{32}\.(?:png|jpe?g|gif|webp)$/.test(filename) ? filename : null;
+}
+
+function removePreviousIcon(app: { id: string; icon: string | null }, keepFilename?: string): void {
+  const current = iconFilenameFor(app);
+  if (!current || current === keepFilename) return;
+  try {
+    fs.rmSync(path.join(appIconDir(app.id), current), { force: true });
+  } catch (error) {
+    console.error(`[apps] failed to remove previous icon for ${app.id}:`, error);
+  }
+}
+
+appsRunRouter.get(
+  '/apps/:id/icon/:filename',
+  h(async (req, res) => {
+    const app = await loadApp(String(req.params.id));
+    const filename = String(req.params.filename);
+    if (
+      !app ||
+      !isVisibleInPortal(app, req.user ?? null) ||
+      iconFilenameFor(app) !== filename
+    ) {
+      throw new HttpError(404, 'APP_ICON_NOT_FOUND', '应用图标不存在或不可访问');
+    }
+
+    const extension = path.extname(filename);
+    const file = path.join(appIconDir(app.id), filename);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.type(extension).send(fs.readFileSync(file));
+  }),
+);
+
+appsRunRouter.post(
+  '/apps/:id/icon',
+  requireAuth,
+  express.json({ limit: '3mb' }),
+  h(async (req, res) => {
+    const app = await loadApp(String(req.params.id));
+    if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
+    if (app.ownerUserId !== req.user!.id) throw new HttpError(403, 'FORBIDDEN', '只有应用归属者可以修改应用图标');
+    if (app.kind === 'upstream') throw new HttpError(400, 'NOT_PACKAGE', '仅托管应用可以上传图标');
+
+    const body = (req.body ?? {}) as { dataBase64?: unknown };
+    const encoded = body.dataBase64;
+    const maxBytes = 2 * 1024 * 1024;
+    const maxBase64Length = Math.ceil(maxBytes / 3) * 4;
+    if (
+      typeof encoded !== 'string' ||
+      encoded.length === 0 ||
+      encoded.length > maxBase64Length ||
+      encoded.length % 4 !== 0 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)
+    ) {
+      throw new HttpError(400, 'INVALID_APP_ICON', '请上传有效的图片文件（最大 2 MB）');
+    }
+
+    const image = Buffer.from(encoded, 'base64');
+    if (image.length === 0 || image.length > maxBytes || image.toString('base64') !== encoded) {
+      throw new HttpError(400, 'INVALID_APP_ICON', '请上传有效的图片文件（最大 2 MB）');
+    }
+    const extension = image.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      ? 'png'
+      : image.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))
+        ? 'jpg'
+        : image.subarray(0, 6).toString('ascii').match(/^GIF8[79]a$/)
+          ? 'gif'
+          : image.length >= 12 &&
+              image.subarray(0, 4).toString('ascii') === 'RIFF' &&
+              image.subarray(8, 12).toString('ascii') === 'WEBP'
+            ? 'webp'
+            : null;
+    if (!extension) {
+      throw new HttpError(400, 'UNSUPPORTED_APP_ICON_FORMAT', '应用图标仅支持 PNG、JPEG、GIF 或 WebP 图片');
+    }
+
+    const filename = `icon-${randomBytes(16).toString('hex')}.${extension}`;
+    const directory = appIconDir(app.id);
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const file = path.join(directory, filename);
+    fs.writeFileSync(file, image, { flag: 'wx', mode: 0o600 });
+    const icon = `/api/apps/${encodeURIComponent(app.id)}/icon/${filename}`;
+    try {
+      await getDb().update(apps).set({ icon, updatedAt: Date.now() }).where(eq(apps.id, app.id));
+    } catch (error) {
+      fs.rmSync(file, { force: true });
+      throw error;
+    }
+    removePreviousIcon(app, filename);
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'app.icon.uploaded', {
+      appId: app.id,
+      bytes: image.length,
+      extension,
+    });
+    res.json({ icon });
+  }),
+);
+
+appsRunRouter.delete(
+  '/apps/:id/icon',
+  requireAuth,
+  h(async (req, res) => {
+    const app = await loadApp(String(req.params.id));
+    if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
+    if (app.ownerUserId !== req.user!.id) throw new HttpError(403, 'FORBIDDEN', '只有应用归属者可以修改应用图标');
+    await getDb().update(apps).set({ icon: null, updatedAt: Date.now() }).where(eq(apps.id, app.id));
+    removePreviousIcon(app);
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'app.icon.removed', { appId: app.id });
+    res.json({ ok: true });
+  }),
+);
 
 // ---------- 执行页元数据 ----------
 
@@ -167,6 +298,104 @@ function canManageEnv(app: { ownerUserId: number | null }, user: { id: number; r
   return user.role === 'admin' || (app.ownerUserId != null && app.ownerUserId === user.id);
 }
 
+async function updateOwnedAppVisibility(
+  appId: string,
+  userId: number,
+  visibility: 'public' | 'login' | 'private',
+  options: { name?: string; description?: string; enable?: boolean } = {},
+): Promise<number> {
+  return getDb().transaction(async (tx) => {
+    const app = (await tx.select().from(apps).where(eq(apps.id, appId)).for('update'))[0];
+    if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
+    if (app.ownerUserId !== userId) throw new HttpError(403, 'FORBIDDEN', '只有应用归属者可以修改应用设置');
+    if (app.kind === 'upstream') throw new HttpError(400, 'NOT_PACKAGE', '仅托管应用可以修改可见范围');
+
+    let rewardPoints = app.publicationRewardPoints;
+    let awarded = 0;
+    if (visibility === 'public' && app.visibility !== 'public' && rewardPoints === null) {
+      const membershipGroup = (
+        await tx
+          .select({ rewardPoints: userGroups.appPublishRewardPoints })
+          .from(users)
+          .innerJoin(membershipPlans, eq(users.membershipPlanId, membershipPlans.id))
+          .innerJoin(userGroups, eq(membershipPlans.groupId, userGroups.id))
+          .where(and(eq(users.id, userId), gt(users.membershipExpiresAt, Date.now())))
+          .limit(1)
+      )[0];
+      let groupRewardPoints = membershipGroup?.rewardPoints;
+      if (groupRewardPoints === undefined) {
+        const memberGroup = (
+          await tx
+            .select({ rewardPoints: userGroups.appPublishRewardPoints })
+            .from(userGroupMembers)
+            .innerJoin(userGroups, eq(userGroupMembers.groupId, userGroups.id))
+            .where(eq(userGroupMembers.userId, userId))
+            .orderBy(userGroupMembers.groupId)
+            .limit(1)
+        )[0];
+        groupRewardPoints = memberGroup?.rewardPoints;
+      }
+      rewardPoints = groupRewardPoints ?? 0;
+      awarded = rewardPoints;
+      if (awarded > 0) {
+        await tx
+          .update(users)
+          .set({ pointsBalance: sql`${users.pointsBalance} + ${awarded}` })
+          .where(eq(users.id, userId));
+      }
+    }
+
+    await tx
+      .update(apps)
+      .set({
+        ...(options.name !== undefined ? { name: options.name } : {}),
+        ...(options.description !== undefined ? { description: options.description } : {}),
+        ...(options.enable ? { enabled: true } : {}),
+        visibility,
+        updatedAt: Date.now(),
+        ...(rewardPoints !== app.publicationRewardPoints ? { publicationRewardPoints: rewardPoints } : {}),
+      })
+      .where(eq(apps.id, app.id));
+    return awarded;
+  });
+}
+
+appsRunRouter.put(
+  '/apps/:id/settings',
+  requireAuth,
+  h(async (req, res) => {
+    const app = await loadApp(String(req.params.id));
+    if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
+    if (app.ownerUserId !== req.user!.id) throw new HttpError(403, 'FORBIDDEN', '只有应用归属者可以修改应用设置');
+    if (app.kind === 'upstream') throw new HttpError(400, 'NOT_PACKAGE', '仅托管应用可以修改这些设置');
+
+    const body = (req.body ?? {}) as { name?: unknown; description?: unknown; visibility?: unknown };
+    if (typeof body.name !== 'string' || !body.name.trim() || body.name.trim().length > 191) {
+      throw new HttpError(400, 'INVALID_NAME', '应用名称不能为空且不能超过 191 个字符');
+    }
+    if (typeof body.description !== 'string' || body.description.length > 4000) {
+      throw new HttpError(400, 'INVALID_DESCRIPTION', '应用描述不能超过 4000 个字符');
+    }
+    const visibility = body.visibility;
+    if (visibility !== 'public' && visibility !== 'login' && visibility !== 'private') {
+      throw new HttpError(400, 'INVALID_VISIBILITY', '可见范围必须是公开、需登录或仅自己');
+    }
+
+    const values = {
+      name: body.name.trim(),
+      description: body.description.trim(),
+      visibility,
+    };
+    const pointsAwarded = await updateOwnedAppVisibility(app.id, req.user!.id, visibility, values);
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'app.settings.update', {
+      appId: app.id,
+      visibility: values.visibility,
+      pointsAwarded,
+    });
+    res.json({ ok: true, pointsAwarded });
+  }),
+);
+
 appsRunRouter.get(
   '/apps/:id/env',
   requireAuth,
@@ -174,7 +403,7 @@ appsRunRouter.get(
     const app = await loadApp(String(req.params.id));
     if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
     if (!canManageEnv(app, req.user!)) throw new HttpError(403, 'FORBIDDEN', '只有归属者或管理员可以查看环境变量');
-    if (app.kind !== 'package') throw new HttpError(400, 'NOT_PACKAGE', '环境变量仅对 .asp-app 包生效');
+    if (app.kind !== 'package') throw new HttpError(400, 'NOT_PACKAGE', '环境变量仅对 .awpk 包生效');
 
     const spec = await envSpecOfStored(app.id);
     const rows = await getDb()
@@ -227,7 +456,7 @@ appsRunRouter.put(
     const app = await loadApp(String(req.params.id));
     if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
     if (!canManageEnv(app, req.user!)) throw new HttpError(403, 'FORBIDDEN', '只有归属者或管理员可以修改环境变量');
-    if (app.kind !== 'package') throw new HttpError(400, 'NOT_PACKAGE', '环境变量仅对 .asp-app 包生效');
+    if (app.kind !== 'package') throw new HttpError(400, 'NOT_PACKAGE', '环境变量仅对 .awpk 包生效');
 
     const spec = await envSpecOfStored(app.id);
     const body = (req.body ?? {}) as { values?: Record<string, unknown> };
@@ -284,7 +513,7 @@ appsRunRouter.put(
   }),
 );
 
-// ---------- 用户提交 .asp-app（默认私有；版本更新直接更新） ----------
+// ---------- 用户提交 AWPK（默认私有；版本更新直接更新） ----------
 
 appsRunRouter.post(
   '/apps/submit',
@@ -292,6 +521,10 @@ appsRunRouter.post(
   // 大包体解析在鉴权之后（匿名 15MB JSON 解析 DoS 面收敛）
   express.json({ limit: '15mb' }),
   h(async (req, res) => {
+    const body = (req.body ?? {}) as { filename?: string; dataBase64?: string };
+    if (!isAwpkFilename(body.filename)) {
+      throw new HttpError(400, 'INVALID_PACKAGE_EXT', '应用包文件必须使用 .awpk 扩展名');
+    }
     // 每用户每日上传上限（内存计数，重启归零——软防护，防脚本化刷包写满数据卷；
     // admin 上传路径不设限，管理员可信）
     if (!uploadAllowed(req.user!.id)) {
@@ -310,7 +543,6 @@ appsRunRouter.post(
       // statfs 不可用（异常挂载）时不阻断上传——包体上限与限频仍在
     }
 
-    const body = (req.body ?? {}) as { filename?: string; dataBase64?: string };
     if (!body.dataBase64) throw new HttpError(400, 'INVALID_PACKAGE', '缺少包文件内容');
     let zipBuf: Buffer;
     try {
@@ -342,19 +574,48 @@ appsRunRouter.post(
         fs.rmSync(appSiteDir(tmpDir), { recursive: true, force: true });
         throw new HttpError(409, 'APP_EXISTS', '同名应用已存在');
       }
+    }
+    if (!existing && req.user!.role !== 'admin') {
+      try {
+        await assertAppUploadQuota(req.user!.id);
+      } catch (err) {
+        fs.rmSync(appSiteDir(tmpDir), { recursive: true, force: true });
+        throw err;
+      }
+    }
+    try {
+      if (manifest.type === 'python') await installPyDeps(tmpDir, manifest.requirements);
+    } catch (err) {
+      fs.rmSync(appSiteDir(tmpDir), { recursive: true, force: true });
+      throw err;
+    }
+
+    if (existing) {
       const to = appSiteDir(manifest.name);
       fs.rmSync(to, { recursive: true, force: true });
       fs.renameSync(appSiteDir(tmpDir), to);
+      const previousManifest = safeParse(existing.manifestJson) || {};
+      const previousPlatform = previousManifest._aap && typeof previousManifest._aap === 'object'
+        ? previousManifest._aap as Record<string, unknown>
+        : {};
       await getDb()
         .update(apps)
         .set({
           description: String(rawManifest.description ?? existing.description),
           // 新包字段优先，旧 manifest 仅补足校验器不感知的字段（如 description）
-          manifestJson: JSON.stringify({ ...(safeParse(existing.manifestJson) || {}), ...rawManifest, ...manifest }),
+          manifestJson: JSON.stringify({
+            ...previousManifest,
+            ...rawManifest,
+            ...manifest,
+            _aap: { ...previousPlatform, packageSizeBytes: zipBuf.length },
+          }),
+          kind: manifest.type === 'html' ? 'html' : 'package',
+          runtimeMode: manifest.type === 'python' ? manifest.runtime : null,
           signatureStatus: null,
           updatedAt: now,
         })
         .where(eq(apps.id, manifest.name));
+      stopPersistentFor(manifest.name);
       await audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.package.update', {
         name: manifest.name,
       });
@@ -379,7 +640,11 @@ appsRunRouter.post(
         ownerUserId: req.user!.id,
         passUser: manifest.capabilities.includes('llm'),
         upstream: '',
-        manifestJson: JSON.stringify({ ...rawManifest, ...manifest }),
+        manifestJson: JSON.stringify({
+          ...rawManifest,
+          ...manifest,
+          _aap: { packageSizeBytes: zipBuf.length },
+        }),
         signatureStatus: null,
         runtimeMode: manifest.type === 'python' ? manifest.runtime : null,
         enabled: true, // 私有即可用（G4：上传 → 校验 → 私有可用）
@@ -418,23 +683,72 @@ appsRunRouter.get(
       .where(and(eq(apps.ownerUserId, uid), ne(apps.kind, 'upstream')))
       .orderBy(sql`updated_at DESC`);
     res.json({
-      apps: rows.map((r): OwnedAppCard => ({
-        id: r.id,
-        name: r.name,
-        description: r.description,
-        icon: r.icon,
-        category: r.category,
-        kind: r.kind as OwnedAppCard['kind'],
-        runtimeMode: r.runtimeMode as OwnedAppCard['runtimeMode'],
-        visibility: r.visibility as AppCard['visibility'],
-        status: (r.healthState as AppCard['status']) ?? 'unknown',
-        sort: r.sort,
-        accessible: r.enabled,
-        signatureStatus: r.signatureStatus,
-        enabled: r.enabled,
-        updatedAt: r.updatedAt,
-      })),
+      apps: rows.map((r): OwnedAppCard => {
+        const manifest = safeParse(r.manifestJson);
+        const platform = manifest?._aap && typeof manifest._aap === 'object'
+          ? manifest._aap as Record<string, unknown>
+          : null;
+        const capabilities = Array.isArray(manifest?.capabilities)
+          ? manifest.capabilities.filter((value): value is string => typeof value === 'string')
+          : [];
+        return {
+          id: r.id,
+          name: r.name,
+          description: r.description,
+          icon: r.icon,
+          category: r.category,
+          kind: r.kind as OwnedAppCard['kind'],
+          runtimeMode: r.runtimeMode as OwnedAppCard['runtimeMode'],
+          visibility: r.visibility as AppCard['visibility'],
+          status: (r.healthState as AppCard['status']) ?? 'unknown',
+          sort: r.sort,
+          accessible: r.enabled,
+          signatureStatus: r.signatureStatus,
+          enabled: r.enabled,
+          updatedAt: r.updatedAt,
+          installedAt: r.createdAt,
+          version: typeof manifest?.version === 'string' ? manifest.version : null,
+          packageSizeBytes: typeof platform?.packageSizeBytes === 'number' && Number.isFinite(platform.packageSizeBytes)
+            ? platform.packageSizeBytes
+            : null,
+          capabilities,
+        };
+      }),
     });
+  }),
+);
+
+appsRunRouter.get(
+  '/apps/shared',
+  requireAuth,
+  h(async (req, res) => {
+    const uid = req.user!.id;
+    const rows = await getDb()
+      .select()
+      .from(apps)
+      .where(and(
+        eq(apps.enabled, true),
+        ne(apps.kind, 'upstream'),
+        inArray(apps.visibility, ['public', 'login']),
+      ));
+    const visibleRows = rows.filter((app) => app.ownerUserId !== uid);
+    const cards = await Promise.all(visibleRows.map(async (app): Promise<AppCard | null> => {
+      if (!await canAccess(app, req.user!)) return null;
+      return {
+        id: app.id,
+        name: app.name,
+        description: app.description,
+        icon: app.icon,
+        category: app.category,
+        visibility: app.visibility as AppCard['visibility'],
+        accessible: true,
+        status: (app.healthState as AppCard['status']) ?? 'unknown',
+        sort: app.sort,
+        kind: app.kind as AppCard['kind'],
+        runtimeMode: app.runtimeMode as AppCard['runtimeMode'],
+      };
+    }));
+    res.json({ apps: cards.filter((app): app is AppCard => app !== null) });
   }),
 );
 
@@ -450,10 +764,38 @@ appsRunRouter.delete(
 
     stopPersistentFor(id);
     fs.rmSync(appSiteDir(id), { recursive: true, force: true });
-    await getDb().delete(apps).where(eq(apps.id, id));
-    await getDb().delete(llmAppTokens).where(eq(llmAppTokens.appId, id));
-    await audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.delete', { appId: id });
-    res.json({ ok: true });
+    const pointsDeducted = await getDb().transaction(async (tx) => {
+      const current = (
+        await tx.select().from(apps).where(eq(apps.id, id)).for('update')
+      )[0];
+      if (!current) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
+      if (current.ownerUserId !== req.user!.id) {
+        throw new HttpError(403, 'FORBIDDEN', '只能删除自己创建的应用');
+      }
+      if (current.kind === 'upstream') throw new HttpError(400, 'NOT_PACKAGE', '仅托管应用可以在个人中心删除');
+
+      let deducted = 0;
+      if (current.publicationRewardPoints !== null && current.publicationRewardPoints > 0) {
+        const account = (
+          await tx
+            .select({ pointsBalance: users.pointsBalance })
+            .from(users)
+            .where(eq(users.id, req.user!.id))
+            .for('update')
+        )[0];
+        if (!account) throw new Error(`Missing user account for app owner ${req.user!.id}`);
+        deducted = Math.min(Math.max(account.pointsBalance, 0), current.publicationRewardPoints);
+        await tx
+          .update(users)
+          .set({ pointsBalance: Math.max(account.pointsBalance - current.publicationRewardPoints, 0) })
+          .where(eq(users.id, req.user!.id));
+      }
+      await tx.delete(llmAppTokens).where(eq(llmAppTokens.appId, id));
+      await tx.delete(apps).where(eq(apps.id, id));
+      return deducted;
+    });
+    await audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.delete', { appId: id, pointsDeducted });
+    res.json({ ok: true, pointsDeducted });
   }),
 );
 
@@ -463,24 +805,24 @@ appsRunRouter.post(
   '/apps/:id/publish',
   requireAuth,
   h(async (req, res) => {
+    const body = (req.body ?? {}) as { visibility?: unknown };
+    const visibility = body.visibility ?? 'public';
+    if (visibility !== 'public' && visibility !== 'login' && visibility !== 'private') {
+      throw new HttpError(400, 'INVALID_VISIBILITY', '可见范围必须是公开、需登录或仅自己');
+    }
     const app = await loadApp(String(req.params.id));
     if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
     if (app.ownerUserId !== req.user!.id) {
       throw new HttpError(403, 'FORBIDDEN', '只有应用归属者可以发布');
     }
     if (app.kind === 'upstream') throw new HttpError(400, 'NOT_PACKAGE', '仅托管应用包可以发布');
-    await assertPublicAppQuota(app.ownerUserId, app.id);
-    await getDb()
-      .update(apps)
-      .set({
-        visibility: 'public',
-        enabled: true,
-        updatedAt: Date.now(),
-      })
-      .where(eq(apps.id, app.id));
-    await audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.publish.public', {
-      appId: app.id,
-    });
-    res.json({ ok: true, visibility: 'public' });
+    const pointsAwarded = await updateOwnedAppVisibility(app.id, req.user!.id, visibility, { enable: true });
+    await audit(
+      `user:${req.user!.id}`,
+      req.clientIp ?? null,
+      visibility === 'public' ? 'app.publish.public' : 'app.visibility.update',
+      { appId: String(req.params.id), visibility, pointsAwarded },
+    );
+    res.json({ ok: true, visibility, pointsAwarded });
   }),
 );

@@ -7,7 +7,7 @@
  *  - 可作废单枚；全事件审计；兑换接口按用户限速防穷举
  */
 import { randomBytes } from 'node:crypto';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { getDb } from '../db/index.js';
 import { redeemCodes } from '../db/schema.js';
 import { HttpError } from './httpError.js';
@@ -107,7 +107,7 @@ export async function listCodes(opts: { batchId?: string; status?: RedeemStatus 
   let q = getDb().select().from(redeemCodes).$dynamic();
   if (opts.batchId) q = q.where(eq(redeemCodes.batchId, opts.batchId));
   if (opts.status && opts.status !== 'all') q = q.where(eq(redeemCodes.status, opts.status));
-  return await q.orderBy(sql`id DESC`).limit(limit) as RedeemCodeRow[];
+  return await q.orderBy(desc(redeemCodes.createdAt), desc(redeemCodes.code)).limit(limit) as RedeemCodeRow[];
 }
 
 export interface BatchSummary {
@@ -136,8 +136,8 @@ export async function batchSummaries(): Promise<BatchSummary[]> {
       createdAt: sql<number>`min(created_at)`,
     })
     .from(redeemCodes)
-    .groupBy(redeemCodes.batchId)
-    .orderBy(sql`min(created_at) DESC`)
+    .groupBy(redeemCodes.batchId, redeemCodes.kind)
+    .orderBy(sql`min(created_at) DESC`, redeemCodes.batchId, redeemCodes.kind)
     .limit(100);
   return rows.map((r) => ({
       batchId: r.batchId,

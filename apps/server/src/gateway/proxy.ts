@@ -20,12 +20,28 @@ import { canAccess, findApp, getUrlSecret, isSlug, type UrlSecret } from './regi
 import { signIdentity } from './identity.js';
 import { allowRequest } from './limiter.js';
 import { getSettingInt } from '../lib/settings.js';
-import { injectChrome, serveHtmlApp, serveSandboxShell, needsIframeSandbox, stripRawPrefix, RAW_SANDBOX_CSP } from './staticApp.js';
+import { injectChrome, injectSandboxBridge, serveHtmlApp, serveSandboxShell, needsIframeSandbox, stripRawPrefix, RAW_SANDBOX_CSP } from './staticApp.js';
 import { ensurePersistent, touchByPort } from '../lib/sandbox.js';
 import { missingRequiredEnv } from '../lib/appEnv.js';
+import { recordAppRuntimeEvent } from '../lib/appRuntimeEvents.js';
+import { appDomainRoot, appIdFromHostname, isAppHostname } from './appDomains.js';
+import { appCookieHeader, safeAppSetCookies } from './appCookies.js';
 import http from 'node:http';
 
 export const gatewayRouter = Router();
+
+gatewayRouter.use((req, res, next) => {
+  const appId = appIdFromHostname(req.hostname);
+  if (appId === null) return next();
+  if (!appId) {
+    res.status(404).type('text').send('Application not found');
+    return;
+  }
+  const rewritten = `/app/${encodeURIComponent(appId)}${req.url.startsWith('/') ? req.url : `/${req.url}`}`;
+  req.url = rewritten;
+  req.originalUrl = rewritten;
+  next();
+});
 
 // 不转发给上游的请求头（x-aap-identity* 也在列：客户端自带的身份头一律剥除，
 // 仅在 passUser 启用时由网关注入重新签名的身份头，防伪造）
@@ -43,6 +59,7 @@ const REQ_SKIP = new Set([
   'x-aap-identity',
   'x-aap-identity-sig',
 ]);
+
 // 不回传给客户端的响应头
 const RESP_STRIP = new Set([
   'content-encoding',
@@ -53,6 +70,7 @@ const RESP_STRIP = new Set([
   'content-security-policy',
   'content-security-policy-report-only',
   'set-cookie',
+  'set-cookie2',
   'strict-transport-security',
   'access-control-allow-origin',
 ]);
@@ -191,6 +209,7 @@ function filterRequestHeaders(
   req: Request,
   base: URL,
   identity: { payload: string; sig: string } | null,
+  appOrigin = false,
 ): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(req.headers)) {
@@ -198,6 +217,12 @@ function filterRequestHeaders(
     headers[k] = Array.isArray(v) ? v.join(', ') : (v ?? '');
   }
   headers['host'] = base.host;
+  if (appOrigin) {
+    if (req.headers.origin) headers.origin = req.headers.origin;
+    if (req.headers.referer) headers.referer = req.headers.referer;
+    const cookies = appCookieHeader(req.headers.cookie, config.sessionCookieName);
+    if (cookies) headers.cookie = cookies;
+  }
   if (identity) {
     headers['x-aap-identity'] = identity.payload;
     headers['x-aap-identity-sig'] = identity.sig;
@@ -224,11 +249,18 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
     return htmlError(res, 404, '应用不存在', '未找到应用 %% 或已被停用', id);
   }
 
+  const appOrigin = appIdFromHostname(req.hostname) === id;
+  const shouldUseAppOrigin = app.kind !== 'upstream' && await needsIframeSandbox(app);
   // 访问策略三态
   const user = req.user;
   if (!await canAccess(app, user ?? null)) {
     if (!user) {
-      return htmlError(res, 403, '需要登录', '应用「%%」需要登录后访问，<a href="/login">去登录</a>', app.name);
+      const portalHost = appOrigin ? appDomainRoot() : '';
+      const port = appOrigin ? req.get('host')?.match(/:(\d+)$/)?.[1] : undefined;
+      const loginHref = appOrigin
+        ? `${req.protocol}://${portalHost}${port ? `:${port}` : ''}/login`
+        : '/login';
+      return htmlError(res, 403, '需要登录', `应用「%%」需要登录后访问，<a href="${loginHref}">去登录</a>`, app.name);
     }
     if (user.authState !== 'full') {
       return htmlError(res, 403, '需要完成验证', '请先完成多因子认证');
@@ -242,15 +274,33 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
     return htmlError(res, 429, '请求过于频繁', '请稍后再试');
   }
 
-  // 门户托管应用（简单 HTML / .asp-app 包）不走上游
+  if (!appOrigin && app.visibility === 'public' && shouldUseAppOrigin && appDomainRoot() !== 'localhost') {
+    const root = appDomainRoot();
+    const port = req.get('host')?.match(/:(\d+)$/)?.[1];
+    const targetHost = `${id}.${root}${port ? `:${port}` : ''}`;
+    const legacyPrefix = `/app/${encodeURIComponent(id)}`;
+    let appPath = req.url.startsWith(legacyPrefix) ? req.url.slice(legacyPrefix.length) || '/' : '/';
+    if (/^\/raw(?:\/|[?]|$)/.test(appPath)) {
+      appPath = appPath.replace(/^\/raw/, '') || '/';
+      if (appPath.startsWith('?')) appPath = `/${appPath}`;
+    }
+    res.redirect(307, `${req.protocol}://${targetHost}${appPath}`);
+    return;
+  }
+
+  // 门户托管应用（简单 HTML / .awpk 包）不走上游
   if (app.kind !== 'upstream') {
     const sub0 = decodeSafe((req.params[0] as string | undefined) ?? '');
     // 用户上传包（归属者非管理员）经 iframe 沙箱隔离（PRD G1）：
     // 外壳层挂统一页面元素；内容只经 /raw/ 通道输出（不直出门户源）
-    const sandboxed = await needsIframeSandbox(app);
+    const sandboxed = appOrigin ? false : await needsIframeSandbox(app);
     // raw 判定与 staticApp.RAW_PREFIX_RE 同义（锚定段边界：raw/raw/… 命中，rawfoo 不命中）
     const inRaw = sandboxed && /^raw(?:\/|$)/.test(sub0);
-    if (sandboxed && !inRaw) return serveSandboxShell(res, app.id, sub0);
+    if (sandboxed && !inRaw) {
+      const queryIndex = req.url.indexOf('?');
+      const query = queryIndex < 0 ? '' : req.url.slice(queryIndex + 1);
+      return serveSandboxShell(res, app.id, sub0, query);
+    }
 
     if (app.kind === 'package' && app.runtimeMode === 'persistent') {
       // G2 persistent：拉起长驻沙箱并反代（纳入 B 域门禁/限流/审计）
@@ -271,10 +321,10 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
       if (!port) return htmlError(res, 503, '应用启动中', '请稍后重试');
       // passUser：为沙箱逐请求签名注入身份头（persistent 内 LLM 调用按浏览用户归因计费）
       const identity = app.passUser && user ? signIdentity(user, app.id) : null;
-      return proxyToSandbox(req, res, port, inRaw ? stripRawPrefix(sub0) : sub0, identity, app.id, inRaw);
+      return proxyToSandbox(req, res, port, inRaw ? stripRawPrefix(sub0) : sub0, identity, app.id, inRaw, appOrigin);
     }
     const sub = inRaw ? stripRawPrefix(sub0) : sub0;
-    return serveHtmlApp(req, res, app, sub, inRaw);
+    return serveHtmlApp(req, res, app, sub, inRaw, appOrigin);
   }
 
   const base = (() => {
@@ -292,11 +342,11 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
   if (!target) {
     return htmlError(res, 400, '非法路径', '路径包含非法段');
   }
-  const prefix = `/app/${encodeURIComponent(id)}`;
+  const prefix = appOrigin ? '' : `/app/${encodeURIComponent(id)}`;
 
   // passUser：注入签名身份头（未登录/未配置密钥时不注入）
   const identity = app.passUser && user ? signIdentity(user, app.id) : null;
-  const headers = filterRequestHeaders(req, base, identity);
+  const headers = filterRequestHeaders(req, base, identity, appOrigin);
 
   const timeoutSec = getSettingInt('PROXY_TIMEOUT', config.proxyTimeoutSec);
   const ctrl = new AbortController();
@@ -315,8 +365,17 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
     });
 
     res.status(upstream.status);
+    let appCookies: string[] = [];
     upstream.headers.forEach((value, key) => {
       const k = key.toLowerCase();
+      if (k === 'set-cookie' && appOrigin) {
+        appCookies = safeAppSetCookies(
+          (upstream.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.() ?? value,
+          req.secure,
+          config.sessionCookieName,
+        );
+        return;
+      }
       if (RESP_STRIP.has(k)) return;
       if (k === 'link') {
         res.setHeader(key, rewriteLinkHeader(value, id, prefix));
@@ -324,6 +383,7 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
       }
       res.setHeader(key, value);
     });
+    if (appCookies.length) res.setHeader('Set-Cookie', appCookies);
     const loc = upstream.headers.get('location');
     if (loc) res.setHeader('Location', rewriteLocation(loc, id, base, prefix));
     res.setHeader('Cache-Control', 'no-store');
@@ -332,6 +392,7 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
     if (ct.includes('text/html')) {
       // HTML 全量缓冲改写（超大页面有内存代价——参考实现同语义）
       let html = Buffer.from(await upstream.arrayBuffer()).toString('utf8');
+      if (appOrigin) return res.send(html);
       html = rewriteHtml(html, id, prefix);
       // <base> 指向「资源在上游的真实挂载点」：query 型凭据工具的资源在根，
       // 只有 path 型凭据才取凭据目录
@@ -415,15 +476,20 @@ function proxyToSandbox(
   identity: { payload: string; sig: string } | null,
   appId: string,
   inRaw = false,
+  appOrigin = false,
 ): void {
   touchPersistentByPort(port);
-  // 沙箱跑的是用户上传代码（不可信）：与 upstream 反代同一张剥离表，
-  // 会话 cookie / 凭据 / 自带身份头一律不下发沙箱；身份头仅由网关
-  // 在 passUser 启用时重新签名注入（persistent 内 LLM 归因用）
+  // 平台会话 Cookie 与客户端身份头不下发；应用自己的 Cookie 仅在独立应用 origin 上转发。
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(req.headers)) {
     if (REQ_SKIP.has(k.toLowerCase())) continue;
     headers[k] = Array.isArray(v) ? v.join(', ') : (v ?? '');
+  }
+  if (appOrigin) {
+    if (req.headers.origin) headers.origin = req.headers.origin;
+    if (req.headers.referer) headers.referer = req.headers.referer;
+    const cookies = appCookieHeader(req.headers.cookie, config.sessionCookieName);
+    if (cookies) headers.cookie = cookies;
   }
   delete headers['accept-encoding']; // HTML 注入需要明文响应，不接受上游压缩
   if (identity) {
@@ -438,19 +504,58 @@ function proxyToSandbox(
   // 沙箱路由挂根路径（规范 §二 persistent 模板即 @app.route("/")）：剥掉
   // /app/<id> 前缀再转发，前缀经 x-forwarded-prefix 交给包（拼绝对 URL 用）；
   // 否则包作者要在自己的 mod.py 里逐个兼容挂载前缀
-  const prefix = `/app/${encodeURIComponent(appId)}`;
+  const prefix = appOrigin ? '' : `/app/${encodeURIComponent(appId)}`;
   let pathAndQuery = rawStripped;
-  if (pathAndQuery === prefix) pathAndQuery = '/';
+  if (appOrigin) {
+    pathAndQuery = pathAndQuery.replace(/^\/app\/[^/]+(?=\/|$)/, '') || '/';
+  } else if (pathAndQuery === prefix) pathAndQuery = '/';
   else if (pathAndQuery.startsWith(`${prefix}/`)) pathAndQuery = pathAndQuery.slice(prefix.length);
-  headers['x-forwarded-prefix'] = prefix;
+  const startedAt = Date.now();
+  const requestPath = pathAndQuery.split('?', 1)[0] || '/';
+  const requestUserId = req.user?.id ?? null;
+  if (prefix) headers['x-forwarded-prefix'] = prefix;
   const up = http.request(
     { hostname: '127.0.0.1', port, path: pathAndQuery, method: req.method, headers },
     (upRes) => {
       res.status(upRes.statusCode ?? 502);
+      upRes.once('end', () => {
+        const durationMs = Date.now() - startedAt;
+        const statusCode = upRes.statusCode ?? 502;
+        if (statusCode >= 400 || durationMs >= 1000) {
+          void recordAppRuntimeEvent({
+            appId,
+            event: 'http.response',
+            level: statusCode >= 500 ? 'error' : statusCode >= 400 || durationMs >= 1000 ? 'warn' : 'info',
+            userId: requestUserId,
+            method: req.method,
+            path: requestPath,
+            statusCode,
+            durationMs,
+          });
+        }
+      });
+      upRes.once('error', () => {
+        void recordAppRuntimeEvent({
+          appId,
+          event: 'http.response_error',
+          level: 'error',
+          userId: requestUserId,
+          method: req.method,
+          path: requestPath,
+          statusCode: upRes.statusCode ?? 502,
+          durationMs: Date.now() - startedAt,
+          details: { code: 'APP_RESPONSE_STREAM_ERROR' },
+        });
+      });
       // 响应头同一张剥离表：沙箱不得给浏览器种 cookie（cookie tossing 固定会话）
       // 或覆盖 CSP/XFO 等安全头
+      let appCookies: string[] = [];
       for (const [key, value] of Object.entries(upRes.headers)) {
         if (value === undefined) continue;
+        if (key.toLowerCase() === 'set-cookie' && appOrigin) {
+          appCookies = safeAppSetCookies(value, req.secure, config.sessionCookieName);
+          continue;
+        }
         if (RESP_STRIP.has(key.toLowerCase())) continue;
         // 沙箱按根路径产生的站内相对 Location 重写回挂载前缀（镜像路径剥离）
         if (key.toLowerCase() === 'location' && typeof value === 'string' && value.startsWith('/')) {
@@ -460,6 +565,7 @@ function proxyToSandbox(
         if (Array.isArray(value)) res.setHeader(key, value);
         else res.setHeader(key, value);
       }
+      if (appCookies.length) res.setHeader('Set-Cookie', appCookies);
       // raw 通道（沙箱外壳 iframe 内容）：上游 CSP 已被 RESP_STRIP 剥除，此处覆盖
       // 全局中间件的通用 CSP——顶层直达 raw URL 时同样被 sandbox 关进 opaque origin
       if (inRaw) res.setHeader('Content-Security-Policy', RAW_SANDBOX_CSP);
@@ -467,18 +573,32 @@ function proxyToSandbox(
       // （沙箱外壳的 raw 通道除外——外壳层已挂 chrome，勿重复）。与 serveHtmlApp
       // 的 injectChrome 同一幂等策略；仅缓冲小体积 HTML，超限即原样透传
       const isHtml = String(upRes.headers['content-type'] ?? '').includes('text/html');
-      if (isHtml && !inRaw && req.method === 'GET') {
+      if (isHtml && req.method === 'GET') {
         const chunks: Buffer[] = [];
         let size = 0;
         let overflow = false;
         upRes.on('data', (c: Buffer) => {
+          if (overflow) {
+            res.write(c);
+            return;
+          }
           size += c.length;
-          if (size > 2 * 1024 * 1024) overflow = true;
-          if (!overflow) chunks.push(c);
+          if (size > 2 * 1024 * 1024) {
+            overflow = true;
+            res.write(Buffer.concat(chunks));
+            chunks.length = 0;
+            res.write(c);
+            return;
+          }
+          chunks.push(c);
         });
         upRes.on('end', () => {
+          if (overflow) {
+            res.end();
+            return;
+          }
           const html = Buffer.concat(chunks).toString('utf8');
-          const injected = overflow ? html : injectChrome(html, appId);
+          const injected = inRaw ? injectSandboxBridge(html, appId) : appOrigin ? html : injectChrome(html, appId);
           res.setHeader('content-length', String(Buffer.byteLength(injected)));
           res.end(injected);
         });
@@ -488,9 +608,32 @@ function proxyToSandbox(
       upRes.pipe(res);
     },
   );
+  let timedOut = false;
+  const timeoutMs = Math.min(Math.max(1, getSettingInt('PROXY_TIMEOUT', 30)) * 1000, 25_000);
+  up.setTimeout(timeoutMs, () => {
+    timedOut = true;
+    up.destroy(new Error('APP_RESPONSE_TIMEOUT'));
+  });
   up.on('error', () => {
-    if (!res.headersSent) res.status(502).type('html').send('sandbox error');
-    else res.end();
+    const durationMs = Date.now() - startedAt;
+    void recordAppRuntimeEvent({
+      appId,
+      event: timedOut ? 'http.timeout' : 'http.error',
+      level: 'error',
+      userId: requestUserId,
+      method: req.method,
+      path: requestPath,
+      statusCode: timedOut ? 504 : 502,
+      durationMs,
+      details: { code: timedOut ? 'APP_RESPONSE_TIMEOUT' : 'APP_UPSTREAM_ERROR' },
+    });
+    if (!res.headersSent) {
+      res.status(timedOut ? 504 : 502).type('html').send(timedOut ? 'application response timed out' : 'sandbox error');
+    } else res.end();
+  });
+  req.once('aborted', () => up.destroy());
+  res.once('close', () => {
+    if (!res.writableEnded) up.destroy();
   });
   req.pipe(up);
 }

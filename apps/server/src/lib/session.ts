@@ -13,7 +13,7 @@ import { config } from '../config/index.js';
 import { getDb } from '../db/index.js';
 import { sessions, users } from '../db/schema.js';
 import { sha256Hex } from './passwords.js';
-import { getSettingInt } from './settings.js';
+import { getSetting, getSettingInt } from './settings.js';
 import type { SessionUser } from '../types.js';
 
 export const hashToken = sha256Hex;
@@ -38,6 +38,7 @@ interface CookieOpts {
   sameSite: 'lax';
   maxAge: number;
   path: '/';
+  domain: string;
   secure?: true;
 }
 
@@ -47,6 +48,7 @@ function cookieOptions(): CookieOpts {
     sameSite: 'lax',
     maxAge: sessionTtlSec() * 1000,
     path: '/',
+    domain: (getSetting('SITE_DOMAIN') ?? '').trim().toLowerCase().replace(/^\./, '').replace(/\.$/, '') || 'localhost',
   };
   if (secureCookieOverride) opts.secure = true;
   return opts;

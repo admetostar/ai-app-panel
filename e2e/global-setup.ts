@@ -114,7 +114,7 @@ export async function setup(): Promise<void> {
   const plan = await api(
     'POST',
     '/api/admin/billing/plans',
-    { name: 'E2E 免费权益包', groupId, durationDays: 30, priceFen: 0, tokenGrant: 0, tier: 0, publicAppLimit: 10 },
+    { name: 'E2E 免费权益包', groupId, durationDays: 30, priceFen: 0, tokenGrant: 0, tier: 0, appUploadLimit: 10 },
     cookie,
   );
   if (plan.status >= 300) throw new Error(`零价权益包创建失败: ${JSON.stringify(plan.body)}`);

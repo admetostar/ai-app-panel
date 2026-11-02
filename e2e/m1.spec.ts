@@ -20,18 +20,37 @@ test('首页导航定位与登录注册分栏页面', async ({ page }) => {
   await expect(page.locator('.aap-home-title')).toContainText('您好，欢迎来到 AI超级面板');
   await expect(page.locator('.aap-home-description')).toContainText('AI超级面板（AI-SuperPanel）');
   await expect(page.locator('.aap-home-description')).toContainText('上传到AI超级面板后');
-  await expect(page.locator('.aap-home-shell .aap-header')).toHaveCSS('backdrop-filter', 'blur(14px)');
+  await expect(page.locator('.aap-home-shell .aap-header')).toHaveCSS('backdrop-filter', 'none');
   await expect(page.locator('.aap-home-kicker')).toHaveText('AI超级面板');
   await expect(page.getByPlaceholder('搜索应用名称或介绍')).toBeVisible();
   await expect(page.locator('.aap-home-search .ant-input')).toHaveCSS('color', 'rgb(16, 24, 40)');
   expect(
     await page.locator('.aap-home-search .ant-input').evaluate((input) => getComputedStyle(input, '::placeholder').color),
   ).toBe('rgb(71, 84, 103)');
-  await expect(page.locator('.aap-home-nav').getByRole('link', { name: '浏览应用' })).toBeVisible();
+  const homeNav = page.locator('.aap-home-nav');
+  await expect(homeNav.getByRole('link', { name: '发现应用' })).toBeVisible();
+  const homeHeader = page.locator('.aap-home-page-shell .aap-header');
+  const loginButton = homeNav.getByRole('button', { name: /登录/ });
+  await expect(homeHeader).toHaveCSS('position', 'fixed');
+  await expect(homeHeader).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(homeNav.getByRole('link', { name: '发现应用' })).toHaveCSS('color', 'rgba(242, 244, 247, 0.9)');
+  await expect(loginButton).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  await expect(loginButton).toHaveCSS('color', 'rgb(16, 24, 40)');
+  expect(
+    await homeNav.evaluate((nav) => Number.parseFloat(getComputedStyle(nav).columnGap)),
+  ).toBeGreaterThanOrEqual(20);
 
-  await page.locator('.aap-home-nav').getByRole('link', { name: '权益' }).click();
+  const rightsLink = homeNav.getByRole('link', { name: '权益' });
+  await rightsLink.click();
   await expect(page.locator('#home-rights')).toBeInViewport();
-  await page.locator('.aap-home-nav').getByRole('link', { name: 'FAQ' }).click();
+  await expect(rightsLink).toHaveCSS('color', 'rgb(52, 64, 84)');
+  await expect(homeHeader).toHaveCSS('top', '0px');
+  await expect(homeHeader).toHaveCSS('background-color', 'rgba(248, 250, 252, 0.78)');
+  await expect(homeHeader).toHaveCSS('backdrop-filter', 'blur(18px)');
+  await expect(loginButton).toHaveCSS('background-color', 'rgb(16, 24, 40)');
+  await expect(loginButton).toHaveCSS('color', 'rgb(255, 255, 255)');
+  const faqLink = homeNav.getByRole('link', { name: 'FAQ' });
+  await faqLink.click();
   await expect(page.locator('#home-faq')).toBeInViewport();
   await expect(page.locator('.aap-home-faq .ant-collapse-header').first()).toHaveCSS('color', 'rgb(16, 24, 40)');
   await page.locator('.aap-home-faq .ant-collapse-header').first().click();
@@ -159,7 +178,7 @@ test('F3 初始化：改密 → 绑定 TOTP → 进入个人中心', async ({ pa
   await expect(page.getByRole('heading', { name: '我的应用' })).toBeVisible();
   await expect(page.locator('.aap-my-apps-shell')).toHaveAttribute('data-user-theme', 'dark');
   await expect(page.locator('.aap-my-apps-page')).toHaveCSS('background-color', 'rgb(20, 23, 28)');
-  await expect(page.getByText('还没有创建或上传应用。前往应用管理上传 .asp-app 包，开始发布你的创作。')).toBeVisible();
+  await expect(page.getByText('还没有创建或上传应用。前往应用管理上传 .awpk 包，开始发布你的创作。')).toBeVisible();
   await page.reload();
   await expect(page.locator('.aap-my-apps-shell')).toHaveAttribute('data-user-theme', 'dark');
   await expect(page.locator('.aap-my-apps-page')).toHaveCSS('background-color', 'rgb(20, 23, 28)');
@@ -228,7 +247,7 @@ test('操作导航文案无裸露 Markdown 且按章节展示应用示例和配�
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
   await expect(guideContent.getByRole('heading', { name: '告诉agent你要一个什么应用' })).toBeVisible();
-  await expect(guideContent.getByText('帮我做一个全球时钟，显示主要城市的当前时间，并打包成 asp-app。')).toBeVisible();
+  await expect(guideContent.getByText('帮我做一个全球时钟，显示主要城市的当前时间，并打包成 awpk-app。')).toBeVisible();
   await expect(guideContent).not.toContainText('环境变量');
   await expect(guideContent).not.toContainText('入参');
 
@@ -383,7 +402,7 @@ test('普通用户改密直达门户 + 绑定页跳过 + 个人中心 MFA 管理
   await page.getByRole('tab', { name: '我的权益' }).click();
   await expect(page.locator('#account-section-billing')).toBeInViewport();
   await expect(page.getByText('当前权益详情')).toBeVisible();
-  await expect(page.getByText('应用发布', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('可上传应用', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('可选择权益包', { exact: true })).toBeVisible();
   await expect(page.getByText('使用兑换码')).toBeVisible();
   await expect(page.getByText('额度充值', { exact: true })).toHaveCount(0);
@@ -431,7 +450,7 @@ test('普通用户改密直达门户 + 绑定页跳过 + 个人中心 MFA 管理
 
   await page.goto('/my-apps');
   await expect(page.getByRole('heading', { name: '我的应用' })).toBeVisible();
-  await expect(page.getByText('还没有创建或上传应用。前往应用管理上传 .asp-app 包，开始发布你的创作。')).toBeVisible();
+  await expect(page.getByText('还没有创建或上传应用。前往应用管理上传 .awpk 包，开始发布你的创作。')).toBeVisible();
   await page.getByRole('button', { name: '前往应用管理' }).click();
   await expect(page).toHaveURL(/\/account\?tab=myapps$/);
   await expect(page.getByRole('tab', { name: '应用管理' })).toBeVisible();

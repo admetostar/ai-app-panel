@@ -90,7 +90,7 @@ FPK 不内置 PostgreSQL 服务。安装前需准备可从 NAS 访问的 Postgre
 | `install_dep_apps=nodejs_v22` | ❌ 不用 | Node 22 随载荷自带；PostgreSQL 驱动为纯 JavaScript |
 | `data-share` 共享目录 | ❌ 不用 | 数据目录含托管应用文件、主密钥与应用本地状态，不应暴露给文件管理器 |
 | wizard 安装向导 | ✅ 最小使用 | 收集必填 PostgreSQL 连接串 `wizard_database_url`、服务端口 `wizard_port` 与可选初始管理员密码；数据库连接串会保存在飞牛向导值存储中，应用启动时自动应用 `drizzle-pg/` 迁移 |
-| 打包签名 | —— | 官方文档（截至 2026-07-31）无 FPK 签名要求；上架走开发者先锋交流群提交。仓库内 ed25519 体系是 **.asp-app 应用包**的签名（fnos-dashboard 方法论），与 FPK 无关 |
+| 打包签名 | —— | 官方文档（截至 2026-07-31）无 FPK 签名要求；上架走开发者先锋交流群提交。仓库内 ed25519 体系是 **.awpk 应用包**的签名（fnos-dashboard 方法论），与 FPK 无关 |
 
 ## 真机待验证
 

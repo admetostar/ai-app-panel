@@ -1,9 +1,8 @@
 /**
- * raw 通道浏览器侧沙箱（P0 安全回归）：
- *  - 非管理员归属的 html 应用：raw 通道响应必须带 CSP sandbox（无 allow-same-origin），
- *    顶层直达 raw URL 时包代码被关进 opaque origin（此前裸奔执行可接管会话）
- *  - raw 判定锚定段边界：/app/<id>/rawfoo 不得当 raw 直出（走外壳页）
- *  - 管理员自建 html 应用保持既往信任行为（直出、不附加 sandbox CSP）
+ * 独立应用 origin：
+ *  - 用户应用通过 <id>.localhost 访问，可使用浏览器自身的会话存储
+ *  - 应用 origin 上的 /api 路径不会落入门户 API
+ *  - 未配置应用域名时旧路径入口继续使用同源 iframe 沙箱
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import http from 'node:http';
@@ -20,7 +19,7 @@ let gw: Server;
 let gwPort = 0;
 let dir: string;
 
-const USER_HTML = '<!doctype html><html><body><h1>USERRAW-INDEX</h1><script>void 0</script></body></html>';
+const USER_HTML = '<!doctype html><html><body><h1>USERRAW-INDEX</h1><script>localStorage.setItem("album-token","persist")</script></body></html>';
 const ADMIN_HTML = '<!doctype html><html><body><h1>ADMINRAW-INDEX</h1></body></html>';
 
 beforeAll(async () => {
@@ -56,34 +55,59 @@ afterAll(async () => {
   await teardownTestDb(dir);
 });
 
-describe('raw 通道浏览器侧沙箱（P0）', () => {
-  it('a. 顶层直达 /app/<id>/raw/index.html：200 且 CSP 含 sandbox 且不含 allow-same-origin', async () => {
-    const res = await fetch(`http://127.0.0.1:${gwPort}/app/usrhtml/raw/index.html`);
-    expect(res.status).toBe(200);
-    const csp = res.headers.get('content-security-policy') ?? '';
-    expect(csp).toContain('sandbox');
-    expect(csp).not.toContain('allow-same-origin');
-    // raw 通道直出包内容（不注入门户 chrome——chrome 在外壳层）
+describe('用户应用独立子域名', () => {
+  const fetchApp = (requestPath: string) =>
+    new Promise<{
+      status: number;
+      headers: { get(name: string): string | null };
+      text(): Promise<string>;
+    }>((resolve, reject) => {
+      const request = http.get(
+        `http://127.0.0.1:${gwPort}${requestPath}`,
+        { headers: { host: `usrhtml.localhost:${gwPort}` } },
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.on('data', (chunk: Buffer) => chunks.push(chunk));
+          response.on('end', () => {
+            const body = Buffer.concat(chunks).toString();
+            resolve({
+              status: response.statusCode ?? 0,
+              headers: { get: (name) => response.headers[name.toLowerCase()]?.toString() ?? null },
+              text: async () => body,
+            });
+          });
+        },
+      );
+      request.on('error', reject);
+    });
+
+  it('用户应用子域名可使用原生浏览器会话存储，应用 API 路径不会访问门户 API', async () => {
+    const res = await fetchApp('/');
     const html = await res.text();
+    expect(res.status, html).toBe(200);
+    const csp = res.headers.get('content-security-policy') ?? '';
+    expect(csp).not.toContain('sandbox');
     expect(html).toContain('USERRAW-INDEX');
-    expect(html).not.toContain('/portal-chrome.js');
+    expect(html).toContain('localStorage.setItem');
+    expect(html).not.toContain('<iframe sandbox');
+
+    const appApi = await fetchApp('/api/portal/bootstrap');
+    expect(appApi.status).toBe(200);
+    expect(await appApi.text()).toContain('USERRAW-INDEX');
   });
 
-  it('b. GET /app/<id>/ 返回外壳页（iframe sandbox 承载内容）', async () => {
-    const res = await fetch(`http://127.0.0.1:${gwPort}/app/usrhtml/`);
+  it('旧 /app/<id>/ 用户应用入口在本地使用同源 iframe 沙箱', async () => {
+    const res = await fetch(`http://127.0.0.1:${gwPort}/app/usrhtml/`, { redirect: 'manual' });
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain('<iframe sandbox');
-    expect(html).toContain('/app/usrhtml/raw/');
+    expect(html).toContain('<iframe data-aap-app-frame sandbox=');
     expect(html).not.toContain('USERRAW-INDEX');
   });
 
-  it('c. /app/<id>/rawfoo 不当 raw 直出：返回外壳页（iframe src 指向 raw/rawfoo）', async () => {
-    const res = await fetch(`http://127.0.0.1:${gwPort}/app/usrhtml/rawfoo`);
+  it('旧路径的深层资源仍在沙箱外壳中打开', async () => {
+    const res = await fetch(`http://127.0.0.1:${gwPort}/app/usrhtml/api/ping?x=1`, { redirect: 'manual' });
     expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain('<iframe sandbox');
-    expect(html).toContain('/app/usrhtml/raw/rawfoo');
+    expect(await res.text()).toContain('<iframe data-aap-app-frame sandbox=');
   });
 
   it('d. 管理员自建 html 应用：直出且不附加 sandbox CSP（既往信任行为不变）', async () => {
@@ -95,4 +119,12 @@ describe('raw 通道浏览器侧沙箱（P0）', () => {
     const csp = res.headers.get('content-security-policy') ?? '';
     expect(csp).not.toContain('sandbox');
   });
+
+  it('旧 raw 通道继续提供带 sandbox CSP 的应用内容', async () => {
+    const res = await fetch(`http://127.0.0.1:${gwPort}/app/usrhtml/raw/index.html`, { redirect: 'manual' });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-security-policy')).toContain('sandbox');
+    expect(await res.text()).toContain('USERRAW-INDEX');
+  });
+
 });

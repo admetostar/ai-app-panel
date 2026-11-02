@@ -1,7 +1,7 @@
 /**
  * M4 生态测试（G2/G3/G4/G5）：
  * 包上传（manifest 校验）→ 私有可用 → invoked 沙箱执行（echo / 每包 SQLite / 白名单拒绝）
- * → 直接公开发布并校验订阅名额。
+ * → 直接公开发布（发布数量不再受订阅额度限制）。
  * 依赖系统 python3（执行沙箱）。
  */
 import { execSync } from 'node:child_process';
@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
+import { eq } from 'drizzle-orm';
 import { sessionCookieFor, setupTestDb, testPackage, teardownTestDb } from './testkit.js';
 import { closeDb, getDb } from '../db/index.js';
 import { apps, users } from '../db/schema.js';
@@ -17,6 +18,7 @@ import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
 import { handleUpgrade } from '../gateway/wsproxy.js';
 import { appSiteDir } from '../gateway/staticApp.js';
+import { appIconDir } from '../routes/appsRun.js';
 import { ensurePersistent, persistentPort, stopAllPersistent, stopPersistentFor } from '../lib/sandbox.js';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -70,6 +72,157 @@ afterAll(async () => {
   await teardownTestDb(dir);
 });
 
+describe('管理员设置密码复杂度', () => {
+  it('手动创建和重置密码均拒绝不符合策略的密码', async () => {
+    const create = await fetch(`${base}/api/admin/users`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
+      body: JSON.stringify({ username: 'weak-user', password: 'password123' }),
+    });
+    expect(create.status).toBe(400);
+    expect(((await create.json()) as { error: { code: string } }).error.code).toBe('INVALID_PASSWORD');
+
+    const admin = (await getDb().select().from(users).where(eq(users.username, 'admin')))[0];
+    expect(admin).toBeDefined();
+    const reset = await fetch(`${base}/api/admin/users/${admin!.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
+      body: JSON.stringify({ password: 'password123' }),
+    });
+    expect(reset.status).toBe(400);
+    expect(((await reset.json()) as { error: { code: string } }).error.code).toBe('INVALID_PASSWORD');
+  });
+});
+
+describe('个人应用详情', () => {
+  it('没有有效权益包的普通用户不能上传新应用', async () => {
+    const [user] = await getDb()
+      .insert(users)
+      .values({ kind: 'local', username: 'no-app-plan', name: '无权益用户', role: 'user', createdAt: Date.now() })
+      .returning({ id: users.id });
+    const cookie = await sessionCookieFor(user!.id);
+    const dataBase64 = zipPkg({
+      'manifest.json': JSON.stringify({
+        name: 'no-plan-upload-test',
+        display_name: '无权益上传测试',
+        version: '1.0.0',
+        type: 'html',
+      }),
+      'index.html': '<h1>should not upload</h1>',
+    });
+
+    const response = await fetch(`${base}/api/apps/submit`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, cookie },
+      body: JSON.stringify({ filename: 'no-plan-upload-test.awpk', dataBase64 }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({
+      error: { code: 'APP_UPLOAD_LIMIT_REACHED' },
+    });
+    expect((await getDb().select().from(apps).where(eq(apps.id, 'no-plan-upload-test')))).toHaveLength(0);
+  });
+
+  it('返回双列详情数据，并支持仅归属者上传持久化应用图标与修改资料', async () => {
+    const dataBase64 = zipPkg({
+      'manifest.json': JSON.stringify({
+        name: 'app-details-test',
+        display_name: '应用详情测试',
+        version: '2.3.1',
+        type: 'html',
+        capabilities: ['storage', 'llm'],
+      }),
+      'index.html': '<h1>details</h1>',
+    });
+    const packageSizeBytes = Buffer.from(dataBase64, 'base64').length;
+    const submit = await fetch(`${base}/api/apps/submit`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
+      body: JSON.stringify({ filename: 'app-details-test.awpk', dataBase64 }),
+    });
+    expect(submit.status).toBe(200);
+
+    const response = await fetch(`${base}/api/apps/mine`, { headers: { cookie: adminCookie } });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      apps: Array<{
+        id: string;
+        installedAt: number;
+        packageSizeBytes: number | null;
+        version: string | null;
+        capabilities: string[];
+      }>;
+    };
+    const app = body.apps.find((item) => item.id === 'app-details-test');
+    expect(app).toMatchObject({
+      installedAt: expect.any(Number),
+      packageSizeBytes,
+      version: '2.3.1',
+      capabilities: ['storage', 'llm'],
+    });
+
+    const update = await fetch(`${base}/api/apps/app-details-test/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
+      body: JSON.stringify({
+        name: '修改后的应用名称',
+        description: '更新后的说明',
+        visibility: 'public',
+      }),
+    });
+    expect(update.status).toBe(200);
+    const updated = (await getDb().select().from(apps).where(eq(apps.id, 'app-details-test')))[0];
+    expect(updated).toMatchObject({
+      icon: null,
+      name: '修改后的应用名称',
+      description: '更新后的说明',
+      visibility: 'public',
+    });
+
+    const iconBytes = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jf5sAAAAASUVORK5CYII=',
+      'base64',
+    );
+    const iconUpload = await fetch(`${base}/api/apps/app-details-test/icon`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
+      body: JSON.stringify({ dataBase64: iconBytes.toString('base64') }),
+    });
+    expect(iconUpload.status).toBe(200);
+    const { icon } = await iconUpload.json() as { icon: string };
+    expect(icon).toMatch(/^\/api\/apps\/app-details-test\/icon\/icon-[a-f0-9]{32}\.png$/);
+    expect(fs.readFileSync(path.join(appIconDir('app-details-test'), path.basename(icon))).equals(iconBytes)).toBe(true);
+
+    const publicIcon = await fetch(`${base}${icon}`);
+    expect(publicIcon.status).toBe(200);
+    expect(publicIcon.headers.get('content-type')).toContain('image/png');
+    expect(Buffer.from(await publicIcon.arrayBuffer())).toEqual(iconBytes);
+
+    const [otherUser] = await getDb()
+      .insert(users)
+      .values({ kind: 'local', username: 'other-app-owner', role: 'user', createdAt: Date.now() })
+      .returning({ id: users.id });
+    const forbiddenUpdate = await fetch(`${base}/api/apps/app-details-test/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', origin: base, cookie: await sessionCookieFor(otherUser!.id) },
+      body: JSON.stringify({
+        icon: null,
+        name: '不应修改',
+        description: '',
+        visibility: 'private',
+      }),
+    });
+    expect(forbiddenUpdate.status).toBe(403);
+    const forbiddenIconUpload = await fetch(`${base}/api/apps/app-details-test/icon`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, cookie: await sessionCookieFor(otherUser!.id) },
+      body: JSON.stringify({ dataBase64: iconBytes.toString('base64') }),
+    });
+    expect(forbiddenIconUpload.status).toBe(403);
+  });
+});
+
 describe.skipIf(!pythonOk)('M4 生态（Python 沙箱运行时）', () => {
   const ECHO_MOD = `
 def handle(input, aap):
@@ -98,7 +251,7 @@ def handle(input, aap):
     const submit = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ filename: 'hellotool.asp-app', dataBase64 }),
+      body: JSON.stringify({ filename: 'hellotool.awpk', dataBase64 }),
     });
     expect(submit.status).toBe(200);
 
@@ -148,7 +301,7 @@ def handle(input, aap):
     const submit = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ filename: 'nosytool.asp-app', dataBase64 }),
+      body: JSON.stringify({ filename: 'nosytool.awpk', dataBase64 }),
     });
     expect(submit.status).toBe(200);
 
@@ -162,7 +315,7 @@ def handle(input, aap):
     expect(b.error).toContain('白名单');
   });
 
-  it('公开发布：没有订阅名额时拒绝发布，且不再开放管理员审核接口', async () => {
+  it('公开发布：没有上传权益也可发布已有应用，且不再开放管理员审核接口', async () => {
     const owner = await (await getDb().select().from(users))[0]!;
     await getDb().insert(apps).values({
       id: 'quota-publish-test',
@@ -178,8 +331,8 @@ def handle(input, aap):
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
     });
-    expect(publish.status).toBe(403);
-    expect(await publish.json()).toMatchObject({ error: { code: 'PUBLIC_APP_LIMIT_REACHED' } });
+    expect(publish.status).toBe(200);
+    expect(await publish.json()).toMatchObject({ ok: true, visibility: 'public' });
 
     const pending = await fetch(`${base}/api/admin/review/pending`, {
       headers: { origin: base, cookie: adminCookie },
@@ -206,7 +359,7 @@ def handle(input, aap):
     const submit = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ filename: 'sneakytool.asp-app', dataBase64 }),
+      body: JSON.stringify({ filename: 'sneakytool.awpk', dataBase64 }),
     });
     expect(submit.status).toBe(200);
 
@@ -285,7 +438,7 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
     const submit = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ filename: 'persistapp.asp-app', dataBase64 }),
+      body: JSON.stringify({ filename: 'persistapp.awpk', dataBase64 }),
     });
     expect(submit.status).toBe(200);
 
@@ -392,7 +545,7 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
     const submit = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ filename: 'persistpath.asp-app', dataBase64 }),
+      body: JSON.stringify({ filename: 'persistpath.awpk', dataBase64 }),
     });
     expect(submit.status).toBe(200);
 
@@ -491,7 +644,7 @@ describe('M4 安全回归（鉴权与归属校验）', () => {
     const submit = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({ filename: 'x.asp-app', dataBase64: 'AAAA' }),
+      body: JSON.stringify({ filename: 'x.awpk', dataBase64: 'AAAA' }),
     });
     expect(submit.status).toBe(401);
     const mine = await fetch(`${base}/api/apps/mine`);
@@ -514,7 +667,7 @@ describe('M4 安全回归（鉴权与归属校验）', () => {
     const up = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-      body: JSON.stringify({ filename: 'victimapp.asp-app', dataBase64: victimPkg }),
+      body: JSON.stringify({ filename: 'victimapp.awpk', dataBase64: victimPkg }),
     });
     expect(up.status).toBe(200);
 
@@ -539,7 +692,7 @@ describe('M4 安全回归（鉴权与归属校验）', () => {
     const evil = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: malloryCookie },
-      body: JSON.stringify({ filename: 'evil.asp-app', dataBase64: evilPkg }),
+      body: JSON.stringify({ filename: 'evil.awpk', dataBase64: evilPkg }),
     });
     expect(evil.status).toBe(409);
     expect(((await evil.json()) as { error: { code: string } }).error.code).toBe('APP_EXISTS');

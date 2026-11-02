@@ -10,7 +10,7 @@
  */
 import { Router } from 'express';
 import { and, eq, gt, isNull, lt, ne, sql } from 'drizzle-orm';
-import type { PublicUser, SessionInfo } from '@aap/shared';
+import { isPasswordValid, PASSWORD_POLICY_MESSAGE, type PublicUser, type SessionInfo } from '@aap/shared';
 import { getDb } from '../db/index.js';
 import { inviteCodes, localCredentials, registrations, sessions, users, userGroupMembers, verificationCodes } from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
@@ -139,8 +139,8 @@ authRouter.post(
     if (!USERNAME_RE.test(username)) {
       throw new HttpError(400, 'INVALID_USERNAME', '用户名需 3-64 位小写字母/数字/_.- 且以字母或数字开头');
     }
-    if (password.length < 8 || password.length > 128) {
-      throw new HttpError(400, 'INVALID_PASSWORD', '密码长度需 8-128 位');
+    if (!isPasswordValid(password)) {
+      throw new HttpError(400, 'INVALID_PASSWORD', PASSWORD_POLICY_MESSAGE);
     }
     if (!EMAIL_RE.test(email)) {
       throw new HttpError(400, 'INVALID_EMAIL', '邮箱格式不正确');
@@ -601,8 +601,8 @@ authRouter.post(
     const body = (req.body ?? {}) as { email?: string; code?: string; newPassword?: string };
     const email = String(body.email ?? '').trim().toLowerCase();
     const newPassword = String(body.newPassword ?? '');
-    if (newPassword.length < 8 || newPassword.length > 128) {
-      throw new HttpError(400, 'INVALID_PASSWORD', '密码长度需 8-128 位');
+    if (!isPasswordValid(newPassword)) {
+      throw new HttpError(400, 'INVALID_PASSWORD', PASSWORD_POLICY_MESSAGE);
     }
 
     const user = (await getDb().select().from(users).where(and(eq(users.email, email), eq(users.kind, 'local'))))[0];
@@ -653,8 +653,8 @@ authRouter.post(
     if (u.authState !== 'full') throw new HttpError(403, 'MFA_REQUIRED', '请先完成多因子认证', { action: 'mfa' });
     const body = (req.body ?? {}) as { currentPassword?: string; newPassword?: string };
     const newPassword = String(body.newPassword ?? '');
-    if (newPassword.length < 8 || newPassword.length > 128) {
-      throw new HttpError(400, 'INVALID_PASSWORD', '密码长度需 8-128 位');
+    if (!isPasswordValid(newPassword)) {
+      throw new HttpError(400, 'INVALID_PASSWORD', PASSWORD_POLICY_MESSAGE);
     }
     const hash = await getLocalPasswordHash(u.id);
     const ok = await verifyPassword(String(body.currentPassword ?? ''), hash);

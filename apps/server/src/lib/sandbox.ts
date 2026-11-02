@@ -1,11 +1,11 @@
 /**
- * .asp-app Python 沙箱运行管理器（M4，G2）：
+ * .awpk Python 沙箱运行管理器（M4，G2）：
  *  - invoked：每次执行拉起子进程（python3 runner.py），stdin JSON / stdout JSON，超时强杀
  *  - persistent：首次访问拉起长驻进程（注入 PORT），空闲回收、崩溃重启一次
  * 隔离现状：SDK 出网的受控通道 = 平台 egress 代理（白名单/IP 黑名单逐跳校验，
  * 见 routes/aap.ts）。注意：**进程级隔离（禁直连网络、CPU/内存限额、ns/cgroups）
- * 尚未实装**——包代码仍可自行出网、读取同用户可访问的文件系统；上传阶段会执行包结构、manifest、
- * 签名完整性与依赖校验，公开发布按订阅名额控制；完整隔离按 PRD G2 在容器形态补齐。
+ * 尚未实装**——包代码仍可自行出网、读取同用户可访问的文件系统；上传阶段会执行包结构、
+ * manifest 与依赖校验，用户上传数量按当前订阅权益限制；完整隔离按 PRD G2 在容器形态补齐。
  * 子进程环境变量走白名单（见 SANDBOX_ENV_KEYS），宿主敏感配置不进沙箱。
  */
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -23,6 +23,7 @@ import { getSetting, getSettingInt } from './settings.js';
 import { HttpError } from './httpError.js';
 import { envValues as appEnvValues } from './appEnv.js';
 import { pyDepsDir } from './pydeps.js';
+import { recordAppRuntimeEvent } from './appRuntimeEvents.js';
 
 const PYTHON_BIN = process.env.PYTHON_BIN || 'python3';
 // src/lib → 根目录需上溯 4 级；Docker 内可用 AAP_RUNNER 覆盖为 /out/aap-sdk/... 
@@ -122,7 +123,7 @@ export async function baseEnv(appId: string, extra: Record<string, string> = {})
     AAP_STORAGE_DIR: path.join(appSiteDir(appId), 'storage'),
     // 包声明的环境变量/机密（manifest.env，app_env_vars 解密；保留名已在上传时拒声明，
     // 覆盖不了上面的平台键。放 extra 之前：平台键优先级恒高于包声明）
-    ...appEnvValues(appId),
+    ...await appEnvValues(appId),
     ...extra,
   };
 }
@@ -321,6 +322,7 @@ interface PersistentProc {
   proc: ChildProcess;
   port: number;
   lastUsed: number;
+  startedAt: number;
   restarts: number;
 }
 
@@ -353,7 +355,7 @@ function makeRoomForPersistent(): boolean {
   }
   if (lruAppId === null) return false;
   console.log(`[sandbox] persistent 达上限（${persistentMax()}），回收最久未用: ${lruAppId}`);
-  stopPersistentFor(lruAppId);
+  stopPersistentFor(lruAppId, 'capacity');
   return persistent.size < persistentMax();
 }
 
@@ -405,24 +407,56 @@ export async function ensurePersistent(
       ...sandboxSpawnUser(),
     },
   );
-  const entry_: PersistentProc = { proc, port, lastUsed: Date.now(), restarts: startRestarts };
+  const startedAt = Date.now();
+  const entry_: PersistentProc = { proc, port, lastUsed: startedAt, startedAt, restarts: startRestarts };
   persistent.set(appId, entry_);
+  void recordAppRuntimeEvent({
+    appId,
+    event: 'process.start',
+    level: 'info',
+    details: { port, restartCount: startRestarts },
+  });
 
   // spawn 失败（如运行时缺失）必须有监听，否则 error 事件成为 uncaught exception 拖垮主进程
   proc.on('error', (err) => {
     console.error(`[sandbox] persistent 进程启动失败 (${appId}):`, err.message);
+    void recordAppRuntimeEvent({
+      appId,
+      event: 'process.error',
+      level: 'error',
+      details: { code: 'PROCESS_START_FAILED', message: err.message.slice(0, 500) },
+    });
   });
 
-  proc.on('exit', () => {
+  proc.on('exit', (code, signal) => {
     // 只清理自己登记的条目：避免被回收/替换后误删后继进程的登记
     if (persistent.get(appId) !== entry_) return;
     persistent.delete(appId);
+    void recordAppRuntimeEvent({
+      appId,
+      event: 'process.exit',
+      level: code === 0 ? 'info' : 'error',
+      details: { code, signal, restartCount: entry_.restarts },
+    });
     // 崩溃自动重启（非人为 kill）；计数随条目继承传递，上限防 CrashLoop
     // （此前每次 respawn 新建条目从 0 计数，上限永不生效，已修）
     if (entry_.restarts < MAX_RESTARTS) {
       entry_.restarts++;
       onCrash?.(appId, entry_.restarts);
+      void recordAppRuntimeEvent({
+        appId,
+        event: 'process.restart',
+        level: 'warn',
+        details: { restartCount: entry_.restarts, maxRestarts: MAX_RESTARTS },
+      });
       void ensurePersistent(appId, entry, onCrash, entry_.restarts);
+    } else {
+      void recordAppRuntimeEvent({
+        appId,
+        event: 'process.restart_limit',
+        level: 'error',
+        details: { maxRestarts: MAX_RESTARTS },
+      });
     }
   });
 
@@ -436,9 +470,24 @@ export async function ensurePersistent(
       });
       s.once('error', () => resolve(false));
     });
-    if (ok) return port;
+    if (ok) {
+      void recordAppRuntimeEvent({
+        appId,
+        event: 'process.ready',
+        level: 'info',
+        durationMs: Date.now() - entry_.startedAt,
+      });
+      return port;
+    }
     await new Promise((r) => setTimeout(r, 200));
   }
+  void recordAppRuntimeEvent({
+    appId,
+    event: 'process.start_timeout',
+    level: 'error',
+    durationMs: Date.now() - entry_.startedAt,
+    details: { timeoutMs: 10_000 },
+  });
   return null;
 }
 
@@ -463,10 +512,16 @@ export function stopAllPersistent(): void {
 }
 
 /** 停掉指定应用的 persistent 进程（环境变量/机密变更后，下次访问以新环境重新拉起） */
-export function stopPersistentFor(appId: string): void {
+export function stopPersistentFor(appId: string, reason = 'reconfigure'): void {
   const p = persistent.get(appId);
   if (!p) return;
   persistent.delete(appId);
+  void recordAppRuntimeEvent({
+    appId,
+    event: 'process.stop',
+    level: 'info',
+    details: { reason },
+  });
   try {
     p.proc.kill('SIGTERM');
   } catch {
@@ -483,6 +538,12 @@ setInterval(() => {
       p.proc.kill('SIGTERM');
       persistent.delete(appId);
       console.log(`[sandbox] persistent 空闲回收: ${appId}`);
+      void recordAppRuntimeEvent({
+        appId,
+        event: 'process.stop',
+        level: 'info',
+        details: { reason: 'idle' },
+      });
     }
   }
 }, 60_000).unref();

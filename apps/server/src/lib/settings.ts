@@ -51,6 +51,14 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   SITE_NAME: {
     label: '站点名称',
     group: '站点与品牌', type: 'string', desc: '站点名称', initial: () => 'AI超级面板', defaultsWork: true },
+  SITE_DOMAIN: {
+    label: '本站域名（应用子域名根）',
+    group: '站点与品牌',
+    type: 'string',
+    desc: '应用将使用「应用 ID.本站域名」独立子域名；生产环境需配置通配 DNS 和 *.本站域名证书。留空时使用 *.localhost 供本地测试。',
+    initial: () => '',
+    defaultsWork: false,
+  },
   SITE_TAGLINE: {
     label: '站点标语',
     group: '站点与品牌',
@@ -61,7 +69,7 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   },
   LOGO: {
     label: 'Logo 图片',
-    group: '站点与品牌', type: 'string', desc: 'Logo 图片（data URI 或 /uploads 路径，留空用站名文字）', initial: () => '', defaultsWork: true },
+    group: '站点与品牌', type: 'string', desc: 'Logo 图片路径；可在此上传 PNG/JPEG/GIF/WebP（最大 5 MB），文件持久化到数据卷 admin/site-logo 目录。留空用站名文字', initial: () => '', defaultsWork: true },
   FOOTER_TEXT: {
     label: '页脚文案',
     group: '站点与品牌', type: 'string', desc: '页脚文案', initial: () => '', defaultsWork: true },
@@ -253,10 +261,10 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     group: '应用网关', type: 'int', desc: '应用网关上游超时（秒，仅覆盖首字节/HTML 拉取，不断流式连接）', initial: () => String(config.proxyTimeoutSec), defaultsWork: true, advanced: true },
   SANDBOX_MAX_CONCURRENT_RUNS: {
     label: '沙箱并发执行上限',
-    group: '应用网关', type: 'int', desc: '.asp-app invoked 执行的全局并发进程数上限（超出排队，防进程炸弹）', initial: () => '8', defaultsWork: true, advanced: true },
+    group: '应用网关', type: 'int', desc: '.awpk invoked 执行的全局并发进程数上限（超出排队，防进程炸弹）', initial: () => '8', defaultsWork: true, advanced: true },
   UPLOAD_PER_USER_PER_DAY: {
     label: '单用户每日上传上限',
-    group: '应用网关', type: 'int', desc: '每用户 24 小时内最多提交的 .asp-app 包次数（含版本更新）；0 = 不限。防脚本化刷包写满数据卷（内存计数，重启归零）', initial: () => '20', defaultsWork: true, advanced: true },
+    group: '应用网关', type: 'int', desc: '每用户 24 小时内最多提交的 .awpk 包次数（含版本更新）；0 = 不限。防脚本化刷包写满数据卷（内存计数，重启归零）', initial: () => '20', defaultsWork: true, advanced: true },
   UPLOAD_MIN_FREE_MB: {
     label: '上传磁盘水位（MB）',
     group: '应用网关', type: 'int', desc: '数据卷剩余空间低于该值（MB）时拒绝新包上传，防解压写满盘拖垮整站；0 = 不检查', initial: () => '512', defaultsWork: true, advanced: true },

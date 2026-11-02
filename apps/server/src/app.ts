@@ -25,7 +25,7 @@ import { adminTlsRouter } from './routes/adminTls.js';
 import { userRouter } from './routes/user.js';
 import { adminRouter } from './routes/admin.js';
 import { guideRouter } from './routes/guide.js';
-import { portalChromeJs } from './gateway/staticApp.js';
+import { portalChromeJs, sandboxBridgeHostJs, sandboxBridgeClientJs } from './gateway/staticApp.js';
 import { appsRunRouter } from './routes/appsRun.js';
 import { aapRouter } from './routes/aap.js';
 import { llmGatewayRouter } from './routes/llmGateway.js';
@@ -35,6 +35,7 @@ import { gatewayRouter } from './gateway/proxy.js';
 import { acmeChallengeResponse } from './gateway/tls.js';
 import { getSettingBool, getSetting } from './lib/settings.js';
 import { HttpError, toBody } from './lib/httpError.js';
+import { appDomainRoot, appIdFromHostname, isAppHostname } from './gateway/appDomains.js';
 
 
 export function createApp(cfg: AapConfig = config): Express {
@@ -56,22 +57,6 @@ export function createApp(cfg: AapConfig = config): Express {
   // 会话装载（cookie → sessions 表 → req.user）
   app.use(sessionMiddleware);
 
-  // /api 下的 JSON body 与 CSRF Origin 校验；/app 代理路径不经过这里（W5 起独立挂载）。
-  // 大包体路径（.asp-app 上传）不在全局解析：由路由内在鉴权之后用 15mb 解析器处理，
-  // 避免匿名 15MB JSON 解析 DoS 面（渗透测试排除项之一）
-  const LARGE_BODY_PATHS = new Set(['/api/admin/apps/package', '/api/admin/apps/package/preview', '/api/apps/submit']);
-  app.use('/api', (req, res, next) => {
-    const p = (req.originalUrl ?? req.url).split('?')[0]!;
-    if (LARGE_BODY_PATHS.has(p)) return next();
-    express.json({ limit: '1mb' })(req, res, next);
-  });
-
-  app.use('/api', csrfOriginCheck);
-
-  // 强制流程门禁（F3/A3）：mustChangePassword / admin 未绑 MFA 的会话，
-  // 除白名单（me/logout/change-password/mfa/step-up/bootstrap）外一律 403
-  app.use('/api', forceFlowGate);
-
   // ACME HTTP-01 挑战应答（80/HTTP 端口直达本服务或反代转发均可）
   app.get('/.well-known/acme-challenge/:token', (req, res) => {
     const ka = acmeChallengeResponse(String(req.params.token));
@@ -89,6 +74,12 @@ export function createApp(cfg: AapConfig = config): Express {
       const proto = req.protocol;
       if (proto === 'http') {
         const hostname = (req.headers.host ?? '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase();
+        const appHostId = appIdFromHostname(hostname);
+        const appHost = isAppHostname(hostname);
+        if (appHost && (!appHostId || appDomainRoot() === 'localhost')) {
+          next();
+          return;
+        }
         // 平台内部调用（沙箱 runner 的 egress / LLM 代理、FPK 统一网关）走 loopback
         // Host：重定向到公网域名会让 urllib/undici 跟随 302 并把 POST 降级为 GET，
         // 打挂所有沙箱出站（ip-analyzer 实测）。豁免判断只读 Host，不回显（P2-11
@@ -102,13 +93,55 @@ export function createApp(cfg: AapConfig = config): Express {
         // Host 回显（纯门户模式无已知域名，保持旧行为）。
         const host = (req.headers.host ?? '').replace(/:\d+$/, '');
         const domain = (getSetting('ACME_DOMAIN') ?? '').trim().toLowerCase();
-        const targetHost = domain && host.toLowerCase() !== domain ? domain : host;
+        const targetHost = appHostId
+          ? `${appHostId}.${appDomainRoot()}`
+          : domain && host.toLowerCase() !== domain ? domain : host;
         res.redirect(302, `https://${targetHost}${req.originalUrl}`);
         return;
       }
     }
     next();
   });
+
+  // Application hosts are routed before portal API middleware so their /api and
+  // /v1 paths remain inside the application origin.
+  app.use(gatewayRouter);
+
+  app.use(
+    '/uploads/sitelogo',
+    express.static(path.join(cfg.dataDir, 'admin', 'site-logo'), {
+      dotfiles: 'deny',
+      index: false,
+      immutable: true,
+      maxAge: '1y',
+    }),
+    express.static(path.join(cfg.dataDir, 'sitelogo'), {
+      dotfiles: 'deny',
+      index: false,
+      immutable: true,
+      maxAge: '1y',
+    }),
+  );
+
+  // /api 下的 JSON body 与 CSRF Origin 校验；应用网关请求不经此解析器，流式 body 保真。
+  const LARGE_BODY_PATHS = new Set([
+    '/api/admin/apps/package',
+    '/api/admin/apps/package/preview',
+    '/api/admin/site-logo',
+    '/api/apps/submit',
+  ]);
+  app.use('/api', (req, res, next) => {
+    const p = (req.originalUrl ?? req.url).split('?')[0]!;
+    if (/^\/api\/apps\/[^/]+\/icon$/.test(p)) return next();
+    if (LARGE_BODY_PATHS.has(p)) return next();
+    express.json({ limit: '1mb' })(req, res, next);
+  });
+
+  app.use('/api', csrfOriginCheck);
+
+  // 强制流程门禁（F3/A3）：mustChangePassword / admin 未绑 MFA 的会话，
+  // 除白名单（me/logout/change-password/mfa/step-up/bootstrap）外一律 403
+  app.use('/api', forceFlowGate);
 
   app.use('/api', healthRouter);
   app.use('/api', portalRouter);
@@ -125,18 +158,21 @@ export function createApp(cfg: AapConfig = config): Express {
   app.use('/api', appsRunRouter);
   app.use('/api/aap', aapRouter);
 
-  // 应用网关（B1）：/app/<id>/ 路径反代。必须在 SPA 兜底之前挂载；
-  // 不经过 express.json（流式 body 保真），CSRF 不适用（仅 /api 挂载）。
+  // 应用域名脚本入口（历史路径兼容）与 LLM 网关。
   // 统一页面元素脚本（P3）：被注入到所有门户代理/托管的 HTML 应用
   app.get('/portal-chrome.js', (_req, res) => {
-    res.type('text/javascript; charset=utf-8').send(portalChromeJs());
+    res.type('text/javascript; charset=utf-8').send(portalChromeJs(getSetting('SITE_NAME') || 'AI超级面板'));
+  });
+  app.get('/portal-app-bridge-host.js', (_req, res) => {
+    res.type('text/javascript; charset=utf-8').send(sandboxBridgeHostJs());
+  });
+  app.get('/portal-app-bridge-client.js', (_req, res) => {
+    res.type('text/javascript; charset=utf-8').send(sandboxBridgeClientJs());
   });
 
   // LLM 网关（M2，C1）：/v1/* OpenAI 兼容端点，独立于 /api（SDK 直连，无 cookie/CSRF）
   app.use('/v1', express.json({ limit: '2mb' }));
   app.use(llmGatewayRouter);
-
-  app.use(gatewayRouter);
 
   // 未知 API 一律 JSON 404（避免 SPA 兜底吞掉打错的接口）
   app.use('/api', (_req, res) => {
@@ -157,6 +193,10 @@ export function createApp(cfg: AapConfig = config): Express {
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     if (typeof err === 'object' && err !== null && 'type' in err && (err as { type?: string }).type === 'entity.parse.failed') {
       res.status(400).json({ error: { code: 'BAD_JSON', message: '请求体不是合法 JSON' } });
+      return;
+    }
+    if (typeof err === 'object' && err !== null && 'type' in err && (err as { type?: string }).type === 'entity.too.large') {
+      res.status(413).json({ error: { code: 'PAYLOAD_TOO_LARGE', message: '请求内容超过允许大小' } });
       return;
     }
     if (err instanceof HttpError) {

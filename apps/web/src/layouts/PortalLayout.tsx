@@ -1,10 +1,15 @@
-import { Avatar, Button, Dropdown, message, Segmented, Space, theme as antdTheme, type MenuProps } from 'antd';
+import { Avatar, Button, Dropdown, message, Segmented, Space, theme as antdTheme, Tooltip, type MenuProps } from 'antd';
 import { useEffect, useState, type MouseEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   AppstoreOutlined,
+  CrownOutlined,
+  ArrowRightOutlined,
   LogoutOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  SafetyCertificateOutlined,
   SettingOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -49,6 +54,8 @@ export function PortalLayout() {
   const [userPageTheme, setUserPageTheme] = useState<UserPageTheme>(readUserPageTheme);
   const [systemPrefersDark, setSystemPrefersDark] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.matchMedia('(max-width: 760px)').matches);
+  const [homeHeaderOnHero, setHomeHeaderOnHero] = useState(true);
   const membership = useQuery({
     queryKey: ['membership'],
     queryFn: () => api<UserMembershipData>('/api/user/membership'),
@@ -65,6 +72,22 @@ export function PortalLayout() {
   }, []);
 
   const branding = data?.branding;
+  useEffect(() => {
+    const siteName = branding?.siteName?.trim() || 'AI超级面板';
+    document.title = siteName;
+
+    const existingIcon = document.head.querySelector<HTMLLinkElement>('link[data-aap-site-icon]');
+    if (branding?.logo) {
+      const icon = existingIcon ?? document.createElement('link');
+      icon.rel = 'icon';
+      icon.href = branding.logo;
+      icon.dataset.aapSiteIcon = 'true';
+      if (!existingIcon) document.head.append(icon);
+    } else {
+      existingIcon?.remove();
+    }
+  }, [branding?.logo, branding?.siteName]);
+
   const isHome = location.pathname === '/';
   const isMembershipSelectionPage = location.pathname === '/membership-selection';
   const isAuthPage = ['/login', '/register'].includes(location.pathname);
@@ -73,6 +96,58 @@ export function PortalLayout() {
   const isMyApplicationsPage = location.pathname === '/my-apps';
   const isLegalPage = ['/terms', '/acceptable-use'].includes(location.pathname);
   const isUserPage = isAccountPage || isMyApplicationsPage;
+  useEffect(() => {
+    if (!isHome) return;
+    let frame = 0;
+    const updateHomeHeader = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const onHero = window.scrollY <= 8;
+        setHomeHeaderOnHero((current) => current === onHero ? current : onHero);
+      });
+    };
+    updateHomeHeader();
+    window.addEventListener('scroll', updateHomeHeader, { passive: true });
+    window.addEventListener('resize', updateHomeHeader);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('scroll', updateHomeHeader);
+      window.removeEventListener('resize', updateHomeHeader);
+    };
+  }, [isHome]);
+  const accountSections = ['myapps', 'profile', 'security', 'benefits', 'plans'] as const;
+  const requestedSection = new URLSearchParams(location.search).get('tab');
+  const activeSection = isMyApplicationsPage
+    ? 'my-apps'
+    : requestedSection === 'billing'
+      ? 'benefits'
+      : accountSections.find((section) => section === requestedSection) ?? 'myapps';
+  const userNavGroups = [
+    {
+      key: 'apps',
+      label: '应用',
+      items: [
+        { key: 'myapps', label: '应用管理', path: '/account?tab=myapps', icon: <SettingOutlined /> },
+        { key: 'my-apps', label: '我的应用', path: '/my-apps', icon: <AppstoreOutlined /> },
+      ],
+    },
+    {
+      key: 'account',
+      label: '账户和安全',
+      items: [
+        { key: 'profile', label: '账户信息', path: '/account?tab=profile', icon: <UserOutlined /> },
+        { key: 'security', label: '安全管理', path: '/account?tab=security', icon: <SafetyCertificateOutlined /> },
+      ],
+    },
+    {
+      key: 'benefits',
+      label: '权益中心',
+      items: [
+        { key: 'benefits', label: '我的权益', path: '/account?tab=benefits', icon: <CrownOutlined /> },
+        { key: 'plans', label: '获取权益', path: '/account?tab=plans', icon: <AppstoreOutlined /> },
+      ],
+    },
+  ];
   useEffect(() => {
     if (me?.user.membershipSelectionRequired && location.pathname !== '/membership-selection') {
       navigate('/membership-selection', { replace: true });
@@ -115,31 +190,143 @@ export function PortalLayout() {
     { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true },
     ...(me?.user.role === 'admin' ? [{ type: 'divider' as const }, { key: 'admin', icon: <SettingOutlined />, label: '管理后台' }] : []),
   ];
+  const sidebarMenuItems: MenuProps['items'] = [
+    { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true },
+    ...(me?.user.role === 'admin' ? [{ type: 'divider' as const }, { key: 'admin', icon: <SettingOutlined />, label: '管理后台' }] : []),
+  ];
 
   return (
     <div
-      className={`aap-shell aap-background-shell${isHome || isMembershipSelectionPage ? ' aap-home-shell' : ''}${isGuidePage ? ' aap-guide-shell' : ''}${isAuthPage ? ' aap-auth-shell' : ''}${isAccountPage ? ' aap-account-shell' : ''}${isMyApplicationsPage ? ' aap-my-apps-shell' : ''}${isLegalPage ? ' aap-legal-shell' : ''}${isUserPage ? ' aap-user-page-shell' : ''}${isMembershipSelectionPage ? ' aap-membership-selection-shell' : ''}`}
+      className={`aap-shell aap-background-shell${isHome || isMembershipSelectionPage ? ' aap-home-shell' : ''}${isHome ? ' aap-home-page-shell' : ''}${isGuidePage ? ' aap-guide-shell' : ''}${isAuthPage ? ' aap-auth-shell' : ''}${isAccountPage ? ' aap-account-shell' : ''}${isMyApplicationsPage ? ' aap-my-apps-shell' : ''}${isLegalPage ? ' aap-legal-shell' : ''}${isUserPage ? ' aap-user-page-shell' : ''}${isUserPage && sidebarCollapsed ? ' aap-user-page-shell--sidebar-collapsed' : ''}${isMembershipSelectionPage ? ' aap-membership-selection-shell' : ''}`}
       data-user-theme={isUserPage ? activeUserPageTheme : undefined}
     >
-      {!isAuthPage ? <header className="aap-header">
+      {isUserPage ? (
+        <aside className={`aap-user-sidebar${sidebarCollapsed ? ' aap-user-sidebar--collapsed' : ''}`} aria-label="个人中心导航">
+          <div className="aap-user-sidebar__top">
+            <Link to="/" className="aap-user-sidebar__brand" aria-label={branding?.siteName ?? 'AI超级面板'}>
+              {branding?.logo ? (
+                <img src={branding.logo} alt="" />
+              ) : (
+                <span className="aap-user-sidebar__brand-mark" style={{ background: token.colorPrimary }}>
+                  {branding?.siteName?.[0] ?? 'A'}
+                </span>
+              )}
+              <span className="aap-user-sidebar__brand-name">{branding?.siteName ?? 'AI超级面板'}</span>
+            </Link>
+            <Button
+              type="text"
+              className="aap-user-sidebar__toggle"
+              aria-label={sidebarCollapsed ? '展开导航' : '折叠导航'}
+              title={sidebarCollapsed ? '展开导航' : '折叠导航'}
+              icon={sidebarCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+            />
+          </div>
+
+          <nav className="aap-user-sidebar__nav">
+            {userNavGroups.map((group) => (
+              <section key={group.key} className="aap-user-sidebar__group" aria-label={group.label}>
+                <div className="aap-user-sidebar__group-title">
+                  <span>{group.label}</span>
+                </div>
+                {group.items.map((item) => (
+                  <Tooltip key={item.key} title={sidebarCollapsed ? item.label : null} placement="right">
+                    <button
+                      type="button"
+                      className={`aap-user-sidebar__item${activeSection === item.key ? ' is-active' : ''}`}
+                      aria-label={item.label}
+                      aria-current={activeSection === item.key ? 'page' : undefined}
+                      onClick={() => {
+                        navigate(item.path);
+                        if (window.matchMedia('(max-width: 760px)').matches) setSidebarCollapsed(true);
+                      }}
+                    >
+                      <span className="aap-user-sidebar__item-icon">{item.icon}</span>
+                      <span className="aap-user-sidebar__item-label">{item.label}</span>
+                    </button>
+                  </Tooltip>
+                ))}
+              </section>
+            ))}
+          </nav>
+
+          <div className="aap-user-sidebar__bottom">
+            {me ? (
+              <Dropdown
+                trigger={['click']}
+                onOpenChange={setUserMenuOpen}
+                menu={{
+                  items: sidebarMenuItems,
+                  onClick: ({ key }) => {
+                    if (key === 'logout') {
+                      void logout();
+                      return;
+                    }
+                    void qc.invalidateQueries();
+                    navigate(key === 'admin' ? '/admin' : key === 'my-apps' ? '/my-apps' : '/account');
+                  },
+                }}
+                overlayClassName={`aap-user-dropdown aap-user-dropdown--${activeUserPageTheme}`}
+                popupRender={(menu) => (
+                  <div className="aap-user-dropdown__panel">
+                    <div className="aap-user-dropdown__identity">
+                      <Avatar size={42} src={userAvatarSrc(me.user.avatar, me.user.id)} icon={<UserOutlined />} />
+                      <div className="aap-user-dropdown__identity-details">
+                        <strong>{me.user.name}</strong>
+                        <span>{me.user.email ?? '邮箱未绑定'}</span>
+                      </div>
+                      <div className="aap-user-dropdown__identity-meta">
+                        <div>
+                          <span>账号角色</span>
+                          <strong>{me.user.role === 'admin' ? '管理员' : '用户'}</strong>
+                        </div>
+                        <div className="aap-user-dropdown__theme">
+                          <span>界面主题</span>
+                          <Segmented<UserPageTheme>
+                            aria-label="界面主题"
+                            value={userPageTheme}
+                            onChange={changeUserPageTheme}
+                            onClick={(event) => event.stopPropagation()}
+                            options={USER_PAGE_THEME_OPTIONS}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="aap-user-dropdown__account">
+                      <div>
+                        <span>当前方案</span>
+                        <div className="aap-user-dropdown__plan">
+                          <TierBadge tier={membership.data?.membership?.tier ?? 0} showTierLabel={false} />
+                          <strong>
+                            {membership.isLoading
+                              ? '正在获取…'
+                              : membership.isError
+                                ? '权益信息暂不可用'
+                                : membership.data?.membership?.planName ?? '免费权益'}
+                          </strong>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="aap-user-dropdown__menu">{menu}</div>
+                  </div>
+                )}
+              >
+                <button type="button" className="aap-user-sidebar__profile" title={sidebarCollapsed ? me.user.name : undefined}>
+                  <Avatar size={34} src={userAvatarSrc(me.user.avatar, me.user.id)} icon={<UserOutlined />} />
+                  <span className="aap-user-sidebar__profile-name">{me.user.name}</span>
+                </button>
+              </Dropdown>
+            ) : null}
+          </div>
+        </aside>
+      ) : null}
+      {!isAuthPage && !isUserPage ? <header className={`aap-header${isHome ? ` aap-home-header ${homeHeaderOnHero ? 'aap-home-header--hero' : 'aap-home-header--content'}` : ''}`}>
         <Link to="/" style={{ textDecoration: 'none' }}>
           <div className="aap-brand">
             {branding?.logo ? (
               <img src={branding.logo} alt={branding.siteName} />
             ) : (
-              <span
-                style={{
-                  display: 'inline-flex',
-                  width: 30,
-                  height: 30,
-                  borderRadius: 8,
-                  background: token.colorPrimary,
-                  color: '#fff',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontWeight: 700,
-                }}
-              >
+              <span className="aap-brand-mark" style={{ background: token.colorPrimary }}>
                 {branding?.siteName?.[0] ?? 'A'}
               </span>
             )}
@@ -151,10 +338,35 @@ export function PortalLayout() {
         <Space className="aap-header-actions" size={20} wrap={false}>
           {isHome ? (
             <nav className="aap-home-nav" aria-label="首页导航">
-              <a href="#home-applications" onClick={(event) => void goToHomeSection(event, 'home-applications')}>浏览应用</a>
-              <a href="#home-rights" onClick={(event) => void goToHomeSection(event, 'home-rights')}>权益</a>
-              <a href="#home-faq" onClick={(event) => void goToHomeSection(event, 'home-faq')}>FAQ</a>
-              {!me ? <Link className="aap-home-nav__login" to="/login">登录 <span aria-hidden="true">→</span></Link> : null}
+              <a
+                href="#home-applications"
+                onClick={(event) => void goToHomeSection(event, 'home-applications')}
+              >
+                发现应用
+              </a>
+              <a
+                href="#home-rights"
+                onClick={(event) => void goToHomeSection(event, 'home-rights')}
+              >
+                权益
+              </a>
+              <a
+                href="#home-faq"
+                onClick={(event) => void goToHomeSection(event, 'home-faq')}
+              >
+                FAQ
+              </a>
+              {!me ? (
+                <Button
+                  size="small"
+                  type="primary"
+                  className="aap-header-login"
+                  icon={<ArrowRightOutlined />}
+                  onClick={() => navigate('/login')}
+                >
+                  登录
+                </Button>
+              ) : null}
             </nav>
           ) : (
             <Link to="/guide" style={{ fontSize: 13 }}>操作指南</Link>
@@ -171,7 +383,13 @@ export function PortalLayout() {
                     return;
                   }
                   void qc.invalidateQueries();
-                  navigate(key === 'admin' ? '/admin' : key === 'my-apps' ? '/my-apps' : '/account');
+                  if (key === 'account') {
+                    navigate('/account');
+                  } else if (key === 'my-apps') {
+                    navigate('/my-apps');
+                  } else if (key === 'admin') {
+                    navigate('/admin');
+                  }
                 },
               }}
               overlayClassName={`aap-user-dropdown aap-user-dropdown--${activeUserPageTheme}`}
@@ -226,12 +444,30 @@ export function PortalLayout() {
             </Dropdown>
           ) : (
             !isHome ? (
-              <Button size="small" type="primary" icon={<UserOutlined />} onClick={() => navigate('/login')}>登录</Button>
+              <Button
+                size="small"
+                type="primary"
+                className="aap-header-login"
+                icon={<ArrowRightOutlined />}
+                onClick={() => navigate('/login')}
+              >
+                登录
+              </Button>
             ) : null
           )}
         </Space>
       </header> : null}
-      <main className={`aap-main${isAuthPage ? ' aap-auth-main' : ''}`}>
+      <main className={`aap-main${isAuthPage ? ' aap-auth-main' : ''}${isUserPage ? ' aap-user-main' : ''}`}>
+        {isUserPage && sidebarCollapsed ? (
+          <Button
+            type="text"
+            className="aap-user-sidebar-open"
+            aria-label="展开导航"
+            title="展开导航"
+            icon={<MenuUnfoldOutlined />}
+            onClick={() => setSidebarCollapsed(false)}
+          />
+        ) : null}
         <Outlet context={{ activeUserPageTheme }} />
       </main>
       {branding ? <BeianFooter branding={branding} /> : null}

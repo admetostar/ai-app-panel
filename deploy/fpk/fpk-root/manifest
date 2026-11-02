@@ -1,7 +1,7 @@
 ﻿appname=AI-SuperPanel
 version=__VERSION__
 display_name=AI超级面板
-desc=AI 能一句话生成能用的网页、小工具和 Python 脚本，但分享与使用一直是断的：微信打不开 HTML 文件，跑 Python 要开终端、装依赖，折腾一圈别人还是用不上。AI超级面板就是「agent 写完代码之后的下一站」——让 agent 携带 .asp-app 打包规范（skill），按统一接口把成果直接发布上架：静态页面、JavaScript 小工具、Python 应用（可长驻服务）立刻获得访问地址、登录鉴权、统一主题与应用沙箱，他人点开链接即用，无需安装任何环境。<br><br>平台内置：应用卡片墙与路径反代网关（HTTP/WebSocket/SSE）、注册登录与 MFA 账号体系、LLM 统一网关（多上游、按账号计费）、Python 沙箱运行时、会员与 token 计费、自动 HTTPS。桌面图标直达管理面板；全部业务由门户自有端口与鉴权承载，内网直达，外网可经自带 ACME 证书或自有反代对外服务。
+desc=AI 能一句话生成能用的网页、小工具和 Python 脚本，但分享与使用一直是断的：微信打不开 HTML 文件，跑 Python 要开终端、装依赖，折腾一圈别人还是用不上。AI超级面板就是「agent 写完代码之后的下一站」——让 agent 携带 .awpk 打包规范（skill），按统一接口把成果直接发布上架：静态页面、JavaScript 小工具、Python 应用（可长驻服务）立刻获得访问地址、登录鉴权、统一主题与应用沙箱，他人点开链接即用，无需安装任何环境。<br><br>平台内置：应用卡片墙与路径反代网关（HTTP/WebSocket/SSE）、注册登录与 MFA 账号体系、LLM 统一网关（多上游、按账号计费）、Python 沙箱运行时、会员与 token 计费、自动 HTTPS。桌面图标直达管理面板；全部业务由门户自有端口与鉴权承载，内网直达，外网可经自带 ACME 证书或自有反代对外服务。
 source=thirdparty
 platform=__PLATFORM__
 maintainer=neon9809
@@ -14,4 +14,3 @@ checkport=false
 desktop_uidir=ui
 desktop_applaunchname=AI-SuperPanel.main
 ctl_stop=true
-

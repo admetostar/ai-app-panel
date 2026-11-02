@@ -4,6 +4,10 @@
   box-sizing: border-box;
 }
 
+:root {
+  --aap-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
 html,
 body,
 #root {
@@ -15,6 +19,7 @@ body,
 body {
   background: var(--aap-bg-layout);
   color: var(--aap-text);
+  font-family: var(--aap-font-family);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -31,22 +36,67 @@ body {
 
 .aap-home-shell .aap-header,
 .aap-legal-shell .aap-header {
-  background: rgba(8, 24, 63, 0.48);
-  border-bottom-color: rgba(255, 255, 255, 0.2);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background: rgba(255, 255, 255, 0.08);
+  border-bottom-color: rgba(16, 24, 40, 0.04);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.aap-home-page-shell {
+  position: relative;
+}
+
+.aap-home-page-shell .aap-header {
+  position: fixed;
+  inset: 0 0 auto;
+  width: 100%;
+  background: transparent;
+  border-bottom-color: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    color 180ms ease,
+    backdrop-filter 180ms ease;
 }
 
 .aap-home-shell .aap-header a,
 .aap-home-shell .aap-header .aap-brand .aap-site-name,
 .aap-legal-shell .aap-header a,
 .aap-legal-shell .aap-header .aap-brand .aap-site-name {
-  color: #fff;
+  color: #175cd3;
 }
 
 .aap-home-shell .aap-header .aap-tagline,
 .aap-legal-shell .aap-header .aap-tagline {
-  color: rgba(255, 255, 255, 0.78);
+  color: #667085;
+}
+
+.aap-home-page-shell .aap-header a,
+.aap-home-page-shell .aap-header .aap-brand .aap-site-name,
+.aap-home-page-shell .aap-header .aap-tagline,
+.aap-home-page-shell .aap-header .aap-user-menu,
+.aap-home-page-shell .aap-header .aap-user-menu:hover {
+  color: #fff;
+}
+
+.aap-home-page-shell .aap-header.aap-home-header--content {
+  background: rgba(248, 250, 252, 0.78);
+  border-bottom-color: rgba(16, 24, 40, 0.12);
+  box-shadow: 0 4px 18px rgba(16, 24, 40, 0.08);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.aap-home-page-shell .aap-header.aap-home-header--content a,
+.aap-home-page-shell .aap-header.aap-home-header--content .aap-brand .aap-site-name,
+.aap-home-page-shell .aap-header.aap-home-header--content .aap-tagline,
+.aap-home-page-shell .aap-header.aap-home-header--content .aap-user-menu,
+.aap-home-page-shell .aap-header.aap-home-header--content .aap-user-menu:hover {
+  color: #475467;
 }
 
 .aap-home-shell .aap-main,
@@ -152,6 +202,13 @@ body {
   font-size: 22px;
 }
 
+.aap-app-card__icon img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
 .aap-app-card__copy {
   min-width: 0;
   flex: 1;
@@ -239,11 +296,15 @@ body {
 .aap-home-nav {
   display: flex;
   align-items: center;
-  gap: clamp(14px, 2.5vw, 36px);
+  gap: clamp(24px, 2.4vw, 36px);
 }
 
 .aap-home-nav a {
-  color: rgba(255, 255, 255, 0.88);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 0;
+  color: rgba(242, 244, 247, 0.9);
   font-size: 14px;
   text-decoration: none;
   transition: color 160ms ease;
@@ -253,31 +314,57 @@ body {
   color: #fff;
 }
 
-.aap-home-shell .aap-header .aap-home-nav .aap-home-nav__login {
-  display: inline-flex;
-  min-width: 100px;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: 10px 18px;
-  border-radius: 10px;
-  background: #fff;
-  color: #111827;
-  font-weight: 600;
+.aap-home-page-shell .aap-header .aap-home-nav a {
+  color: rgba(242, 244, 247, 0.9);
 }
 
-.aap-home-shell .aap-header .aap-home-nav .aap-home-nav__login:hover {
+.aap-home-page-shell .aap-header .aap-home-nav a:hover {
+  color: #fff;
+}
+
+.aap-home-page-shell .aap-header.aap-home-header--content .aap-home-nav a {
+  color: #475467;
+}
+
+.aap-home-page-shell .aap-header.aap-home-header--content .aap-home-nav a:hover {
+  color: #175cd3;
+}
+
+.aap-home-page-shell .aap-header.aap-home-header--content .aap-header-login,
+.aap-home-page-shell .aap-header.aap-home-header--content .aap-header-login:hover {
+  border-color: #101828 !important;
+  background: #101828 !important;
+  color: #fff !important;
+  box-shadow: 0 6px 18px rgba(16, 24, 40, 0.18);
+}
+
+.aap-home-page-shell .aap-header.aap-home-header--content .aap-header-login:hover {
+  background: #344054 !important;
+}
+
+.aap-header .aap-header-login {
+  height: 40px;
+  padding-inline: 18px;
+  border: 0;
+  border-radius: 10px;
+  background: #fff;
+  color: #101828;
+  font-weight: 600;
+  box-shadow: 0 8px 26px rgba(2, 10, 32, 0.18);
+}
+
+.aap-header .aap-header-login:hover {
   background: #eaf0ff;
-  color: #111827;
+  color: #101828;
 }
 
 .aap-home-hero {
   position: relative;
   display: grid;
-  min-height: calc(100svh - 60px);
+  min-height: 100svh;
   place-items: center;
   overflow: hidden;
-  padding: 72px 24px 96px;
+  padding: 132px 24px 96px;
   background-image:
     linear-gradient(115deg, rgba(6, 18, 54, 0.68), rgba(13, 44, 115, 0.34) 55%, rgba(3, 17, 53, 0.5)),
     url('../../server/assets/home-background.png');
@@ -1112,12 +1199,12 @@ body {
 
 .aap-legal-shell .aap-header .aap-user-menu,
 .aap-legal-shell .aap-header .aap-user-menu:hover {
-  color: #fff;
+  color: #175cd3;
 }
 
 .aap-account-page {
-  --aap-bg-layout: #f2f4f7;
-  --aap-bg-container: #f8fafc;
+  --aap-bg-layout: #fff;
+  --aap-bg-container: #fff;
   --aap-bg-elevated: #fff;
   --aap-text: #101828;
   --aap-text-secondary: #475467;
@@ -1126,12 +1213,12 @@ body {
   margin: 0 auto;
   padding: 28px;
   color: #101828;
-  background: #f2f4f7;
+  background: #fff;
 }
 
 .aap-account-shell,
 .aap-account-shell .aap-main {
-  background: #f2f4f7;
+  background: #fff;
 }
 
 .aap-account-shell .aap-main {
@@ -1166,24 +1253,24 @@ body {
 .aap-account-page .ant-card-bordered {
   border-color: #d0d5dd;
   border-radius: 0 !important;
-  background: #f2f4f7 !important;
+  background: #fff !important;
   color: #101828 !important;
 }
 
 .aap-account-page .ant-card-head {
   border-bottom-color: #d0d5dd;
   border-radius: 0 !important;
-  background: #f2f4f7 !important;
+  background: #fff !important;
 }
 
 .aap-account-page .ant-card-body {
-  background: #f2f4f7 !important;
+  background: #fff !important;
 }
 
 .aap-account-page .ant-alert {
   border: 1px solid #d0d5dd !important;
   border-radius: 0 !important;
-  background: #f8fafc !important;
+  background: #fff !important;
   color: #101828 !important;
 }
 
@@ -1212,7 +1299,7 @@ body {
 .aap-account-page .ant-btn-default,
 .aap-account-page .ant-btn-dangerous:not(.ant-btn-primary) {
   border-color: #98a2b3 !important;
-  background: #f8fafc !important;
+  background: #fff !important;
   color: #344054 !important;
 }
 
@@ -1224,6 +1311,16 @@ body {
 .aap-account-page .ant-btn-default:hover,
 .aap-account-page .ant-btn-dangerous:not(.ant-btn-primary):hover {
   background: #eaecf0 !important;
+}
+
+.aap-account-page .aap-mfa-passkey-button.ant-btn-primary {
+  border-color: #039855 !important;
+  background: #039855 !important;
+}
+
+.aap-account-page .aap-mfa-passkey-button.ant-btn-primary:not(:disabled):hover {
+  border-color: #027a48 !important;
+  background: #027a48 !important;
 }
 
 .aap-account-page .ant-card-head-title,
@@ -1260,12 +1357,12 @@ body {
 .aap-account-page .ant-table-tbody > tr > td,
 .aap-account-page .ant-table-cell-fix-left,
 .aap-account-page .ant-table-cell-fix-right {
-  background: #f2f4f7 !important;
+  background: #fff !important;
   color: #101828 !important;
 }
 
 .aap-account-page .ant-table-thead > tr > th {
-  background: #e4e7ec !important;
+  background: #fff !important;
   border-color: #d0d5dd !important;
   color: #101828 !important;
   font-weight: 600;
@@ -1276,12 +1373,21 @@ body {
 }
 
 .aap-account-page .ant-table-tbody > tr:hover > td {
-  background: #eaecf0 !important;
+  background: #f5f5f5 !important;
+}
+
+.aap-owned-apps-table .ant-table-cell {
+  padding-inline: 8px !important;
+  overflow-wrap: anywhere;
+}
+
+.aap-owned-apps-table .ant-table-pagination {
+  margin-bottom: 0;
 }
 
 .aap-account-page .ant-table-placeholder,
 .aap-account-page .ant-empty-description {
-  background: #f2f4f7 !important;
+  background: #fff !important;
   color: #475467 !important;
 }
 
@@ -1292,20 +1398,29 @@ body {
 .aap-account-modal--light .ant-modal-content {
   border: 1px solid #d0d5dd;
   border-radius: 0;
-  background: #f8fafc;
+  background: #fff;
   color: #101828;
 }
 
 .aap-account-modal--light .ant-modal-header {
   border-bottom: 1px solid #d0d5dd;
   border-radius: 0;
-  background: #f8fafc;
+  background: #fff;
 }
 
 .aap-account-modal--light .ant-modal-title,
 .aap-account-modal--light .ant-modal-body,
 .aap-account-modal--light .ant-form-item-label > label {
   color: #101828;
+}
+
+.aap-account-modal--light .ant-typography {
+  color: #101828;
+}
+
+.aap-account-modal--light .ant-typography-secondary,
+.aap-account-modal--light .ant-empty-description {
+  color: #475467 !important;
 }
 
 .aap-account-modal--light .ant-input,
@@ -1318,6 +1433,14 @@ body {
 
 .aap-account-modal--light .ant-modal-close {
   color: #475467;
+}
+
+.aap-account-modal--light .ant-tag {
+  border-radius: 0;
+}
+
+.aap-account-modal--light .aap-app-icon-picker__preview {
+  background: #fff;
 }
 
 .aap-account-modal--dark .ant-modal-content {
@@ -1333,18 +1456,64 @@ body {
   background: #1d2129;
 }
 
+.aap-account-modal--dark .ant-modal-footer {
+  border-top-color: #414754;
+  background: #1d2129;
+}
+
+.aap-account-modal--dark .ant-card,
+.aap-account-modal--dark .ant-card-head,
+.aap-account-modal--dark .ant-card-body {
+  border-color: #414754;
+  background: #1d2129;
+  color: #e6e8ec;
+}
+
+.aap-account-modal--dark .ant-alert {
+  border-color: #414754;
+  background: #14171c;
+  color: #e6e8ec;
+}
+
+.aap-account-modal--dark .ant-btn-default {
+  border-color: #667085;
+  background: #23272f;
+  color: #e6e8ec;
+}
+
 .aap-account-modal--dark .ant-modal-title,
 .aap-account-modal--dark .ant-modal-body,
 .aap-account-modal--dark .ant-form-item-label > label {
   color: #e6e8ec;
 }
 
+.aap-account-modal--dark .ant-form-item-extra,
+.aap-account-modal--dark .ant-input-data-count {
+  color: #aeb6c4;
+}
+
+.aap-account-modal--dark .ant-typography {
+  color: #e6e8ec;
+}
+
+.aap-account-modal--dark .ant-typography-secondary,
+.aap-account-modal--dark .ant-empty-description {
+  color: #aeb6c4 !important;
+}
+
 .aap-account-modal--dark .ant-input,
 .aap-account-modal--dark .ant-input-affix-wrapper {
-  border-color: #414754;
+  border-color: #414754 !important;
   border-radius: 0;
-  background: #14171c;
-  color: #e6e8ec;
+  background: #14171c !important;
+  color: #e6e8ec !important;
+}
+
+.aap-account-modal--dark input.ant-input,
+.aap-account-modal--dark textarea.ant-input,
+.aap-account-modal--dark .ant-input-affix-wrapper input {
+  background: #14171c !important;
+  color: #e6e8ec !important;
 }
 
 .aap-account-modal--dark .ant-input::placeholder,
@@ -1352,8 +1521,86 @@ body {
   color: #8b95a5;
 }
 
+.aap-account-modal--dark .ant-select-selector {
+  border-color: #414754 !important;
+  background: #14171c !important;
+  color: #e6e8ec !important;
+}
+
+.aap-account-modal--dark .ant-select-selection-item,
+.aap-account-modal--dark .ant-select-selection-placeholder,
+.aap-account-modal--dark .ant-select-arrow {
+  color: #e6e8ec !important;
+}
+
+.aap-account-modal--dark .ant-tabs-tab,
+.aap-account-modal--dark .ant-tabs-tab .ant-tabs-tab-btn {
+  color: #aeb6c4;
+}
+
+.aap-account-modal--dark .ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: #8db4ff !important;
+}
+
+.aap-account-modal--dark .ant-tabs-nav::before {
+  border-color: #414754;
+}
+
+.aap-account-modal--dark .ant-tabs-ink-bar {
+  background: #4c8dff;
+}
+
 .aap-account-modal--dark .ant-modal-close {
   color: #aeb6c4;
+}
+
+.aap-account-modal--dark .ant-tag {
+  border-radius: 0;
+}
+
+.aap-account-modal-select-dropdown--dark.ant-select-dropdown {
+  border: 1px solid #414754;
+  background: #1d2129;
+}
+
+.aap-account-modal-select-dropdown--dark .ant-select-item {
+  color: #e6e8ec;
+}
+
+.aap-account-modal-select-dropdown--dark .ant-select-item-option-active:not(.ant-select-item-option-disabled),
+.aap-account-modal-select-dropdown--dark .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
+  background: #2a3444;
+  color: #f2f4f7;
+}
+
+.aap-app-env-editor.aap-account-modal--dark .ant-typography,
+.aap-app-env-editor.aap-account-modal--dark .ant-empty-description {
+  color: #e6e8ec;
+}
+
+.aap-app-env-editor.aap-account-modal--dark .ant-typography-secondary {
+  color: #aeb6c4 !important;
+}
+
+.aap-env-required-mark {
+  color: #f04438;
+  font-weight: 700;
+}
+
+.aap-email-change-code-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
+.aap-email-change-code-row .ant-form-item {
+  min-width: 0;
+  margin-bottom: 20px;
+}
+
+.aap-email-change-code-row > .ant-btn {
+  min-width: 112px;
 }
 
 .aap-account-tabs.ant-tabs-left > .ant-tabs-nav {
@@ -1488,13 +1735,13 @@ body {
   gap: 16px;
   padding: 0 24px;
   height: 60px;
-  background: color-mix(in srgb, var(--aap-bg-container) 78%, transparent);
+  background: color-mix(in srgb, #fff 8%, transparent);
   border-bottom: 1px solid var(--aap-border);
   position: sticky;
   top: 0;
   z-index: 100;
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .aap-header .aap-brand {
@@ -1505,12 +1752,27 @@ body {
 }
 
 .aap-header .aap-brand img {
-  height: 30px;
-  width: auto;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  object-fit: contain;
+}
+
+.aap-header .aap-brand-mark {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  color: #fff;
+  font-weight: 700;
 }
 
 .aap-header .aap-brand .aap-site-name {
-  font-size: 17px;
+  font-size: 18px;
+  line-height: 1.2;
   font-weight: 600;
   color: var(--aap-primary);
   white-space: nowrap;
@@ -1776,6 +2038,11 @@ body {
 
 .aap-home-shell .aap-header .aap-user-menu,
 .aap-home-shell .aap-header .aap-user-menu:hover {
+  color: #175cd3;
+}
+
+.aap-home-page-shell .aap-header .aap-user-menu,
+.aap-home-page-shell .aap-header .aap-user-menu:hover {
   color: #fff;
 }
 
@@ -1815,20 +2082,20 @@ body {
 }
 
 .aap-user-page-shell[data-user-theme='light'] {
-  --aap-bg-layout: #f2f4f7;
-  --aap-bg-container: #f8fafc;
+  --aap-bg-layout: #fff;
+  --aap-bg-container: #fff;
   --aap-bg-elevated: #fff;
   --aap-text: #101828;
   --aap-text-secondary: #475467;
   --aap-border: #d0d5dd;
   --aap-primary: #175cd3;
-  background: #f2f4f7;
+  background: #fff;
   color: #101828;
 }
 
 .aap-user-page-shell[data-user-theme='light'] .aap-header {
-  border-bottom-color: #d0d5dd;
-  background: color-mix(in srgb, #f8fafc 78%, transparent);
+  border-bottom-color: rgba(16, 24, 40, 0.05);
+  background: color-mix(in srgb, #fff 8%, transparent);
 }
 
 .aap-user-page-shell[data-user-theme='light'] .aap-header .aap-site-name,
@@ -1841,8 +2108,45 @@ body {
 .aap-user-page-shell[data-user-theme='light'] .aap-main,
 .aap-user-page-shell[data-user-theme='light'] .aap-footer {
   border-color: #d0d5dd;
-  background: #f2f4f7;
+  background: #fff;
   color: #475467;
+}
+
+.aap-user-page-shell[data-user-theme='light'] .aap-user-sidebar {
+  background: #fff;
+}
+
+.aap-account-shell[data-user-theme='light'] .aap-account-page,
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-card,
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-card-head,
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-card-body {
+  background: #fff !important;
+}
+
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-alert,
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-tabs-nav,
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-table-wrapper,
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-table-content {
+  background: #fff !important;
+}
+
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-table,
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-table-container,
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-table-content,
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-table-tbody > tr > td,
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-table-cell-fix-left,
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-table-cell-fix-right,
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-table-expanded-row > td,
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-table-placeholder {
+  background: #fff !important;
+}
+
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-table-thead > tr > th {
+  background: #fff !important;
+}
+
+.aap-account-shell[data-user-theme='light'] .aap-account-page .ant-table-tbody > tr:hover > td {
+  background: #fff !important;
 }
 
 .aap-user-page-shell[data-user-theme='light'] .aap-footer a {
@@ -1851,7 +2155,7 @@ body {
 
 .aap-my-apps-shell[data-user-theme='light'] .aap-my-apps-page .ant-alert {
   border-color: #d0d5dd;
-  background: #f8fafc;
+  background: #fff;
   color: #101828;
 }
 
@@ -1868,8 +2172,8 @@ body {
 }
 
 .aap-user-page-shell[data-user-theme='dark'] .aap-header {
-  border-bottom-color: #2e333d;
-  background: color-mix(in srgb, #1d2129 78%, transparent);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, #1d2129 8%, transparent);
 }
 
 .aap-user-page-shell[data-user-theme='dark'] .aap-header .aap-site-name,
@@ -1903,6 +2207,7 @@ body {
   --aap-text-secondary: #aeb6c4;
   --aap-border: #2e333d;
   --aap-primary: #4c8dff;
+  background: #14171c !important;
 }
 
 .aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-alert,
@@ -1930,14 +2235,48 @@ body {
 }
 
 .aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-wrapper,
 .aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-container,
 .aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-content,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-body,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-placeholder,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-footer,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-summary,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-pagination.ant-pagination,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-pagination,
 .aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-tbody > tr > td,
 .aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-cell-fix-left,
-.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-cell-fix-right {
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-cell-fix-right,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-cell-scrollbar {
   border-color: #2e333d !important;
   background: #1d2129 !important;
   color: #e6e8ec !important;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-container::before,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-container::after {
+  box-shadow: none !important;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-pagination .ant-pagination-item,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-pagination .ant-pagination-prev,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-pagination .ant-pagination-next {
+  border-color: #414754;
+  background: transparent;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-pagination .ant-pagination-item a,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-pagination .ant-pagination-item-link {
+  color: #aeb6c4;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-pagination .ant-pagination-item-active {
+  border-color: #4c8dff;
+  background: #1d2129;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-pagination .ant-pagination-item-active a {
+  color: #8db4ff;
 }
 
 .aap-account-shell[data-user-theme='dark'] .aap-account-page .ant-table-thead > tr > th {
@@ -2096,6 +2435,17 @@ body {
   gap: 7px;
 }
 
+.membership-current-plan__value {
+  color: var(--aap-text) !important;
+  font-size: 20px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.membership-history .ant-table {
+  overflow-x: auto;
+}
+
 .membership-plan-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
@@ -2142,16 +2492,17 @@ body {
   }
 
   .aap-home-nav {
-    gap: 12px;
+    gap: 8px;
   }
 
   .aap-home-nav a {
     font-size: 12px;
+    padding: 6px 7px;
   }
 
-  .aap-home-nav .aap-home-nav__login {
-    min-width: auto;
-    padding: 8px 11px;
+  .aap-header .aap-header-login {
+    height: 36px;
+    padding-inline: 11px;
   }
 
   .aap-guide-page {
@@ -2259,5 +2610,718 @@ body {
   .membership-current-plan__grid {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+}
+
+.aap-account-page {
+  max-width: 1440px;
+  padding: 28px clamp(16px, 3vw, 48px);
+  background: transparent;
+}
+
+.aap-account-heading {
+  margin: 8px 0 24px;
+}
+
+.aap-account-heading h2.ant-typography {
+  margin: 6px 0;
+  font-size: clamp(28px, 3vw, 36px);
+  font-weight: 600;
+}
+
+.aap-account-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.aap-account-page .aap-account-overview-card.ant-card,
+.aap-account-page .aap-account-section .ant-card {
+  overflow: hidden;
+  border: 1px solid #e4e7ec !important;
+  border-radius: 12px !important;
+  background: #fff !important;
+  box-shadow: 0 2px 5px rgba(16, 24, 40, 0.06), 0 10px 24px rgba(16, 24, 40, 0.04);
+}
+
+.aap-account-page .aap-account-overview-card .ant-card-body {
+  display: flex;
+  min-height: 166px;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 20px;
+  background: #fff !important;
+}
+
+.aap-account-overview-card__heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.aap-account-overview-card__heading .ant-typography {
+  margin: 0;
+  color: #475467 !important;
+}
+
+.aap-account-overview-card__icon {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: #eff4ff;
+  color: #175cd3;
+  font-size: 16px;
+}
+
+.aap-account-overview-card h3.ant-typography {
+  max-width: 100%;
+  overflow: hidden;
+  margin: 14px 0 0;
+  font-size: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aap-account-overview-card > .ant-card-body > .ant-typography-secondary {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aap-account-page .aap-account-overview-card .ant-btn-link {
+  height: auto;
+  margin-top: auto;
+  padding: 12px 0 0;
+  color: #175cd3 !important;
+}
+
+.aap-account-tabs.ant-tabs-left > .ant-tabs-nav {
+  padding: 10px;
+  border: 1px solid #e4e7ec;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.aap-account-tabs .ant-tabs-nav-list {
+  gap: 4px;
+}
+
+.aap-account-tabs .ant-tabs-nav-list > .ant-tabs-tab:nth-child(1) {
+  order: 2;
+}
+
+.aap-account-tabs .ant-tabs-nav-list > .ant-tabs-tab:nth-child(2) {
+  order: 3;
+}
+
+.aap-account-tabs .ant-tabs-nav-list > .ant-tabs-tab:nth-child(3) {
+  order: 1;
+}
+
+.aap-account-tabs .ant-tabs-nav-list > .ant-tabs-tab:nth-child(4) {
+  order: 4;
+}
+
+.aap-account-tabs .ant-tabs-tab {
+  min-height: 54px;
+  padding: 7px 12px !important;
+  border-radius: 8px;
+}
+
+.aap-account-tabs .ant-tabs-tab::before {
+  display: none;
+}
+
+.aap-account-tab-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.35;
+}
+
+.aap-account-tab-group {
+  color: #667085;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.aap-account-tab-group--hidden {
+  visibility: hidden;
+}
+
+.aap-account-tabs .ant-tabs-tab-active {
+  background: #eef4ff;
+}
+
+.aap-account-tabs .ant-tabs-tab-active .aap-account-tab-label > span:last-child {
+  color: #175cd3;
+  font-weight: 600;
+}
+
+.aap-account-page .aap-account-section .ant-card-head,
+.aap-account-page .aap-account-section .ant-card-body {
+  background: #fff !important;
+}
+
+.aap-account-page .ant-btn {
+  border-radius: 8px !important;
+}
+
+.aap-account-page .ant-input,
+.aap-account-page .ant-input-affix-wrapper,
+.aap-account-page textarea.ant-input {
+  border-radius: 8px !important;
+}
+
+.aap-account-page .ant-tag {
+  border-radius: 999px;
+}
+
+.aap-account-shell .aap-main {
+  background: #f8fafc;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-main {
+  background: #14171c;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .aap-account-overview-card.ant-card,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .aap-account-section .ant-card,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .aap-account-section .ant-card-head,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .aap-account-section .ant-card-body {
+  border-color: #2e333d !important;
+  background: #1d2129 !important;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .aap-account-overview-card.ant-card,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .aap-account-section .ant-card {
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.2), 0 12px 26px rgba(0, 0, 0, 0.12);
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .aap-account-overview-card h3.ant-typography,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .aap-account-tab-label > span:last-child {
+  color: #e6e8ec !important;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-overview-card__heading .ant-typography,
+.aap-account-shell[data-user-theme='dark'] .aap-account-tab-group {
+  color: #aeb6c4 !important;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-overview-card__icon {
+  background: #253c60;
+  color: #8db4ff;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-tabs.ant-tabs-left > .ant-tabs-nav {
+  border-color: #2e333d;
+  background: #1d2129;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-tabs .ant-tabs-tab-active {
+  background: #232c3a !important;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-tabs .ant-tabs-tab-active .aap-account-tab-label > span:last-child {
+  color: #8db4ff !important;
+}
+
+@media (max-width: 760px) {
+  .aap-account-page {
+    padding: 18px 12px;
+  }
+
+  .aap-account-overview {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .aap-account-page .aap-account-overview-card .ant-card-body {
+    min-height: 148px;
+  }
+
+  .aap-account-tabs.ant-tabs-left > .ant-tabs-nav {
+    padding: 8px;
+  }
+}
+
+.aap-user-page-shell {
+  --aap-user-sidebar-width: 264px;
+  min-height: 100svh;
+  background: #f8fafc;
+}
+
+.aap-user-page-shell--sidebar-collapsed {
+  --aap-user-sidebar-width: 0px;
+}
+
+.aap-user-sidebar {
+  position: fixed;
+  z-index: 120;
+  inset: 0 auto 0 0;
+  display: flex;
+  width: var(--aap-user-sidebar-width);
+  flex-direction: column;
+  padding: 14px 12px 12px;
+  border-right: 1px solid #e4e7ec;
+  background: #fff;
+  color: #101828;
+  box-shadow: 4px 0 18px rgba(16, 24, 40, 0.08);
+  transition: width 180ms ease;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-user-sidebar {
+  border-right-color: #2e333d;
+  background: #1d2129;
+  box-shadow: 4px 0 20px rgba(0, 0, 0, 0.22);
+}
+
+.aap-user-sidebar--collapsed {
+  display: none;
+}
+
+.aap-user-sidebar-open.ant-btn {
+  display: inline-flex;
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  margin: -8px 0 18px -8px;
+  border: 1px solid #e4e7ec;
+  border-radius: 9px;
+  background: #fff;
+  color: #475467;
+}
+
+.aap-user-sidebar-open.ant-btn:hover {
+  border-color: #b2ccff;
+  background: #eff4ff;
+  color: #175cd3;
+}
+
+.aap-user-sidebar__top {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aap-user-sidebar__brand {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+  color: #101828;
+  font-size: 18px;
+  line-height: 1.2;
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.aap-user-sidebar__brand img,
+.aap-user-sidebar__brand-mark {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  object-fit: contain;
+}
+
+.aap-user-sidebar__brand-mark {
+  color: #fff;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.aap-user-sidebar__brand-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aap-app-icon-picker {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.aap-app-icon-picker__preview {
+  display: grid;
+  width: 72px;
+  height: 72px;
+  flex: 0 0 72px;
+  place-items: center;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid #d0d5dd;
+  border-radius: 14px;
+  background: #f2f4f7;
+  color: #475467;
+  cursor: pointer;
+  font: inherit;
+  font-size: 30px;
+}
+
+.aap-app-icon-picker__preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.aap-app-icon-picker__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.aap-account-modal--dark .aap-app-icon-picker__preview {
+  border-color: #414754;
+  background: #14171c;
+  color: #aeb6c4;
+}
+
+.aap-user-sidebar__toggle.ant-btn {
+  display: inline-flex;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: #667085;
+}
+
+.aap-user-sidebar__toggle.ant-btn:hover {
+  background: #f2f4f7;
+  color: #175cd3;
+}
+
+.aap-user-sidebar__nav {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 22px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 30px 3px 0;
+  margin-inline: -3px;
+}
+
+.aap-user-sidebar__group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.aap-user-sidebar__group-title {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 11px 5px;
+  color: #667085;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.aap-user-sidebar__item {
+  display: flex;
+  width: 100%;
+  min-height: 42px;
+  align-items: center;
+  gap: 11px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #475467;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: color 140ms ease, background 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+
+.aap-user-sidebar__item:hover {
+  transform: translateX(2px);
+  background: #f2f4f7;
+  color: #175cd3;
+  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.1);
+}
+
+.aap-user-sidebar__item.is-active {
+  background: #eef4ff;
+  color: #175cd3;
+  font-weight: 600;
+}
+
+.aap-user-sidebar__item-icon {
+  display: inline-flex;
+  width: 18px;
+  flex: 0 0 18px;
+  justify-content: center;
+  font-size: 15px;
+}
+
+.aap-user-sidebar__item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aap-user-sidebar__bottom {
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid #eaecf0;
+}
+
+.aap-user-sidebar__profile {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #344054;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.aap-user-sidebar__profile:hover,
+.aap-user-sidebar__profile:focus-visible {
+  background: #f2f4f7;
+  outline: none;
+}
+
+.aap-user-sidebar__profile-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aap-user-sidebar--collapsed .aap-user-sidebar__top {
+  display: none;
+}
+
+.aap-user-page-shell .aap-main {
+  width: calc(100% - var(--aap-user-sidebar-width));
+  max-width: none;
+  min-height: 100svh;
+  margin: 0 0 0 var(--aap-user-sidebar-width);
+  padding: 32px clamp(20px, 4vw, 56px);
+  background: #f8fafc;
+  transition: width 180ms ease, margin-left 180ms ease;
+}
+
+.aap-account-page {
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 0;
+  background: transparent;
+}
+
+.aap-account-heading {
+  margin: 0 0 28px;
+}
+
+.aap-account-heading h2.ant-typography {
+  margin: 8px 0 6px;
+  font-size: clamp(30px, 3.2vw, 40px);
+  font-weight: 600;
+}
+
+.aap-account-heading > p.ant-typography {
+  margin-bottom: 0;
+  font-size: 15px;
+}
+
+.aap-account-tabs .ant-tabs-nav {
+  display: none !important;
+}
+
+.aap-account-tabs.ant-tabs-left > .ant-tabs-content-holder {
+  width: 100%;
+}
+
+.aap-account-tabs .ant-tabs-tabpane {
+  padding-bottom: 0;
+}
+
+.aap-account-section {
+  scroll-margin-top: 0;
+}
+
+.aap-account-page .ant-card,
+.aap-account-page .ant-card-bordered,
+.aap-account-page .ant-card-head,
+.aap-account-page .ant-card-body {
+  border-radius: 12px !important;
+}
+
+.aap-account-page .ant-card,
+.aap-account-page .ant-card-bordered,
+.aap-account-page .ant-card-head,
+.aap-account-page .ant-card-body {
+  background: #fff !important;
+}
+
+.aap-account-page .ant-alert,
+.aap-account-page .ant-btn,
+.aap-account-page .ant-input,
+.aap-account-page .ant-input-affix-wrapper,
+.aap-account-page textarea.ant-input {
+  border-radius: 8px !important;
+}
+
+.aap-my-apps-dashboard {
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 0;
+}
+
+.aap-my-apps-dashboard .aap-account-heading {
+  margin-bottom: 28px;
+}
+
+.aap-my-apps-content .aap-home-category {
+  margin-top: 28px;
+}
+
+.aap-user-page-shell .aap-footer {
+  margin-left: var(--aap-user-sidebar-width);
+}
+
+.aap-user-page-shell[data-user-theme='dark'] {
+  background: #14171c;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-user-sidebar {
+  border-color: #2e333d;
+  background: #1d2129;
+  color: #e6e8ec;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-user-sidebar__brand,
+.aap-user-page-shell[data-user-theme='dark'] .aap-user-sidebar__profile {
+  color: #e6e8ec;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-user-sidebar__group-title,
+.aap-user-page-shell[data-user-theme='dark'] .aap-user-sidebar__toggle.ant-btn {
+  color: #aeb6c4;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-account-page .ant-empty-description {
+  background: transparent !important;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-user-sidebar__item {
+  color: #aeb6c4;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-user-sidebar__item:hover,
+.aap-user-page-shell[data-user-theme='dark'] .aap-user-sidebar__profile:hover {
+  background: #23272f;
+  color: #8db4ff;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-user-sidebar__item:hover {
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-user-sidebar__item.is-active {
+  background: #232c3a;
+  color: #8db4ff;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-user-sidebar__bottom {
+  border-color: #2e333d;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-user-sidebar-open.ant-btn {
+  border-color: #2e333d;
+  background: #1d2129;
+  color: #aeb6c4;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-main {
+  background: #14171c;
+}
+
+.aap-user-page-shell[data-user-theme='light'] .aap-main {
+  background: #fff;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-account-page .ant-card,
+.aap-user-page-shell[data-user-theme='dark'] .aap-account-page .ant-card-bordered,
+.aap-user-page-shell[data-user-theme='dark'] .aap-account-page .ant-card-head,
+.aap-user-page-shell[data-user-theme='dark'] .aap-account-page .ant-card-body {
+  border-color: #2e333d !important;
+  background: #1d2129 !important;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-my-apps-dashboard .aap-account-heading,
+.aap-user-page-shell[data-user-theme='dark'] .aap-my-apps-content,
+.aap-user-page-shell[data-user-theme='dark'] .aap-my-apps-content .ant-typography {
+  color: #e6e8ec;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-my-apps-dashboard .aap-account-eyebrow,
+.aap-user-page-shell[data-user-theme='dark'] .aap-my-apps-dashboard .aap-account-heading > p.ant-typography {
+  color: #aeb6c4;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-my-apps-dashboard .aap-account-heading h2.ant-typography {
+  color: #e6e8ec;
+}
+
+@media (max-width: 760px) {
+  .aap-user-page-shell {
+    --aap-user-sidebar-width: 76px;
+  }
+
+  .aap-user-sidebar:not(.aap-user-sidebar--collapsed) {
+    width: 264px;
+    box-shadow: 12px 0 30px rgba(16, 24, 40, 0.12);
+  }
+
+  .aap-user-page-shell--sidebar-collapsed {
+    --aap-user-sidebar-width: 0px;
+  }
+
+  .aap-user-page-shell .aap-main {
+    width: calc(100% - 76px);
+    margin-left: 76px;
+    padding: 24px 16px;
+  }
+
+  .aap-user-page-shell .aap-footer {
+    margin-left: 76px;
+  }
+
+  .aap-user-page-shell--sidebar-collapsed .aap-main {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .aap-user-page-shell--sidebar-collapsed .aap-footer {
+    margin-left: 0;
   }
 }

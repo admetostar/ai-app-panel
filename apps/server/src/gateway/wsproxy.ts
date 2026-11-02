@@ -17,6 +17,8 @@ import { ensurePersistent, touchByPort } from '../lib/sandbox.js';
 import { manifestEntry } from './proxy.js';
 import { config } from '../config/index.js';
 import type { SessionUser } from '../types.js';
+import { appIdFromHostname } from './appDomains.js';
+import { appCookieHeader, safeAppSetCookies } from './appCookies.js';
 
 const REQ_SKIP = new Set(REQ_SKIP_KEYS());
 
@@ -88,8 +90,11 @@ export function upgradeClientIp(req: IncomingMessage, trustProxy: boolean = conf
 
 async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://internal.invalid');
+  const host = (req.headers.host ?? '').split(':')[0]?.replace(/^\[|\]$/g, '') ?? '';
+  const hostAppId = appIdFromHostname(host);
   const m = url.pathname.match(/^\/app\/([a-z0-9][a-z0-9-]*)(\/.*)?$/);
-  if (!m) return reject(socket, 404, 'Not Found');
+  if (!m && hostAppId === null) return reject(socket, 404, 'Not Found');
+  if (hostAppId === '') return reject(socket, 404, 'Not Found');
 
   // CSWSH 防护：同站/同父域页面发起的跨源 WS 握手会携带 SameSite=Lax cookie，
   // 且 WS 响应读取不受 SOP 限制——与 /api CSRF 同语义校验 Origin：
@@ -105,8 +110,9 @@ async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Prom
     if (!originHost || originHost !== req.headers.host) return reject(socket, 403, 'Forbidden');
   }
 
-  const id = m[1]!;
-  const sub = (m[2] ?? '/').replace(/^\/+/, '');
+  const appOrigin = hostAppId !== null;
+  const id = appOrigin ? hostAppId : m![1]!;
+  const sub = appOrigin ? url.pathname.replace(/^\/+/, '') : (m![2] ?? '/').replace(/^\/+/, '');
 
   const app: AppRow | null = await findApp(id);
   if (!app || !app.enabled) return reject(socket, 404, 'Not Found');
@@ -142,14 +148,14 @@ async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Prom
     hostHeader = `127.0.0.1:${sandboxPort}`;
     // req.url 里 id 为 URL 形态；slug 无保留字符，与 HTTP 侧 encodeURIComponent 拼法等价
     const prefix = `/app/${encodeURIComponent(app.id)}`;
-    let p = req.url ?? '/';
+    let p = appOrigin ? `/app/${encodeURIComponent(id)}${url.pathname}${url.search}` : req.url ?? '/';
     if (p === prefix || p.startsWith(`${prefix}?`)) p = `/${p.slice(prefix.length)}`;
     else if (p.startsWith(`${prefix}/`)) p = p.slice(prefix.length);
     // raw 段剥除（沿用原 raw 正则语义：raw / raw/… 命中，rawfoo 不命中）；剥尽后补根
     p = p.replace(/^\/raw(?=\/|\/?\?|$)/, '');
     if (!p.startsWith('/')) p = `/${p}`;
     requestPath = p;
-    forwardedPrefix = prefix;
+    forwardedPrefix = appOrigin ? null : prefix;
     transport = http;
   } else if (app.kind === 'upstream') {
     let base: URL;
@@ -185,6 +191,12 @@ async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Prom
     if (REQ_SKIP.has(k.toLowerCase())) continue;
     headers[k] = Array.isArray(v) ? v.join(', ') : (v ?? '');
   }
+  if (appOrigin && origin) headers.origin = origin;
+  if (appOrigin && req.headers.referer) headers.referer = req.headers.referer;
+  if (appOrigin && req.headers.cookie) {
+    const appCookies = appCookieHeader(req.headers.cookie, config.sessionCookieName);
+    if (appCookies) headers.cookie = appCookies;
+  }
   headers['host'] = hostHeader;
   // persistent 沙箱：挂载前缀随头下发（覆盖客户端自带值），供包拼绝对 URL（与 HTTP 侧一致）
   if (forwardedPrefix) headers['x-forwarded-prefix'] = forwardedPrefix;
@@ -218,6 +230,14 @@ async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Prom
     // 手写 101：把上游的握手响应原样回给客户端，随后双向裸管道
     let resp = `HTTP/1.1 101 Switching Protocols\r\n`;
     for (const [k, v] of Object.entries(upRes.headers)) {
+      if (k.toLowerCase() === 'set-cookie' && appOrigin) {
+        for (const cookie of safeAppSetCookies(
+          v,
+          Boolean((req.socket as import('node:tls').TLSSocket).encrypted),
+          config.sessionCookieName,
+        )) resp += `Set-Cookie: ${cookie}\r\n`;
+        continue;
+      }
       if (Array.isArray(v)) for (const item of v) resp += `${k}: ${item}\r\n`;
       else resp += `${k}: ${v}\r\n`;
     }
@@ -242,6 +262,14 @@ async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Prom
     const r = res as IncomingMessage;
     let head = `HTTP/1.1 ${r.statusCode} ${r.statusMessage ?? ''}\r\n`;
     for (const [k, v] of Object.entries(r.headers)) {
+      if (k.toLowerCase() === 'set-cookie' && appOrigin) {
+        for (const cookie of safeAppSetCookies(
+          v,
+          Boolean((req.socket as import('node:tls').TLSSocket).encrypted),
+          config.sessionCookieName,
+        )) head += `Set-Cookie: ${cookie}\r\n`;
+        continue;
+      }
       if (Array.isArray(v)) for (const item of v) head += `${k}: ${item}\r\n`;
       else head += `${k}: ${v}\r\n`;
     }

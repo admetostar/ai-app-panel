@@ -7,13 +7,13 @@ import express, { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, lt } from 'drizzle-orm';
 import { getDb } from '../db/index.js';
-import { apps, llmAppTokens } from '../db/schema.js';
+import { appRuntimeEvents, apps, llmAppTokens } from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
 import { requireAdmin } from '../lib/auth.js';
 import { isSlug, idConflictsWithGatewayPrefix, listApps, findApp, getAcl, setAcl } from '../gateway/registry.js';
-import { writeHtmlApp, storePackageFiles, validateManifest, appSiteDir } from '../gateway/staticApp.js';
+import { writeHtmlApp, storePackageFiles, validateManifest, appSiteDir, isAwpkFilename } from '../gateway/staticApp.js';
 import { ensureAutoProvisionedToken } from '../lib/llm.js';
 import { encryptSecret } from '../lib/cryptoSecrets.js';
 import { getSettingBool, getSetting } from '../lib/settings.js';
@@ -21,11 +21,39 @@ import { audit } from '../lib/audit.js';
 import { probeAll } from '../gateway/health.js';
 import { stopPersistentFor } from '../lib/sandbox.js';
 import { installPyDeps } from '../lib/pydeps.js';
-import { assertPublicAppQuota } from '../lib/billing.js';
 
 export const adminAppsRouter = Router();
 
 adminAppsRouter.use('/admin/apps', requireAdmin);
+
+adminAppsRouter.get(
+  '/admin/apps/runtime-events',
+  h(async (req, res) => {
+    const appId = typeof req.query.appId === 'string' ? req.query.appId.slice(0, 191) : '';
+    const level = typeof req.query.level === 'string' && ['info', 'warn', 'error'].includes(req.query.level)
+      ? req.query.level
+      : '';
+    const beforeId = Math.max(0, Number(req.query.beforeId) || 0);
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 100));
+    const filters = [];
+    if (appId) filters.push(eq(appRuntimeEvents.appId, appId));
+    if (level) filters.push(eq(appRuntimeEvents.level, level));
+    if (beforeId) filters.push(lt(appRuntimeEvents.id, beforeId));
+
+    const rows = await getDb()
+      .select()
+      .from(appRuntimeEvents)
+      .where(filters.length ? and(...filters) : undefined)
+      .orderBy(desc(appRuntimeEvents.id))
+      .limit(limit);
+    res.json({
+      events: rows.map((row) => ({
+        ...row,
+        details: row.details ? JSON.parse(row.details) as unknown : null,
+      })),
+    });
+  }),
+);
 
 interface AppPayload {
   id?: string;
@@ -198,14 +226,6 @@ adminAppsRouter.put(
     if (body.category !== undefined) patch.category = body.category;
     if (body.visibility !== undefined) {
       if (!VISIBILITIES.has(body.visibility)) throw new HttpError(400, 'INVALID_VISIBILITY', '访问策略必须是 public/login/member');
-      if (
-        body.visibility === 'public' &&
-        existing.visibility !== 'public' &&
-        existing.ownerUserId !== null &&
-        existing.ownerUserId !== req.user!.id
-      ) {
-        await assertPublicAppQuota(existing.ownerUserId, existing.id);
-      }
       patch.visibility = body.visibility;
     }
     if (body.passUser !== undefined) {
@@ -331,15 +351,18 @@ adminAppsRouter.post(
   }),
 );
 
-// ---------- .asp-app 包上传（校验完整性 + manifest 提取；python 运行时 M4） ----------
+// ---------- AWPK 包上传（校验 ZIP 完整性 + manifest 提取） ----------
 
-/** 上传前预解析：仅校验与提取 manifest/签名信息，不落正式目录、不建应用。
+/** 上传前预解析：仅校验与提取 manifest，不落正式目录、不建应用。
  *  供管理端选包后即时展示解析结果（临时目录用后即删）。 */
 adminAppsRouter.post(
   '/admin/apps/package/preview',
   express.json({ limit: '15mb' }),
   h(async (req: express.Request, res: express.Response) => {
     const body = (req.body ?? {}) as { filename?: string; dataBase64?: string };
+    if (!isAwpkFilename(body.filename)) {
+      throw new HttpError(400, 'INVALID_PACKAGE_EXT', '应用包文件必须使用 .awpk 扩展名');
+    }
     if (!body.dataBase64) throw new HttpError(400, 'INVALID_PACKAGE', '缺少包文件内容');
     let zipBuf: Buffer;
     try {
@@ -385,6 +408,9 @@ adminAppsRouter.post(
   express.json({ limit: '15mb' }),
   h(async (req: express.Request, res: express.Response) => {
     const body = (req.body ?? {}) as { filename?: string; dataBase64?: string; visibility?: string; allowedGroupIds?: number[]; allowedUserIds?: number[]; passUser?: boolean; urlSecret?: string };
+    if (!isAwpkFilename(body.filename)) {
+      throw new HttpError(400, 'INVALID_PACKAGE_EXT', '应用包文件必须使用 .awpk 扩展名');
+    }
     if (!body.dataBase64) throw new HttpError(400, 'INVALID_PACKAGE', '缺少包文件内容');
     let zipBuf: Buffer;
     try {
@@ -392,10 +418,6 @@ adminAppsRouter.post(
     } catch {
       throw new HttpError(400, 'INVALID_PACKAGE', '包内容不是合法的 base64');
     }
-    if (!body.filename?.toLowerCase().endsWith('.zip') && !body.filename?.toLowerCase().endsWith('.asp-app')) {
-      throw new HttpError(400, 'INVALID_PACKAGE_EXT', '包文件必须是 .zip / .asp-app');
-    }
-
     // 临时目录按请求唯一（并发上传互踩防御）；正式目录的覆盖必须等到
     // 包结构/manifest 校验与同名查重都通过之后
     const tmpDir = `upload_tmp_${randomBytes(8).toString('hex')}`;
@@ -408,6 +430,7 @@ adminAppsRouter.post(
       if (await findApp(manifest.name)) {
         throw new HttpError(409, 'APP_EXISTS', '同名应用已存在（包版本更新请删除后重传，或直接覆盖文件目录）');
       }
+      if (manifest.type === 'python') await installPyDeps(tmpDir, manifest.requirements);
       // 校验与查重通过：挪到正式目录
       const from = appSiteDir(tmpDir);
       const to = appSiteDir(manifest.name);
@@ -420,17 +443,6 @@ adminAppsRouter.post(
     }
     const visibility = body.visibility ?? 'private';
     if (!VISIBILITIES.has(visibility)) throw new HttpError(400, 'INVALID_VISIBILITY', '访问策略非法');
-
-    // 声明制依赖安装（skill v0.2.6）：失败 = 上传失败（清理正式目录重传），
-    // 不带病上线；安装耗时随依赖规模（超时 300s 在 pydeps 内兜底）
-    if (manifest.type === 'python') {
-      try {
-        await installPyDeps(manifest.name, manifest.requirements);
-      } catch (err) {
-        fs.rmSync(appSiteDir(manifest.name), { recursive: true, force: true });
-        throw err;
-      }
-    }
 
     const now = Date.now();
     const isHtml = manifest.type === 'html';

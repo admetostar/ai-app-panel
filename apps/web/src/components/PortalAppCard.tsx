@@ -3,6 +3,10 @@ import { Card, Tag, Tooltip } from 'antd';
 import type { AppCard } from '@aap/shared';
 import { Link } from 'react-router-dom';
 import { withBase } from '../lib/base';
+import { useQuery } from '@tanstack/react-query';
+import type { PortalBootstrap } from '@aap/shared';
+import { api } from '../api/client';
+import { appUrl } from '../lib/appUrl';
 
 const VISIBILITY_LABEL: Record<AppCard['visibility'], string> = {
   public: '公开',
@@ -28,6 +32,10 @@ export function PortalAppCard({
   app: AppCard;
   unavailableHref?: string | null;
 }) {
+  const bootstrap = useQuery({
+    queryKey: ['bootstrap'],
+    queryFn: () => api<PortalBootstrap>('/api/portal/bootstrap'),
+  });
   const inner = (
     <Card
       size="small"
@@ -36,7 +44,11 @@ export function PortalAppCard({
       style={{ height: '100%', opacity: app.accessible ? 1 : 0.72, borderColor: 'var(--aap-border)' }}
     >
       <div className="aap-app-card__main">
-        <div className="aap-app-card__icon">{app.icon ?? app.name.slice(0, 1)}</div>
+        <div className="aap-app-card__icon">
+          {app.icon?.startsWith(`/api/apps/${encodeURIComponent(app.id)}/icon/`)
+            ? <img src={withBase(app.icon)} alt="" />
+            : app.icon ?? app.name.slice(0, 1)}
+        </div>
         <div className="aap-app-card__copy">
           <div className="aap-app-card__title">
             <span>{app.name}</span>
@@ -60,7 +72,11 @@ export function PortalAppCard({
   );
 
   const isTool = app.kind === 'package' && app.runtimeMode === 'invoked';
-  const target = withBase(isTool ? `/run/${app.id}` : `/app/${encodeURIComponent(app.id)}/`);
+  const target = isTool
+    ? withBase(`/run/${app.id}`)
+    : bootstrap.data
+      ? appUrl(app.id, bootstrap.data.appDomainRoot, bootstrap.data.appPort)
+      : withBase(`/app/${encodeURIComponent(app.id)}/`);
   if (app.accessible) {
     return <a className="aap-app-card-link" href={target}>{inner}</a>;
   }

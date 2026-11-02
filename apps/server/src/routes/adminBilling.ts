@@ -61,15 +61,16 @@ adminBillingRouter.post(
       priceFen?: number;
       priceCents?: number;
       pricePoints?: number;
+      redeemUrl?: unknown;
       tokenGrant?: number;
       tier?: number;
-      publicAppLimit?: number;
+      appUploadLimit?: number;
     };
     if (!body.name?.trim() || !body.groupId || ![30, 90, 365].includes(Number(body.durationDays))) {
       throw new HttpError(400, 'INVALID_INPUT', '名称、分组和有效期必填');
     }
-    if (!Number.isInteger(Number(body.publicAppLimit)) || Number(body.publicAppLimit) < 0) {
-      throw new HttpError(400, 'INVALID_INPUT', '公开应用数量必须是非负整数');
+    if (!Number.isInteger(Number(body.appUploadLimit)) || Number(body.appUploadLimit) < 0) {
+      throw new HttpError(400, 'INVALID_INPUT', '可上传应用数量必须是非负整数');
     }
     if (!Number.isInteger(Number(body.tier)) || Number(body.tier) < 0 || Number(body.tier) > 5) {
       throw new HttpError(400, 'INVALID_INPUT', '权益等级必须是 0 到 5 的整数');
@@ -82,9 +83,10 @@ adminBillingRouter.post(
       priceFen: Number(body.priceFen ?? 0),
       priceCents: Number(body.priceCents ?? 0),
       pricePoints: Number(body.pricePoints ?? 0),
+      redeemUrl: body.redeemUrl,
       tokenGrant: Number(body.tokenGrant ?? 0),
       tier: Number(body.tier),
-      publicAppLimit: Number(body.publicAppLimit),
+      appUploadLimit: Number(body.appUploadLimit),
     });
     await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'billing.plan.create', { id, name: body.name });
     res.json({ ok: true, id });
@@ -101,8 +103,9 @@ adminBillingRouter.put(
       priceFen?: number;
       priceCents?: number;
       pricePoints?: number;
+      redeemUrl?: unknown;
       tokenGrant?: number;
-      publicAppLimit?: number;
+      appUploadLimit?: number;
       enabled?: boolean;
     };
     await updatePlan(Number(req.params.id), body);

@@ -4,13 +4,21 @@ import { Result, Spin } from 'antd';
 import { useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { withBase } from '../lib/base';
+import { useQuery } from '@tanstack/react-query';
+import type { PortalBootstrap } from '@aap/shared';
+import { api } from '../api/client';
+import { appUrl } from '../lib/appUrl';
 
 export function AppFramePage() {
   const { id = '' } = useParams();
+  const bootstrap = useQuery({
+    queryKey: ['bootstrap'],
+    queryFn: () => api<PortalBootstrap>('/api/portal/bootstrap'),
+  });
 
   useEffect(() => {
-    if (id) window.location.replace(withBase(`/app/${encodeURIComponent(id)}/`));
-  }, [id]);
+    if (id && bootstrap.data) window.location.replace(appUrl(id, bootstrap.data.appDomainRoot, bootstrap.data.appPort));
+  }, [id, bootstrap.data]);
 
   if (!id) {
     return <Result status="404" title="应用不存在" extra={<a href={withBase('/')}>返回门户</a>} />;

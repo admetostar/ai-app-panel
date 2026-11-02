@@ -1,12 +1,20 @@
 ﻿---
 name: app-develop-internal
-description: "涉及网关 / LLM 网关 / 沙箱 / 计费 / 账号安全的架构设计或 ADR 复核，或 .asp-app 接口面（manifest / aap.*）契约变更时用。常规 bug 修复、UI/文案/测试改动不需要。"
-version: 2.3.4
+description: "涉及网关 / LLM 网关 / 沙箱 / 计费 / 账号安全的架构设计或 ADR 复核，或 .awpk 接口面（manifest / aap.*）契约变更时用。常规 bug 修复、UI/文案/测试改动不需要。"
+version: 2.6.1
 ---
 
 # AI-SuperPanel（AI超级面板）开发指南
 
-> v2.3.4 变更：移除 `.asp-app` 上传签名要求与平台信任公钥配置；用户和管理员均可直接上传，用户包默认私有并可自行公开。
+> v2.6.0 变更：应用包契约切换为 AWPK（ZIP 容器，必须使用 `.awpk` 扩展名）；上传、预览与安装拒绝旧 `.asp-app`/`.zip` 扩展名；用户上传 Python 应用的 requirements 也在正式安装前执行依赖安装。
+>
+> v2.6.1 变更：未配置 `SITE_DOMAIN` 时，应用卡片使用同源 `/app/<id>/` 路径和 iframe 沙箱，不再生成 `<id>.localhost:<内部服务端口>`；配置域名后仍使用独立应用 origin。
+>
+> v2.5.0 变更：同步应用开发规范 v0.2.9 的实际能力闸与资源边界；明确独立 origin 支持应用自己的浏览器会话，Python 网络守卫不是硬隔离，且当前无 CPU/内存及数据库硬配额。
+>
+> v2.4.0 变更：应用访问改用独立子域名；新增 `SITE_DOMAIN`、`*.localhost` 本地入口、通配 DNS/证书要求、平台与应用 Cookie 隔离及旧路径跳转兼容。
+>
+> v2.3.4 变更：移除应用包上传签名要求与平台信任公钥配置；用户和管理员均可直接上传，用户包默认私有并可自行公开。
 >
 > v2.3.2 变更：触发描述收窄并更名 app-develop-internal（避免与包作者规范同名）；PRD 指针修正为仓库真实路径；§9.5 压缩为实现要点（细节归 docs/DEVELOPMENT.md §9 单一来源）；§十 状态快照校正（ed25519 免审、persistent WS 透传均已实装；易过期的测试计数移除）。
 >
@@ -23,7 +31,7 @@ Neon 的 OSS 项目：自托管 AI 应用网关 + 门户，中文名「AI超级�
 
 | # | 决策 |
 |---|---|
-| 1 | **仅路径模式路由，子域名路由不做**（硬决策） |
+| 1 | **应用独立 origin**：配置 `SITE_DOMAIN` 时应用通过 `<id>.<SITE_DOMAIN>` 路由；未配置时卡片使用同源 `/app/<id>/` 路径与 opaque-origin iframe 沙箱，不向浏览器暴露内部服务端口。子域名入口在门户 `/api`、`/v1` 路由之前处理。 |
 | 2 | **WebSocket 透传在 P0**（AI 聊天应用依赖；`upgrade` 事件 → 路径匹配 → 鉴权 → TCP 双向管道） |
 | 3 | **语言 Node.js/TypeScript**（复用参考实现已验证逻辑；ACME 用 acme-client） |
 | 4 | **单组织**，不做多租户/白标 |
@@ -37,7 +45,7 @@ Neon 的 OSS 项目：自托管 AI 应用网关 + 门户，中文名「AI超级�
 
 ## 二、路径模式反代的坑与解法（核心经验，office-tool 实战验证）
 
-路径模式（`/app/<id>/` 代理上游）比子域名难：上游应用假设自己在根路径。已验证解法组合：
+路径模式是未配置 `SITE_DOMAIN` 时的门户卡片入口，以及已配置域名时的旧链接兼容入口。配置域名后门户卡片使用独立应用 origin。上游应用可经 `<id>.<SITE_DOMAIN>` 在根路径工作，`/app/<id>/` 代理仍需处理上游假设自己位于根路径的情况。已验证解法组合：
 
 1. **HTML 改写**：`href/src/poster/action/srcset` 的根绝对路径 `/xxx` → `/app/<id>/xxx`；`srcset` 逐段处理。
 2. **`<base>` 注入**：修正相对链接基准；base 指向上游真实挂载点（query 凭据型上游 → 根；path 凭据型上游 → 凭据路径）。
@@ -48,8 +56,24 @@ Neon 的 OSS 项目：自托管 AI 应用网关 + 门户，中文名「AI超级�
 7. **SSE/流式**：禁缓冲，`Readable.fromWeb(upstream.body).pipe(res)`；客户端断开销毁上游流；带体请求走 undici 必须显式 `duplex: 'half'`（否则 POST/PUT 全 502 而 GET 正常——经典坑）。
 8. **凭据注入**：上游凭据存服务端注册表（urlSecret），转发时才拼入，绝不写配置下发浏览器；支持 path 型凭据（Dify `/chat/<id>`，路径即凭据）。
 9. **限流**：双维度令牌桶——每登录用户为主（NAT 场景同事不互相挤爆）+ 每 IP 兜底。
-10. **明示限制**：不做 JS/HTML 深度改写；依赖 Cookie 会话的上游不工作（set-cookie 剥离）。
+10. **明示限制**：不做 JS/HTML 深度改写；兼容路径模式不转发 Cookie。独立应用 origin 会剥除 `Set-Cookie` 的 `Domain` 并固定 `Path=/`，应用 Cookie 限定为当前主机，不允许覆盖平台会话 Cookie。
 11. **persistent 沙箱反代**（实装于 G2）：转发前剥 `/app/<id>` 前缀（包路由挂根，规范模板 `@app.route("/")` 才能命中；此前全路径转发使 ip-analyzer 直接 Werkzeug 404），前缀经 `x-forwarded-prefix` 下发、站内相对 `Location` 镜像回写前缀。**HTTPS_REDIRECT 必须豁免 loopback Host**：沙箱 runner 走 `http://127.0.0.1:<port>` 调平台 egress/LLM，302 到公网域名会被 urllib 跟随且 POST 降级 GET，全部沙箱出站断连（ip-analyzer 实测「出站请求被平台拒绝」）。
+
+### 独立应用 origin
+
+- 管理员在「站点设置」配置应用域名根，与 TLS 证书配置分开。配置后每个应用使用 `<appId>.<SITE_DOMAIN>` 独立 origin；未配置时通过门户同源 `/app/<id>/` 路径运行，用户上传应用仍由 opaque-origin iframe 沙箱隔离，浏览器地址不会暴露服务端内部端口。需要验证应用的 localStorage、sessionStorage 或 host-only Cookie 时，必须配置应用域名。
+- 生产部署需配置 `*.<SITE_DOMAIN>` DNS 与通配 TLS 证书。当前 ACME HTTP-01 只支持单域名签发，因此通配证书需手动上传。
+- 应用 origin 上的 `/api`、`/v1` 不落入门户路由；平台会话 Cookie 不转发给应用，应用自有 Cookie 去除 Domain、限定当前主机且不能覆盖平台会话 Cookie。应用请求的 `Origin`/`Referer` 透传，保留其自身 CSRF 校验能力。
+- 应用 origin 是普通网站 origin，应用可使用本 origin 的 localStorage/sessionStorage/host-only Cookie 实现自己的账号会话；不得依赖门户 DOM、门户存储或平台登录 Cookie。平台仍在应用入口执行应用可见性/登录门禁。
+- 配置了应用域名时，旧 `/app/<id>/...` 用户应用入口以 307 保留深层路径跳转到新 origin；旧 `/raw/` 标记会从目标路径移除。未配置时请求留在路径模式并继续使用 iframe 沙箱。
+
+### AWPK 能力与资源边界（与用户技能 v0.3.1 同步）
+
+- 允许的 SDK 面：`aap.llm.chat`、`aap.db.execute/query`、`aap.storage.put/get/delete/list`、`aap.http.fetch`、`aap.log`。`llm` 未声明时平台网关强制拒绝；`db`/`storage` 当前没有逐项运行时能力闸，但开发契约要求仍须按需最小声明。
+- 上传 JSON body ≤15 MiB；ZIP 解压最多 2,000 条目且总量 ≤100 MiB；requirements ≤32 且只安装 wheel；env ≤16 项，value ≤8,192 字符、default ≤4,096、pattern ≤200。
+- invoked 单次 30 秒、全局并发默认 8、排队最多 64；stdout/stderr 捕获各 512 KiB。persistent 默认最多 12 个进程、空闲回收 300 秒（最小 30 秒）、崩溃重启最多 3 次。storage 默认每应用 10 MiB；SQLite 当前无硬容量配额。
+- egress 仅 HTTP(S) GET，经代理逐跳校验白名单与 DNS/IP；超时 15 秒、最多 5 次重定向、响应正文最多 500,000 字符、自定义头最多 16 项。管理员 `EGRESS_INTRANET_ALLOWLIST` 可放行精确主机/CIDR，链路本地仍拒绝。
+- 当前没有 per-app CPU/内存硬限额；Python runner socket monkeypatch 是纵深防御，不是 OS/容器级隔离。任何文档和包设计都不得声称这些未实现的硬限制。
 
 ## 三、身份传递（passUser）
 
@@ -83,15 +107,16 @@ PoW 登录 proof-of-work、登录失败计数、IP 封禁（累犯时长倍增�
 
 **注册要点**：注册/找回密码/绑定邮箱三入口全挂 PoW + 可选 Turnstile（后台填 key 即启用，默认 PoW 兜底，内网可离线）；验证码通道抽象（SMTP / 阿里云或腾讯云 SMS 选一首发）；验证码 6 位 5 分钟有效、同通道 60s 限 1 条 + 24h 上限（**短信轰炸 = 刷穿短信费，限发硬要求**）、哈希存储单次有效；注册开关三档默认关闭；同 IP 24h ≤ 5 号；首账号自动 admin；全事件审计。
 
-## 六、生态：.asp-app 用户扩展体系（G 域）
+## 六、生态：.awpk 用户扩展体系（G 域）
 
-用户上传 **`.asp-app`**（AI-SuperPanel 缩写命名）（ZIP：manifest.json + 静态 HTML 或 Python `mod.py`），遵循本技能出入参规范。服务端校验 ZIP 结构和 manifest，不要求包签名或发布者公钥登记；通过后立即安装为**私有**应用，用户可自行试运行并按订阅额度发布为公开，无管理员审核队列。
+用户上传 **AWPK**（ZIP 容器，文件扩展名必须为 `.awpk`；内容为 `manifest.json` + 静态 HTML 或 Python `mod.py`），遵循本技能出入参规范。服务端校验扩展名、ZIP 结构和 manifest，不要求包签名或发布者公钥登记；`.asp-app` 与通用 `.zip` 不作兼容。用户首次上传时按有效订阅的“可上传应用数量”检查托管应用总数（私有与公开均计入），更新已有应用不增加名额；通过校验后应用立即安装为**私有**，用户可自行试运行并发布为公开，公开发布不限制数量，无管理员审核队列。
 
-- manifest 能力声明：`capabilities`（llm/db/storage）+ `network`（**出站域名白名单**）+ `runtime`（**invoked 按调用 | persistent 持久服务**）+ `env`（环境变量/机密声明，§9.5）。运行时按声明执行能力与出网边界；变更后重新签名
-- HTML 包：iframe sandbox + CSP，禁同源 cookie；门户 shell 嵌入
-- Python 包：**沙箱子进程**（CPU/内存受限；进程自身无网络）。invoked = 每请求新进程跑完即毁；persistent = 长驻进程声明路由前缀提供网页/HTTP API，**被 B 域反代纳管**（限流/审计/健康检查/崩溃重启/空闲回收照常），常驻内存上限更严
-- **网络出口 = 平台出站代理**：逐请求核对 manifest 域名白名单放行——**白名单执行点在代理不在沙箱**（防 DNS rebinding/直连 IP 绕过）
-- **SDK 存根三件套**：`llm.chat()`（走 LLM 网关，计入调用者 token 池）；`db.*`（**每包独立 SQLite，支持包内完整 SQL**——execute/query + ? 占位参数；平台业务表与其他包物理隔离不可访问，容量限额）；`storage.*`（每包独立配额空间）
+- manifest 能力声明：`capabilities`（llm/db/storage）+ `network`（**出站域名白名单**）+ `runtime`（**invoked 按调用 | persistent 持久服务**）+ `env`（环境变量/机密声明，§9.5）。LLM 按 `llm` 声明强制门控；db/storage 当前不做逐项运行时门控；上传无需签名
+- HTML 包：门户托管静态内容，通过应用独立 origin 访问；可使用本 origin 浏览器存储，不得访问门户会话或 DOM
+- Python 包：沙箱子进程。invoked = 每次调用新进程执行后销毁；persistent = 长驻进程提供网页/HTTP API，经应用独立 origin 反代。默认 invoked 超时 30 秒、全局并发 8/队列 64；persistent 默认最多 12 个进程、空闲 300 秒回收、最多重启 3 次。当前无 per-app CPU/内存硬限额，网络守卫是 Python 层纵深防御而非硬隔离
+- **网络出口 = 平台出站代理**：SDK 通道逐跳核对 manifest 域名白名单及 DNS/IP；默认拒绝私网/保留地址，可由管理员精确 allowlist 放行内网目标（链路本地除外）。runner Python socket guard 只作纵深防御，不是硬安全边界
+- **SDK 接口**：`llm.chat()`（走 LLM 网关；有效平台身份按平台账号归因，应用自有账号不会自动映射为平台计费身份）；`db.*`（每包独立 SQLite，execute/query + `?` 参数；当前无数据库硬配额）；`storage.*`（每包独立配额，默认总量 10 MiB）；`http.fetch()`（仅 GET，经白名单代理）；`log`
+- 上传约束：JSON body ≤15 MiB；ZIP 解压 ≤2,000 项/100 MiB；requirements ≤32 且仅 wheel；env ≤16 项（值 ≤8,192 字符、default ≤4,096、pattern ≤200）；egress GET 15 秒、最多 5 次重定向、响应 ≤500,000 字符、自定义头 ≤16 项
 - 生命周期：用户或管理员上传→校验→立即私有可用→用户可自行发布公开；不要求签名或公钥信任配置；举报/下架/全事件审计
 - 第一版刻意收窄：不做跨包调用、任意 SQL；**pip 依赖 2026-09-22 起走声明制**（manifest.requirements，上传时 `pip install --only-binary=:all: --target .deps` 装入应用数据目录、沙箱 PYTHONPATH 前置、失败=上传被拒；PIP_INDEX_URL 设置支持镜像；native/FPK start.sh 启动自检补装预置 flask，docker 镜像本就预装 py3-flask）
 
@@ -117,17 +142,17 @@ office-tool 后台丑且交互差是已知痛点；新面板七条要求：① �
 ### 9.2 调试沙箱一致性铁律
 
 - `packages/aap-sdk` 与平台沙箱运行时**共享同一实现代码路径**（同一镜像、同一执行器；invoked/persistent 双模式同路径）。**本地调试 = 同一执行器 + `AAP_DEBUG=1` 开详细日志 + 本地资源映射**（SQLite 文件 / 目录存储 / mock LLM）。
-- **禁止另写并行模拟器**——行为漂移比没有调试工具更糟。mock 实现与生产实现必须对照**同一测试集**验证行为一致（白名单拒绝、未声明能力报错、超时、JSON 校验、进程即毁）。
+- **禁止另写并行模拟器**——行为漂移比没有调试工具更糟。mock 实现与生产实现必须对照同一测试集验证网络白名单、超时、JSON 校验、进程即毁；本地能力检查不代表生产服务端对 db/storage 有强制能力闸。
 - 调试模式下全量详细日志：每次 `aap.*` 调用（入参脱敏后/出参摘要/耗时）、SQL 与参数、storage 操作与配额水位、HTTP 代理逐请求（URL/**白名单判定**/状态/耗时）、LLM usage、进程生命周期（启动/超时/退出码）。
 - `aap-dev` CLI（**当前实装**：`run` + `--reset` + mock LLM；`serve` / `--llm real` / `--submit` 随 M4 完整版提供，勿在文档中当作已可用）。
-- **与线上一致的边界刻意保留**：白名单在本地照常强制、未声明能力照常报错、超时/JSON 校验/进程即毁语义相同。
+- **与线上一致的边界刻意保留**：白名单在本地照常强制、超时/JSON 校验/进程即毁语义相同；本地能力检查不应被视作生产服务端的安全边界，生产端当前只有 `llm` 能力有强制网关校验。
 
-### 9.3 统一 chrome 注入（「返回个人中心 / 退出登录」）
+### 9.3 门户 chrome 注入（兼容入口）
 
-- **persistent 应用**：平台对其 HTML 响应**自动注入**统一悬浮按钮（复用 B1 反代 HTML 注入机制；注入失败静默、不阻断业务）。约定注入点为响应末尾 `</body>` 前的 `<script src="/portal-chrome.js">` + 浮层容器，按钮指向门户 `/account` 与登出端点（登出后回跳当前应用）。
-- **HTML 工具**：嵌在门户 shell iframe 内，顶部 chrome 由门户天然提供，无需注入。
-- 包作者侧约定（不得遮挡/右上留白/禁止自建登出）在 app-develop 规范 §3.6。
-- 注入实现放 B 域反代（**已实装**：`proxyToSandbox` 对 persistent 通道 text/html GET 缓冲注入 + 2MB 上限，raw 通道归外壳层不重复注入——此前裸管道转发致 persistent 页面无悬浮条），**不要**在沙箱 SDK 里做注入（保持 SDK 纯粹、失败语义一致）。
+- **旧路径/外壳兼容入口**：可能由门户外壳显示 chrome；不得把它当作新应用子域名上的平台契约。
+- **HTML 静态应用**：使用独立应用 origin，不在门户 shell iframe 内；不得依赖门户 chrome 注入或门户 `postMessage` 桥。
+- **persistent 应用**：同样直接运行在应用独立 origin；不应依赖门户悬浮条、脚本或 `postMessage` 桥，可自行实现应用用户导航。
+- 包作者侧约定（独立应用 origin 的 Cookie 与浏览器存储边界）在 app-develop 规范 §3.6。
 
 ### 9.4 `aap` 接口冻结
 
@@ -155,11 +180,11 @@ M1–M4 核心已交付；测试数与实装明细以 `docs/DEVELOPMENT.md` 为�
 - **M3 计费**：功能订阅套餐（人民币/美元人工确认；积分独立于 Token，事务扣分后立即开通；开通入分组/续费顺延/到期自动降级出组）；注册赠送积分；额度充值与**卡券码**（AAP-XXXX-XXXX-XXXX，原子兑换防双花，可作废/设有效期）；运营面板（套餐 CRUD/订单确认/余额消耗排行/应用热度/成本毛利）；manual 支付渠道首发（adapter 接口可扩）
 - **可见性模型（P）**：public / login / restricted（ACL：分组或账号任一命中，空=全部登录用户）/ private（仅归属者，用户自建默认，门户对他人隐藏）；用户分组 = 订阅等级载体
 - **通知通道**：MAIL_PROVIDER = smtp | resend（Resend 仅需 API Key，from 留空用沙箱发件人）；日志兜底（内网离线）；`SHOW_TOPUP_PANEL` / `SHOW_ORDERS_PANEL` 分别控制用户中心额度充值与订单卡片，默认隐藏
-- **统一页面元素（已实装）**：`portal-chrome.js` 注入所有代理/托管 HTML（应用门户/个人中心/退出登录+用户名，GET /api/auth/logout?next= 回跳）；幂等失败静默
+- **门户页面元素**：兼容路径/门户外壳可显示 portal chrome；新的独立应用 origin 不注入门户脚本或统一悬浮条，应用不得依赖平台导航注入
 - **管理后台体验（P）**：九个功能域选项卡（总览/站点设置/应用管理/用户与注册/安全/通知通道/证书/LLM 网关/运营）+ 左侧竖向首配向导（可收起，完成自动隐藏）；设置项控件化（choiceLabels 下拉/bool 开关/int 数字框/取色器/密码+审计查看）与 `exclusiveOf` 互斥渲染（SMTP vs Resend）；展示降噪（短标签+tooltip 收纳描述与配置键，仅 defaultsWork=false 显示「需配置」）；密钥查看端点 `GET /api/admin/secrets/:key`（记审计）
 - **LLM 凭据签发已收敛为自动**：包上传即自动签发运行时凭据（tokenEnc 加密保管，运行时按 appId 注入；未声明 llm 的包凭据仅服务 egress，LLM 调用被网关能力闸 403），管理端手动签发表单已移除，仅保留凭据列表与吊销；用户调额入口在运营面板
 - **更名记录**：X-Office-*→X-AAP-*；WEBUI_SIGN_SECRET→AAP_SIGN_SECRET（settings 表，首启随机/env 初值，管理端高级项可查看需审计）；邮件通道→通知通道；会员→功能订阅
 - **关键新增配置**：RATE_LLM_PER_MIN / TOPUP_TOKENS_PER_FEN / REGISTRATION_POINTS_GIFT / SHOW_TOPUP_PANEL / SHOW_ORDERS_PANEL / MFA_STEPUP_TTL / CODE_SEND_DAILY_LIMIT / DELETION_COOLDOWN_DAYS / APP_ALLOW_PUBLIC_UPSTREAM / ACME_* / HTTPS_REDIRECT / MAIL_PROVIDER / RESEND_*
-- **M4 已交付（G2–G5 核心）**：Python 沙箱运行时（runner + aap 对象 llm/db/storage/http/log；invoked stdin/stdout JSON + 30s 强杀；persistent 拉起+空闲 5 分钟回收+崩溃重启≤3 次+反代纳管）；出站唯一通道 = `/api/aap/egress`（manifest 白名单逐请求核验，IP/内网直连拒绝）；`/api/aap/llm/chat` 平台代理（签名归因到运行用户 + 能力声明校验）；受信任签名包校验通过后立即私有可用，用户可按订阅额度自行公开；运行记录 `app_runs` + 审计
+- **M4 已交付（G2–G5 核心）**：Python 沙箱运行时（runner + aap 对象 llm/db/storage/http/log；invoked stdin/stdout JSON + 30s 强杀；persistent 拉起+空闲 5 分钟回收+崩溃重启≤3 次+反代纳管）；出站经 `/api/aap/egress`（manifest 白名单逐跳核验及 DNS/IP 检查；管理员可配置精确内网 allowlist，链路本地始终拒绝）；`/api/aap/llm/chat` 平台代理（签名归因到运行用户 + `llm` 能力声明校验）；包通过 ZIP/manifest 校验后无需签名即可私有可用，用户可按订阅额度自行公开；运行记录 `app_runs` + 审计
 - **M4 剩余**：aap-dev 完整版（serve 子命令 / real LLM / --submit 回传）、容器 ns/cgroups 硬隔离叠加（persistent WS upgrade 透传已实装，见上）
 - **ACME 已真实环境验证 ✅**：真实域名生产签发 → 8443 热启动 → HTTPS 受信；续期循环运行中。**待办（环境）**：OIDC 真实 IdP 联调；FPK 真机；E2 真人走查

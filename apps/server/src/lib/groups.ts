@@ -11,8 +11,16 @@ export interface GroupRow {
   id: number;
   name: string;
   note: string;
+  appPublishRewardPoints: number;
   createdAt: number;
   memberCount: number;
+}
+
+export function parseAppPublishRewardPoints(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 2_147_483_647) {
+    throw new HttpError(400, 'INVALID_GROUP_REWARD', '公开发布应用的奖励积分必须是 0 到 2,147,483,647 之间的整数');
+  }
+  return value;
 }
 
 export async function listGroups(): Promise<GroupRow[]> {
@@ -21,6 +29,7 @@ export async function listGroups(): Promise<GroupRow[]> {
       id: userGroups.id,
       name: userGroups.name,
       note: userGroups.note,
+      appPublishRewardPoints: userGroups.appPublishRewardPoints,
       createdAt: userGroups.createdAt,
       memberCount: sql<number>`(select count(*) from user_group_members m where m.group_id = ${userGroups.id})`,
     })
@@ -29,21 +38,33 @@ export async function listGroups(): Promise<GroupRow[]> {
   return rows.map((row) => ({ ...row, memberCount: Number(row.memberCount) }));
 }
 
-export async function createGroup(name: string, note: string): Promise<number> {
+export async function createGroup(name: string, note: string, appPublishRewardPoints = 0): Promise<number> {
+  parseAppPublishRewardPoints(appPublishRewardPoints);
   const exists = (await getDb().select({ id: userGroups.id }).from(userGroups).where(eq(userGroups.name, name)))[0];
   if (exists) throw new HttpError(409, 'GROUP_EXISTS', '同名分组已存在');
   const [created] = await getDb()
     .insert(userGroups)
-    .values({ name: name.trim().slice(0, 64), note: note.slice(0, 200), createdAt: Date.now() })
+    .values({
+      name: name.trim().slice(0, 64),
+      note: note.slice(0, 200),
+      appPublishRewardPoints,
+      createdAt: Date.now(),
+    })
     .returning({ id: userGroups.id });
   if (!created) throw new Error('Failed to create group');
   return created.id;
 }
 
-export async function updateGroup(id: number, patch: { name?: string; note?: string }): Promise<void> {
+export async function updateGroup(
+  id: number,
+  patch: { name?: string; note?: string; appPublishRewardPoints?: number },
+): Promise<void> {
   const set: Partial<typeof userGroups.$inferInsert> = {};
   if (patch.name !== undefined) set.name = patch.name.trim().slice(0, 64);
   if (patch.note !== undefined) set.note = patch.note.slice(0, 200);
+  if (patch.appPublishRewardPoints !== undefined) {
+    set.appPublishRewardPoints = parseAppPublishRewardPoints(patch.appPublishRewardPoints);
+  }
   await getDb().update(userGroups).set(set).where(eq(userGroups.id, id));
 }
 

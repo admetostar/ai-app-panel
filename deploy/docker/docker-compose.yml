@@ -1,6 +1,6 @@
 ﻿# AI超级面板 — Docker Compose
 # 用法：cd deploy/docker && docker compose up -d
-# PostgreSQL 数据库与 ../data（证书、密钥）独立持久化；首次启动看日志获取初始管理员密码：
+# PostgreSQL 数据库与门户文件分别由 Docker 命名卷持久化；首次启动看日志获取初始管理员密码：
 #   docker compose logs | grep -A4 "初始管理员凭据"
 name: ai-superpanel
 
@@ -38,15 +38,16 @@ services:
       - "80:8080"     # 业务入口（门户 + /app/<id>/ 应用网关 + ACME HTTP-01 挑战）
       - "443:8443"    # HTTPS（配置证书后启用）
     volumes:
-      - ../../data:/data
+      # Logo 上传到 /data/admin/site-logo；/data 父目录由此命名卷持久化。
+      - portal-data:/data
       # 纯门户模式（反代外置给 Caddy/nginx）时不需要暴露 8443
     environment:
       TRUST_PROXY: "0"           # 有前置反代（nginx/Caddy）时改为 1
-      # .asp-app Python 运行时入口：容器内 REPO_ROOT 推导失效（代码在 /out），
+      # .awpk Python 运行时入口：容器内 REPO_ROOT 推导失效（代码在 /out），
       # 必须显式指定，否则所有 Python 包执行报 runner.py 缺失
       AAP_RUNNER: "/out/aap-sdk/aap_runtime/runner.py"
       # 沙箱降权（默认开启）：Python 包进程以预建非特权用户 aap(10001) 运行。
-      # 存量部署升级时需一次性迁移数据卷属主：chown -R 10001:10001 ../data/appsites
+      # 存量部署迁移数据后需确保应用目录属主为 10001:10001
       # （开放注册 + 允许用户上传包的部署必须启用，否则任意注册用户可读全站凭据哈希）
       SANDBOX_UID: "10001"
       SANDBOX_GID: "10001"
@@ -59,3 +60,5 @@ services:
 
 volumes:
   postgres-data:
+  portal-data:
+    name: ai-superpanel-data

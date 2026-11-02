@@ -74,7 +74,7 @@ export function HomePage() {
             {boot.data?.needsInit
               ? '⚠ 站点尚未初始化：请首次启动时按容器日志中的初始凭据登录完成引导。'
               : <>
-                  <strong>{siteName}（AI-SuperPanel）</strong> 是一个应用托管仓库。您让自己的 AI 助手（agent）写好一个小工具，自动打包成 <strong>.asp-app</strong> 文件上传到{siteName}后，即可向其他人展示您的创作。
+                  <strong>{siteName}</strong> 是一个应用托管仓库。您让自己的 AI 助手（Agent）写好一个小工具，自动打包成 <strong>.awpk</strong> 文件上传到{siteName}后，即可向其他人展示您的创作。
                 </>}
           </Typography.Paragraph>
           <Input
@@ -134,7 +134,7 @@ export function HomePage() {
         <div className="aap-home-section__inner">
           <span className="aap-home-section__eyebrow">MEMBERSHIP</span>
           <Typography.Title level={2}>选择适合你的权益</Typography.Title>
-          <Typography.Paragraph className="aap-home-section__lead">先从基础权益开始，按需解锁更多应用发布空间。</Typography.Paragraph>
+          <Typography.Paragraph className="aap-home-section__lead">先从基础权益开始，按需解锁更多应用上传空间。</Typography.Paragraph>
           {plans.isLoading ? (
             <div className="aap-home-loading"><Spin /></div>
           ) : plans.isError ? (
@@ -153,7 +153,7 @@ export function HomePage() {
                   <div className="aap-home-plan-card__price">{formatMembershipPlanPrice(plan)}<span> / 套</span></div>
                   <div className="aap-home-plan-card__features">
                     <div><span>权益分组</span><strong>{plan.groupName}</strong></div>
-                    <div><span>应用发布</span><strong>{plan.publicAppLimit} 个</strong></div>
+                    <div><span>可上传应用</span><strong>{plan.appUploadLimit} 个</strong></div>
                     <div><span>赠送额度</span><strong>{plan.tokenGrant.toLocaleString()}</strong></div>
                     <div><span>有效时间</span><strong>{plan.durationDays >= 100_000 ? '长期' : `${plan.durationDays} 天`}</strong></div>
                   </div>

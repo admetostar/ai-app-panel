@@ -1,20 +1,19 @@
 #!/usr/bin/env node
 /**
- * .asp-app 包签名工具（Ed25519 信任链，设计参照 fnos-dashboard 的 ndash.py）。
+ * 可选的离线 .awpk 完整性签名工具（平台上传流程不校验签名）。
  *
  *   node sign-aap.mjs keygen -o mykey.secret            # 生成密钥对（私钥 0600）
- *   node sign-aap.mjs sign pkg.asp-app --key mykey.secret --signer your-name
- *   node sign-aap.mjs verify pkg.asp-app               # 发行前自检（不查信任列表）
+ *   node sign-aap.mjs sign pkg.awpk --key mykey.secret --signer your-name
+ *   node sign-aap.mjs verify pkg.awpk               # 发行前自检（不查信任列表）
  *
- * 签名格式（包内 signature.json；平台接收必需）：
+ * 签名格式（包内 signature.json；平台上传不要求、不验证）：
  *   { alg: "ed25519", payload_sha256, signature(b64), signer: { id, key_id, public_key(b64) } }
  * 规范化摘要：对除 signature.json 外的全部条目，按「文件名 UTF-8 字节序」排序，
  * sha256( name_utf8 + 0x00 + sha256(content) ) 逐项拼接后再 sha256 → hex。
  * 与 zip 时间戳/压缩参数/条目物理顺序无关：内容一致则摘要一致。
  *
- * 平台侧验证：签名无效或签名者公钥未受信任 → 拒绝上传；只有有效且受信任
- * 的签名包才可接收，上传后默认安装为私有应用。算法用 Node 内置
- * crypto（OpenSSL，RFC 8032 Ed25519），密钥为 32 字节原始种子/公钥的 base64。
+ * 该工具只适用于用户自行管理的离线分发流程，不建立平台信任关系。
+ * 算法用 Node 内置 crypto（OpenSSL，RFC 8032 Ed25519），密钥为 32 字节原始种子/公钥的 base64。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -135,7 +134,7 @@ async function cmdSign(argv) {
   const signerIdx = argv.indexOf('--signer');
   const signerId = signerIdx >= 0 ? argv[signerIdx + 1] ?? '' : '';
   if (!file || !keyFile) {
-    console.error('用法: sign-aap.mjs sign <pkg.asp-app> --key <secret 文件> [--signer 署名]');
+    console.error('用法: sign-aap.mjs sign <pkg.awpk> --key <secret 文件> [--signer 署名]');
     process.exit(1);
   }
   const secret = b64d(fs.readFileSync(keyFile, 'utf8').trim());
@@ -152,7 +151,7 @@ async function cmdSign(argv) {
 async function cmdVerify(argv) {
   const file = argv[0];
   if (!file) {
-    console.error('用法: sign-aap.mjs verify <pkg.asp-app>');
+    console.error('用法: sign-aap.mjs verify <pkg.awpk>');
     process.exit(1);
   }
   const { entries, signature } = await loadZipEntries(file);

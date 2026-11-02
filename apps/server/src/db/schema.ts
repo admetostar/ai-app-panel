@@ -211,11 +211,13 @@ export const apps = pgTable('apps', {
   category: text('category').notNull().default('未分类'),
   /** 'public' 公开 | 'login' 需登录 | 'restricted' 指定分组与账号 | 'private' 仅归属者 */
   visibility: text('visibility').notNull().default('login'),
-  /** 应用形态：upstream 反代上游 | html 门户托管的静态页（简单 HTML / .asp-app html 包） */
+  /** 应用形态：upstream 反代上游 | html 门户托管的静态页（简单 HTML / .awpk html 包） */
   kind: text('kind').notNull().default('upstream'),
   /** 归属者（用户自建应用默认私有可见的依据；管理员创建 = 该管理员 id） */
   ownerUserId: integer('owner_user_id'),
-  // ---- G：.asp-app 包元数据（kind=package 时生效） ----
+  /** 积分奖励已入账时保存当时的奖励值；null 表示尚未因公开发布获得奖励 */
+  publicationRewardPoints: integer('publication_reward_points'),
+  // ---- G：.awpk 包元数据（kind=package 时生效） ----
   manifestJson: text('manifest_json'),
   runtimeMode: text('runtime_mode'),
   reviewStatus: text('review_status').notNull().default('none'),
@@ -245,6 +247,8 @@ export const userGroups = pgTable('user_groups', {
   id: serial('id').primaryKey(),
   name: varchar('name', { length: 191 }).notNull().unique(),
   note: text('note').notNull().default(''),
+  /** 用户首次公开发布应用时，按所属分组奖励的积分 */
+  appPublishRewardPoints: integer('app_publish_reward_points').notNull().default(0),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
 });
 
@@ -469,12 +473,14 @@ export const membershipPlans = pgTable('membership_plans', {
   priceCents: integer('price_cents').notNull().default(0),
   /** 积分价格（整数） */
   pricePoints: integer('price_points').notNull().default(0),
+  /** 外部兑换码领取页面 */
+  redeemUrl: text('redeem_url'),
   /** 开通赠送的 LLM 额度（token） */
   tokenGrant: bigint('token_grant', { mode: 'number' }).notNull().default(0),
   /** 权益等级：0 为基础权益，1–5 对应权益图标 */
   tier: integer('tier').notNull().default(0),
-  /** 订阅用户可公开发布的应用总数 */
-  publicAppLimit: integer('public_app_limit').notNull().default(10),
+  /** 订阅用户可上传的托管应用总数 */
+  appUploadLimit: integer('public_app_limit').notNull().default(10),
   enabled: boolean('enabled').notNull().default(true),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
 });
@@ -539,4 +545,26 @@ export const appRuns = pgTable(
     logs: text('logs'),
   },
   (t) => [index('app_runs_app_idx').on(t.appId, t.ts)],
+);
+
+/** Persistent app lifecycle and gateway runtime events; request bodies and credentials are never stored. */
+export const appRuntimeEvents = pgTable(
+  'app_runtime_events',
+  {
+    id: serial('id').primaryKey(),
+    appId: varchar('app_id', { length: 191 }).notNull(),
+    ts: bigint('ts', { mode: 'number' }).notNull(),
+    level: text('level').notNull(),
+    event: varchar('event', { length: 64 }).notNull(),
+    userId: integer('user_id'),
+    method: varchar('method', { length: 16 }),
+    path: varchar('path', { length: 512 }),
+    statusCode: integer('status_code'),
+    durationMs: integer('duration_ms'),
+    details: text('details'),
+  },
+  (t) => [
+    index('app_runtime_events_ts_idx').on(t.ts),
+    index('app_runtime_events_app_ts_idx').on(t.appId, t.ts),
+  ],
 );

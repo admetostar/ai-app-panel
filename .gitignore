@@ -39,6 +39,12 @@ e2e/.run/
 # reference implementation (private, read-only)
 office-tool/
 apps/server/assets/
+!apps/server/assets/
+apps/server/assets/*
+!apps/server/assets/app-develop.skill-v0.3.md
+!apps/server/assets/awpk-app-develop.skill
+!apps/server/assets/awpk-app-develop.zip
+!apps/server/assets/awpk-app-develop.md
 *.tsbuildinfo
 
 # 本地运维/会话产物与安全评估报告（不入公开仓库）

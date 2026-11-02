@@ -94,7 +94,7 @@ describe('W3 注册（A2）', () => {
       durationDays: 30,
       priceFen: 0,
       tier: 0,
-      publicAppLimit: 2,
+      appUploadLimit: 2,
     });
     paidPlanId = await createPlan({
       name: '付费权益包',
@@ -102,10 +102,23 @@ describe('W3 注册（A2）', () => {
       durationDays: 30,
       priceFen: 990,
       tier: 1,
-      publicAppLimit: 10,
+      appUploadLimit: 10,
     });
     await setSetting('REGISTRATION_POINTS_GIFT', '731');
     await setSetting('REGISTRATION_MODE', 'open');
+
+    const weakPassword = await fetch(`${base}/api/auth/register/start`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        username: 'weakpass',
+        password: 'password123',
+        email: 'weakpass@example.com',
+        powToken: await solvePow(),
+      }),
+    });
+    expect(weakPassword.status).toBe(400);
+    expect(((await weakPassword.json()) as { error: { code: string } }).error.code).toBe('INVALID_PASSWORD');
 
     // 无 PoW → 403 POW_REQUIRED（响应附带新挑战）
     const noPow = await fetch(`${base}/api/auth/register/start`, {
@@ -122,7 +135,7 @@ describe('W3 注册（A2）', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         username: 'neo',
-        password: 'password123',
+        password: 'Password123',
         email: 'neo@example.com',
         powToken,
       }),
@@ -196,7 +209,7 @@ describe('W3 注册（A2）', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         username: 'no-benefit-plan',
-        password: 'password123',
+        password: 'Password123',
         email: 'no-plan@example.com',
         powToken: await solvePow(),
       }),
@@ -248,7 +261,7 @@ describe('W3 注册（A2）', () => {
       durationDays: 30,
       priceFen: 990,
       tier: 1,
-      publicAppLimit: 10,
+      appUploadLimit: 10,
     });
     freePlanId = await createPlan({
       name: '免费权益包',
@@ -256,7 +269,7 @@ describe('W3 注册（A2）', () => {
       durationDays: 30,
       priceFen: 0,
       tier: 0,
-      publicAppLimit: 2,
+      appUploadLimit: 2,
     });
     const allowedOpenWithPlans = await fetch(`${base}/api/admin/settings`, {
       method: 'PUT',
@@ -312,7 +325,7 @@ describe('W3 注册（A2）', () => {
       priceCurrency: 'POINTS',
       pricePoints: 100,
       tier: 2,
-      publicAppLimit: 5,
+      appUploadLimit: 5,
     });
     const usdPlanId = await createPlan({
       name: '美元权益包',
@@ -321,7 +334,7 @@ describe('W3 注册（A2）', () => {
       priceCurrency: 'USD',
       priceCents: 1250,
       tier: 2,
-      publicAppLimit: 5,
+      appUploadLimit: 5,
     });
     const [pointsUserRow] = await getDb()
       .insert(users)
@@ -436,7 +449,7 @@ describe('W3 登录/会话', () => {
     const res = await fetch(`${base}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: 'https://evil.example' },
-      body: JSON.stringify({ username: 'neo', password: 'password123' }),
+      body: JSON.stringify({ username: 'neo', password: 'Password123' }),
     });
     expect(res.status).toBe(403);
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe('CSRF_ORIGIN_MISMATCH');
@@ -453,7 +466,7 @@ describe('W3 登录/会话', () => {
     const ok = await fetch(`${base}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({ username: 'neo', password: 'password123' }),
+      body: JSON.stringify({ username: 'neo', password: 'Password123' }),
     });
     expect(ok.status).toBe(200);
     const body = (await ok.json()) as { authState: string; mfaRequired: boolean };
@@ -466,12 +479,12 @@ describe('W3 登录/会话', () => {
     const login1 = await fetch(`${base}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({ username: 'neo', password: 'password123' }),
+      body: JSON.stringify({ username: 'neo', password: 'Password123' }),
     });
     const login2 = await fetch(`${base}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({ username: 'neo', password: 'password123' }),
+      body: JSON.stringify({ username: 'neo', password: 'Password123' }),
     });
     const c1 = cookieOf(login1);
     const c2 = cookieOf(login2);
@@ -484,10 +497,18 @@ describe('W3 登录/会话', () => {
     });
     expect(wrong.status).toBe(401);
 
+    const weak = await fetch(`${base}/api/auth/change-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, cookie: c1 },
+      body: JSON.stringify({ currentPassword: 'Password123', newPassword: 'weakpass123' }),
+    });
+    expect(weak.status).toBe(400);
+    expect(((await weak.json()) as { error: { code: string } }).error.code).toBe('INVALID_PASSWORD');
+
     const ok = await fetch(`${base}/api/auth/change-password`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: c1 },
-      body: JSON.stringify({ currentPassword: 'password123', newPassword: 'newPassword456' }),
+      body: JSON.stringify({ currentPassword: 'Password123', newPassword: 'newPassword456' }),
     });
     expect(ok.status).toBe(200);
 
@@ -550,6 +571,14 @@ describe('W3 找回密码（防枚举）', () => {
     expect(againBody).toEqual(ghostBody); // 与不存在邮箱响应体一致
     // 静默跳过发送：旧码仍有效（下方 verify 用其完成重置）
 
+    const weakPassword = await fetch(`${base}/api/auth/forgot/verify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({ email: 'resetguy@example.com', code, newPassword: 'weakpass123' }),
+    });
+    expect(weakPassword.status).toBe(400);
+    expect(((await weakPassword.json()) as { error: { code: string } }).error.code).toBe('INVALID_PASSWORD');
+
     const verify = await fetch(`${base}/api/auth/forgot/verify`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base },
@@ -585,7 +614,7 @@ describe('W3 找回密码（防枚举）', () => {
       const r = await fetch(`${base}/api/auth/forgot/verify`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', origin: base },
-        body: JSON.stringify({ email: 'bruteguy@example.com', code: '000000', newPassword: 'whatever123' }),
+        body: JSON.stringify({ email: 'bruteguy@example.com', code: '000000', newPassword: 'Whatever123' }),
       });
       const b = (await r.json()) as { error?: { code?: string } };
       return { status: r.status, code: b.error?.code ?? '' };
@@ -648,7 +677,7 @@ describe('W3 邀请码注册', () => {
       headers: { 'content-type': 'application/json', origin: base },
       body: JSON.stringify({
         username: 'guest',
-        password: 'password123',
+        password: 'Password123',
         email: 'guest@example.com',
         powToken: await solvePow(),
       }),
@@ -660,7 +689,7 @@ describe('W3 邀请码注册', () => {
       headers: { 'content-type': 'application/json', origin: base },
       body: JSON.stringify({
         username: 'guest',
-        password: 'password123',
+        password: 'Password123',
         email: 'guest@example.com',
         inviteCode: 'INVITE-XYZ',
         powToken: await solvePow(),
@@ -684,7 +713,7 @@ describe('W3 邀请码注册', () => {
       headers: { 'content-type': 'application/json', origin: base },
       body: JSON.stringify({
         username: 'guest2',
-        password: 'password123',
+        password: 'Password123',
         email: 'guest2@example.com',
         inviteCode: 'INVITE-XYZ',
         powToken: await solvePow(),
@@ -752,7 +781,7 @@ describe('终审 P1-5：同 IP 24h 注册上限（含已完成）', () => {
         headers: { 'content-type': 'application/json', origin: base },
         body: JSON.stringify({
           username: 'capuser',
-          password: 'password123',
+          password: 'Password123',
           email: 'capuser@example.com',
           powToken: await solvePow(),
         }),
@@ -774,7 +803,7 @@ describe('终审 P1-5：同 IP 24h 注册上限（含已完成）', () => {
         headers: { 'content-type': 'application/json', origin: base },
         body: JSON.stringify({
           username: 'capover',
-          password: 'password123',
+          password: 'Password123',
           email: 'capover@example.com',
           powToken: await solvePow(),
         }),

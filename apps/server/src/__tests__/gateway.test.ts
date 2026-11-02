@@ -402,6 +402,7 @@ describe('P 可见性新模型（restricted/private/分组）', () => {
       id: 'htmltest', name: 'HTML', visibility: 'public', upstream: '', kind: 'html',
       ownerUserId: 1, createdAt: Date.now(), updatedAt: Date.now(),
     });
+    await setSetting('SITE_NAME', '我的测试站点');
     const res = await fetch(`${base}/app/htmltest/`);
     expect(res.status).toBe(200);
     const html = await res.text();
@@ -409,7 +410,10 @@ describe('P 可见性新模型（restricted/private/分组）', () => {
     expect(html).toContain('/portal-chrome.js');
     const chrome = await fetch(`${base}/portal-chrome.js`);
     const chromeJs = await chrome.text();
-    expect(chromeJs).toContain('返回超级面板');
+    expect(chromeJs).toContain('我的测试站点');
+    expect(chromeJs).toContain('right:16px;bottom:16px');
+    expect(chromeJs).not.toContain('top:10px');
+    expect(chromeJs).not.toContain('返回超级面板');
     expect(chromeJs).not.toContain('应用门户');
     expect(chromeJs).not.toContain('个人中心');
     expect(chromeJs).not.toContain('退出登录');

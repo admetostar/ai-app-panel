@@ -26,6 +26,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 NATIVE_DIST="$ROOT/../native/dist"
 OUT="$ROOT/dist"
 REPO="$(cd "$ROOT/../.." && pwd)"
+pnpm --dir "$REPO" skills:sync
 
 case "$PLATFORMS" in x86|arm|all) ;; *) echo "✗ 平台参数必须是 x86|arm|all" >&2; exit 1;; esac
 [ -d "$ROOT/fpk-root" ] || { echo "✗ 缺少包源目录 $ROOT/fpk-root" >&2; exit 1; }
@@ -67,8 +68,10 @@ build_one() {
   mv "$stage/app/ai-app-portal-native_${VERSION}_linux_${arch}" "$stage/app/server"
   # 开发指南/平台文档随包（guideRouter 定位 <载荷根>/assets/；旧 native 包亦补齐）
   mkdir -p "$stage/app/server/assets"
-  cp "$REPO/docs/app-develop.skill-v0.2.md" \
-     "$REPO/docs/asp-app-develop.skill" \
+  cp "$REPO/apps/server/assets/app-develop.skill-v0.3.md" \
+     "$REPO/apps/server/assets/awpk-app-develop.skill" \
+     "$REPO/apps/server/assets/awpk-app-develop.zip" \
+     "$REPO/apps/server/assets/awpk-app-develop.md" \
      "$REPO/README.md" \
      "$REPO/docs/app-develop-internal.skill.md" \
      "$stage/app/server/assets/"

@@ -2,10 +2,10 @@
  * 开发指南与平台文档（R2）：
  *  - GET /api/dev/guide   登录可见：应用开发规范（app-develop skill.md），供下载 skill
  *    （skill.md 含沙箱模型/能力声明/审核流程等侦察材料，不再对匿名开放——P2-12）
- *  - GET /api/dev/guide/download 登录可见：下载项目资源中的 asp-app-develop.skill 压缩包
+ *  - GET /api/dev/guide/download 公开：下载 skill、ZIP 或 Markdown 格式的 AWPK 开发技能
  *  - GET /api/dev/docs    仅管理员：平台使用说明（README / 内部实现约定）
  * 文件查找顺序：包内 assets（Docker 镜像/原生包）→ 仓库 docs（开发态）。
- * 单一来源 = docs；仓库不维护 assets 副本，防止双份漂移。
+ * docs 是单一来源；pnpm skills:sync 生成 skill 包并同步两份文件到 apps/server/assets。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,8 +22,12 @@ interface DocFile {
   title: string;
 }
 
-const SKILL_FILE = 'app-develop.skill-v0.2.md';
-const SKILL_PACKAGE = 'asp-app-develop.skill';
+const SKILL_FILE = 'app-develop.skill-v0.3.md';
+const SKILL_DOWNLOADS = {
+  skill: { file: 'awpk-app-develop.skill', filename: 'awpk-app-develop.skill', contentType: 'application/zip' },
+  zip: { file: 'awpk-app-develop.zip', filename: 'awpk-app-develop.zip', contentType: 'application/zip' },
+  md: { file: 'awpk-app-develop.md', filename: 'awpk-app-develop.md', contentType: 'text/markdown; charset=utf-8' },
+} as const;
 const DOCS: DocFile[] = [
   { file: 'README.md', title: '平台使用说明（README）' },
   { file: 'app-develop-internal.skill.md', title: '平台实现与架构约定' },
@@ -65,16 +69,28 @@ guideRouter.get('/dev/guide', requireAuth, (_req, res) => {
   res.json({ skillMd });
 });
 
-guideRouter.get('/dev/guide/download', requireAuth, (_req, res) => {
-  const packagePath = locate(SKILL_PACKAGE) ?? locate(`${SKILL_PACKAGE}.zip`);
-  if (!packagePath) {
-    res.status(404).json({ error: { code: 'GUIDE_PACKAGE_NOT_FOUND', message: 'skill 压缩包未随部署包提供' } });
+guideRouter.get('/dev/guide/download', (req, res) => {
+  const format = typeof req.query.format === 'string' ? req.query.format : 'skill';
+  const download = format === 'zip'
+    ? SKILL_DOWNLOADS.zip
+    : format === 'md'
+      ? SKILL_DOWNLOADS.md
+      : format === 'skill'
+        ? SKILL_DOWNLOADS.skill
+        : null;
+  if (!download) {
+    res.status(400).json({ error: { code: 'INVALID_GUIDE_FORMAT', message: '下载格式必须是 skill、zip 或 md' } });
+    return;
+  }
+  const filePath = locate(download.file);
+  if (!filePath) {
+    res.status(404).json({ error: { code: 'GUIDE_PACKAGE_NOT_FOUND', message: '开发技能文件未随部署包提供' } });
     return;
   }
 
-  res.download(packagePath, SKILL_PACKAGE, {
+  res.download(filePath, download.filename, {
     headers: {
-      'Content-Type': 'application/zip',
+      'Content-Type': download.contentType,
     },
   });
 });

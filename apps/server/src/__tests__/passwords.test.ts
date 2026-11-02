@@ -21,6 +21,9 @@ describe('passwords（scrypt 内核）', () => {
     for (let i = 0; i < 20; i++) {
       const p = generatePassword(12);
       expect(p).toMatch(/^[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789]{12}$/);
+      expect(p).toMatch(/[A-Z]/);
+      expect(p).toMatch(/[a-z]/);
+      expect(p).toMatch(/[0-9]/);
     }
   });
 });

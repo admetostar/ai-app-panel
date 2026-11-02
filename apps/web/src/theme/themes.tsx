@@ -159,8 +159,7 @@ export function ThemeProvider({ children }: { children: ReactNode }): ReactNode 
         colorBorder: theme.colors.border,
         colorBorderSecondary: theme.colors.border,
         borderRadius: 8,
-        fontFamily:
-          "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif",
+        fontFamily: 'var(--aap-font-family)',
       },
     };
   }, [theme]);

@@ -4,7 +4,7 @@
  * → invoked 执行注入端到端（子进程 os.environ 读到配置值与 default）→ 必填缺配拦截。
  * 依赖系统 python3（执行沙箱）。
  */
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { createServer, type Server as HttpServer } from 'node:http';
@@ -14,7 +14,9 @@ import { seedSettings, setSetting } from '../lib/settings.js';
 import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
 import { validateManifest } from '../gateway/staticApp.js';
-import { stopAllPersistent } from '../lib/sandbox.js';
+import { stopAllPersistent, baseEnv } from '../lib/sandbox.js';
+import { encryptSecret } from '../lib/cryptoSecrets.js';
+import { appEnvVars, apps } from '../db/schema.js';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -23,7 +25,14 @@ let base: string;
 let dir: string;
 let adminCookie = '';
 let userCookie = '';
-let pythonOk = true;
+let pythonOk = (() => {
+  try {
+    const output = execFileSync(process.env.PYTHON_BIN || 'python3', ['-c', 'print(1)'], { stdio: 'pipe' }).toString().trim();
+    return output === '1';
+  } catch {
+    return false;
+  }
+})();
 
 function zipPkg(files: Record<string, string>): string {
   return testPackage(files).toString('base64');
@@ -64,11 +73,6 @@ const ENV_MANIFEST = {
 beforeAll(async () => {
   ({ dir } = await setupTestDb());
   await seedSettings();
-  try {
-    execSync('python3 -c "print(1)"', { stdio: 'pipe' });
-  } catch {
-    pythonOk = false;
-  }
 
   const cfg = { ...loadConfig({}), webDist: null };
   gw = createApp(cfg).listen(0, '127.0.0.1');
@@ -129,6 +133,35 @@ describe('manifest.env 声明校验', () => {
   });
 });
 
+describe('沙箱环境对象注入', () => {
+  it('baseEnv 等待解密后的应用环境变量并写入最终子进程环境', async () => {
+    const appId = 'envbase-test';
+    await getDb().insert(apps).values({
+      id: appId,
+      name: 'Env base test',
+      kind: 'package',
+      upstream: '',
+      manifestJson: JSON.stringify({
+        env: {
+          ADMIN_PASSWORD: { required: true, secret: true },
+        },
+      }),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    await getDb().insert(appEnvVars).values({
+      appId,
+      name: 'ADMIN_PASSWORD',
+      valueEnc: encryptSecret('configured-value'),
+      isSecret: true,
+      updatedAt: Date.now(),
+    });
+
+    const childEnv = await baseEnv(appId);
+    expect(childEnv.ADMIN_PASSWORD).toBe('configured-value');
+  });
+});
+
 // ---------- 配置 API + 注入端到端 ----------
 
 describe.skipIf(!pythonOk)('环境变量配置与沙箱注入', () => {
@@ -137,7 +170,7 @@ describe.skipIf(!pythonOk)('环境变量配置与沙箱注入', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
       body: JSON.stringify({
-        filename: 'envtool.asp-app',
+        filename: 'envtool.awpk',
         dataBase64: zipPkg({ 'manifest.json': JSON.stringify(ENV_MANIFEST), 'mod.py': ENV_MOD }),
       }),
     });
@@ -273,6 +306,8 @@ class Handler(BaseHTTPRequestHandler):
             "aap_top": AAP_VISIBLE,
             "aap_route": aap is not None,
             "app_id": os.environ.get("AAP_APP_ID", ""),
+            "admin_password_present": bool(os.environ.get("ADMIN_PASSWORD")),
+            "admin_password_length": len(os.environ.get("ADMIN_PASSWORD", "")),
             "path": self.path,
             "xfp": self.headers.get("x-forwarded-prefix", ""),
         }).encode()
@@ -288,17 +323,25 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
       body: JSON.stringify({
-        filename: 'persistenv.asp-app',
+        filename: 'persistenv.awpk',
         dataBase64: zipPkg({
           'manifest.json': JSON.stringify({
             name: 'persistenv', display_name: 'PersistEnv', version: '1.0.0',
             type: 'python', entry: 'mod.py', runtime: 'persistent', capabilities: [], network: [],
+            env: { ADMIN_PASSWORD: { required: true, secret: true } },
           }),
           'mod.py': PERSIST_MOD,
         }),
       }),
     });
     expect(submit.status).toBe(200);
+
+    const configureEnv = (password: string) => fetch(`${base}/api/apps/persistenv/env`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
+      body: JSON.stringify({ values: { ADMIN_PASSWORD: password } }),
+    });
+    expect((await configureEnv('first-secret-value')).status).toBe(200);
 
     // 带尾斜杠：沙箱应收到剥掉 /app/<id> 前缀后的 '/'，并拿到 x-forwarded-prefix
     let body = '';
@@ -308,12 +351,32 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
       if (res.status === 200 && body.includes('aap_top')) break;
       await new Promise((r) => setTimeout(r, 500));
     }
-    const parsed = JSON.parse(body) as { aap_top: boolean; aap_route: boolean; app_id: string; path: string; xfp: string };
+    const parsed = JSON.parse(body) as {
+      aap_top: boolean;
+      aap_route: boolean;
+      app_id: string;
+      admin_password_present: boolean;
+      admin_password_length: number;
+      path: string;
+      xfp: string;
+    };
     expect(parsed.aap_top).toBe(true);
     expect(parsed.aap_route).toBe(true);
     expect(parsed.app_id).toBe('persistenv');
+    expect(parsed.admin_password_present).toBe(true);
+    expect(parsed.admin_password_length).toBe(18);
     expect(parsed.path).toBe('/');
     expect(parsed.xfp).toBe('/app/persistenv');
+
+    expect((await configureEnv('second-secret-value')).status).toBe(200);
+    let updated = '';
+    for (let i = 0; i < 30; i++) {
+      const res = await fetch(`${base}/app/persistenv/`, { headers: { cookie: adminCookie } });
+      updated = await res.text();
+      if (res.status === 200 && updated.includes('"admin_password_length": 19')) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    expect((JSON.parse(updated) as { admin_password_length: number }).admin_password_length).toBe(19);
 
     // 无尾斜杠同样剥到 '/'
     const res2 = await fetch(`${base}/app/persistenv`, { headers: { cookie: adminCookie } });
@@ -346,7 +409,7 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
         method: 'POST',
         headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
         body: JSON.stringify({
-          filename: 'egresstool.asp-app',
+          filename: 'egresstool.awpk',
           dataBase64: zipPkg({
             'manifest.json': JSON.stringify({
               name: 'egresstool', display_name: 'EgressTool', version: '1.0.0',

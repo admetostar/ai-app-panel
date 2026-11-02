@@ -6,7 +6,7 @@
 
 1. **迁移**：schema 改动后跑 `pnpm db:generate`；已发布迁移禁手改。
 2. **单位指纹零进入**：`X-Office-*`、校名/校色/校徽不进本仓库（参考实现 office-tool 为私有项目，只借鉴思路与代码结构，不带任何单位指纹）。
-3. **契约单一来源**：前后端契约在 `packages/shared`；`.asp-app` 接口面（manifest / `aap.*`）变更必须升版 `docs/app-develop.skill-v0.2.md` 并同步 `docs/app-develop-internal.skill.md`。
+3. **契约单一来源**：前后端契约在 `packages/shared`；`.awpk` 接口面（manifest / `aap.*`）变更必须升版 `docs/app-develop.skill-v0.3.md` 并同步 `docs/app-develop-internal.skill.md`。
 4. **测试与文档同步**：改动后 `pnpm typecheck` + `pnpm test` 须通过（前端改动先 `pnpm build` 再跑 e2e）；修复/功能变更同批更新 `docs/DEVELOPMENT.md`、`README.md` 相关段落与测试数统计。
 
 ## 按需加载（按改动范围选读；日常 bug 修复、UI/文案/测试改动不需要预读）
@@ -14,7 +14,7 @@
 | 改动范围 | 读 |
 |---|---|
 | 网关 / LLM 网关 / 沙箱 / 计费 / 账号安全的架构设计，或接口面契约变更 | `docs/app-develop-internal.skill.md`（ADR，已定决策勿再反复讨论） |
-| 开发或审查 .asp-app 包 | `docs/app-develop.skill-v0.2.md` |
+| 开发或审查 .awpk 包 | `docs/app-develop.skill-v0.3.md` |
 | 架构 / 配置 / 运行机制速查 | `docs/DEVELOPMENT.md` |
 | 产品需求 | `docs/ai-app-portal-PRD-v0.3.1.md` |
 

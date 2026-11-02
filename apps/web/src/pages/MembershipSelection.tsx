@@ -151,7 +151,7 @@ export function MembershipSelectionPage() {
                     <div className="aap-home-plan-card__features">
                       <div><span>权益等级</span><strong>{plan.tier}</strong></div>
                       <div><span>权益分组</span><strong>{plan.groupName}</strong></div>
-                      <div><span>应用发布</span><strong>{plan.publicAppLimit} 个</strong></div>
+                      <div><span>可上传应用</span><strong>{plan.appUploadLimit} 个</strong></div>
                       <div><span>赠送额度</span><strong>{plan.tokenGrant.toLocaleString()}</strong></div>
                     </div>
                     <Button

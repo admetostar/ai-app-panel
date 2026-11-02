@@ -30,10 +30,54 @@ export interface PlanRow {
   priceFen: number;
   priceCents: number;
   pricePoints: number;
+  redeemUrl: string | null;
   tokenGrant: number;
   tier: number;
-  publicAppLimit: number;
+  appUploadLimit: number;
   enabled: boolean;
+}
+
+async function activeMembershipPlan(
+  user: typeof users.$inferSelect,
+  executor: DbExecutor,
+): Promise<PlanRow | null> {
+  if (!user.membershipPlanId || !user.membershipExpiresAt || user.membershipExpiresAt <= Date.now()) return null;
+  const row = (await executor.select().from(membershipPlans).where(eq(membershipPlans.id, user.membershipPlanId)))[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    groupId: row.groupId,
+    durationDays: row.durationDays,
+    priceCurrency: row.priceCurrency,
+    priceFen: row.priceFen,
+    priceCents: row.priceCents,
+    pricePoints: row.pricePoints,
+    redeemUrl: row.redeemUrl,
+    tokenGrant: row.tokenGrant,
+    tier: row.tier,
+    appUploadLimit: row.appUploadLimit,
+    enabled: row.enabled,
+  };
+}
+
+async function ensureMembershipTierAllowed(
+  user: typeof users.$inferSelect,
+  targetPlan: PlanRow,
+  executor: DbExecutor,
+): Promise<PlanRow | null> {
+  const currentPlan = await activeMembershipPlan(user, executor);
+  if (currentPlan && targetPlan.tier < currentPlan.tier) {
+    throw new HttpError(409, 'LOWER_TIER_MEMBERSHIP_ACTIVE', '当前权益包等级更高，请等当前权益包到期后再订阅较低等级的权益包');
+  }
+  return currentPlan;
+}
+
+export async function assertMembershipTierAllowed(userId: number, targetPlan: PlanRow): Promise<void> {
+  const db = getDb();
+  const user = (await db.select().from(users).where(eq(users.id, userId)))[0];
+  if (!user) throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
+  await ensureMembershipTierAllowed(user, targetPlan, db);
 }
 
 export async function listPlans(onlyEnabled = false): Promise<PlanRow[]> {
@@ -50,9 +94,10 @@ export async function listPlans(onlyEnabled = false): Promise<PlanRow[]> {
     priceFen: r.priceFen,
     priceCents: r.priceCents,
     pricePoints: r.pricePoints,
+    redeemUrl: r.redeemUrl,
     tokenGrant: r.tokenGrant,
     tier: r.tier,
-    publicAppLimit: r.publicAppLimit,
+    appUploadLimit: r.appUploadLimit,
     enabled: r.enabled,
   }));
 }
@@ -72,9 +117,10 @@ export async function createPlan(p: {
   priceFen?: number;
   priceCents?: number;
   pricePoints?: number;
+  redeemUrl?: unknown;
   tokenGrant?: number;
   tier?: number;
-  publicAppLimit?: number;
+  appUploadLimit?: number;
 }): Promise<number> {
   const priceCurrency = p.priceCurrency ?? 'CNY';
   if (!['CNY', 'USD', 'POINTS'].includes(priceCurrency)) throw new HttpError(400, 'INVALID_CURRENCY', '不支持的套餐计价单位');
@@ -83,6 +129,7 @@ export async function createPlan(p: {
       throw new HttpError(400, 'INVALID_PRICE', `${label}必须是 0 到 ${MAX_INTEGER_PRICE} 之间的整数`);
     }
   }
+  const redeemUrl = normalizeRedeemUrl(p.redeemUrl);
   const [created] = await getDb()
     .insert(membershipPlans)
     .values({
@@ -93,9 +140,10 @@ export async function createPlan(p: {
       priceFen: Math.max(0, p.priceFen ?? 0),
       priceCents: Math.max(0, p.priceCents ?? 0),
       pricePoints: Math.max(0, p.pricePoints ?? 0),
+      redeemUrl,
       tokenGrant: Math.max(0, p.tokenGrant ?? 0),
       tier: Math.min(5, Math.max(0, Math.trunc(p.tier ?? 0))),
-      publicAppLimit: Math.max(0, p.publicAppLimit ?? 10),
+      appUploadLimit: Math.max(0, p.appUploadLimit ?? 10),
       createdAt: Date.now(),
     })
     .returning({ id: membershipPlans.id });
@@ -110,8 +158,9 @@ export async function updatePlan(id: number, patch: {
   priceFen?: number;
   priceCents?: number;
   pricePoints?: number;
+  redeemUrl?: unknown;
   tokenGrant?: number;
-  publicAppLimit?: number;
+  appUploadLimit?: number;
   enabled?: boolean;
 }): Promise<void> {
   const set: Partial<typeof membershipPlans.$inferInsert> = {};
@@ -124,24 +173,46 @@ export async function updatePlan(id: number, patch: {
   if (patch.priceFen !== undefined) set.priceFen = Math.max(0, patch.priceFen);
   if (patch.priceCents !== undefined) set.priceCents = Math.max(0, patch.priceCents);
   if (patch.pricePoints !== undefined) set.pricePoints = Math.max(0, patch.pricePoints);
+  if (patch.redeemUrl !== undefined) set.redeemUrl = normalizeRedeemUrl(patch.redeemUrl);
   for (const [label, amount] of [['人民币价格', patch.priceFen], ['美元价格', patch.priceCents], ['积分价格', patch.pricePoints]] as const) {
     if (amount !== undefined && (!Number.isSafeInteger(amount) || amount < 0 || amount > MAX_INTEGER_PRICE)) {
       throw new HttpError(400, 'INVALID_PRICE', `${label}必须是 0 到 ${MAX_INTEGER_PRICE} 之间的整数`);
     }
   }
   if (patch.tokenGrant !== undefined) set.tokenGrant = Math.max(0, patch.tokenGrant);
-  if (patch.publicAppLimit !== undefined) set.publicAppLimit = Math.max(0, patch.publicAppLimit);
+  if (patch.appUploadLimit !== undefined) set.appUploadLimit = Math.max(0, patch.appUploadLimit);
   if (patch.enabled !== undefined) set.enabled = patch.enabled;
   await getDb().update(membershipPlans).set(set).where(eq(membershipPlans.id, id));
 }
 
-export interface PublicAppQuota {
+function normalizeRedeemUrl(value: unknown): string | null {
+  if (value !== undefined && value !== null && typeof value !== 'string') {
+    throw new HttpError(400, 'INVALID_REDEEM_URL', '兑换码链接必须是有效的 http 或 https 地址');
+  }
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > 2048) {
+    throw new HttpError(400, 'INVALID_REDEEM_URL', '兑换码链接不能超过 2048 个字符');
+  }
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new HttpError(400, 'INVALID_REDEEM_URL', '兑换码链接必须是有效的 http 或 https 地址');
+  }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+    throw new HttpError(400, 'INVALID_REDEEM_URL', '兑换码链接必须是有效的 http 或 https 地址');
+  }
+  return url.toString();
+}
+
+export interface AppUploadQuota {
   limit: number;
   used: number;
   remaining: number;
 }
 
-export async function getPublicAppQuota(userId: number, excludingAppId?: string): Promise<PublicAppQuota> {
+export async function getAppUploadQuota(userId: number): Promise<AppUploadQuota> {
   const db = getDb();
   const user = (await db
     .select({ membershipPlanId: users.membershipPlanId, membershipExpiresAt: users.membershipExpiresAt })
@@ -150,20 +221,18 @@ export async function getPublicAppQuota(userId: number, excludingAppId?: string)
   const plan = user?.membershipPlanId && user.membershipExpiresAt && user.membershipExpiresAt > Date.now()
     ? (await db.select().from(membershipPlans).where(eq(membershipPlans.id, user.membershipPlanId)))[0]
     : undefined;
-  const predicates = [eq(apps.ownerUserId, userId), eq(apps.visibility, 'public')];
-  if (excludingAppId) predicates.push(ne(apps.id, excludingAppId));
   const used = Number((await db
     .select({ count: sql<number>`count(*)` })
     .from(apps)
-    .where(and(...predicates)))[0]?.count ?? 0);
-  const limit = plan?.publicAppLimit ?? 0;
+    .where(and(eq(apps.ownerUserId, userId), ne(apps.kind, 'upstream'))))[0]?.count ?? 0);
+  const limit = plan?.appUploadLimit ?? 0;
   return { limit, used, remaining: Math.max(0, limit - used) };
 }
 
-export async function assertPublicAppQuota(userId: number, excludingAppId?: string): Promise<PublicAppQuota> {
-  const quota = await getPublicAppQuota(userId, excludingAppId);
+export async function assertAppUploadQuota(userId: number): Promise<AppUploadQuota> {
+  const quota = await getAppUploadQuota(userId);
   if (quota.remaining <= 0) {
-    throw new HttpError(403, 'PUBLIC_APP_LIMIT_REACHED', '当前订阅的公开应用数量已用完，请升级订阅计划');
+    throw new HttpError(403, 'APP_UPLOAD_LIMIT_REACHED', `当前权益包可上传应用数量已达上限（${quota.used}/${quota.limit}），请删除已有应用或升级权益包`);
   }
   return quota;
 }
@@ -283,13 +352,34 @@ export async function createOrder(
 /** 开通/续费会员：顺延到期 + 入组 + 赠送额度（单事务；部分失败整体回滚） */
 export async function activateMembership(userId: number, planId: number, executor?: DbExecutor): Promise<string> {
   const apply = async (tx: DbExecutor): Promise<string> => {
-    const plan = (await tx.select().from(membershipPlans).where(eq(membershipPlans.id, planId)))[0];
-    if (!plan) throw new HttpError(404, 'PLAN_NOT_FOUND', '套餐不存在');
-    const me = (await tx.select().from(users).where(eq(users.id, userId)))[0];
+    const planRow = (await tx.select().from(membershipPlans).where(eq(membershipPlans.id, planId)))[0];
+    if (!planRow) throw new HttpError(404, 'PLAN_NOT_FOUND', '套餐不存在');
+    const plan: PlanRow = {
+      id: planRow.id,
+      name: planRow.name,
+      groupId: planRow.groupId,
+      durationDays: planRow.durationDays,
+      priceCurrency: planRow.priceCurrency,
+      priceFen: planRow.priceFen,
+      priceCents: planRow.priceCents,
+      pricePoints: planRow.pricePoints,
+      redeemUrl: planRow.redeemUrl,
+      tokenGrant: planRow.tokenGrant,
+      tier: planRow.tier,
+      appUploadLimit: planRow.appUploadLimit,
+      enabled: planRow.enabled,
+    };
+    const me = (await tx.select().from(users).where(eq(users.id, userId)).for('update'))[0];
     if (!me) throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
 
-    const base = me.membershipExpiresAt && me.membershipPlanId === planId ? me.membershipExpiresAt : Date.now();
+    const currentPlan = await ensureMembershipTierAllowed(me, plan, tx);
+    const base = currentPlan && currentPlan.tier === plan.tier ? me.membershipExpiresAt! : Date.now();
     const expiresAt = base + plan.durationDays * 86_400_000;
+    if (currentPlan && currentPlan.groupId !== plan.groupId) {
+      await tx
+        .delete(userGroupMembers)
+        .where(and(eq(userGroupMembers.groupId, currentPlan.groupId), eq(userGroupMembers.userId, userId)));
+    }
     await tx
       .update(users)
       .set({ membershipPlanId: planId, membershipExpiresAt: expiresAt, plan: 'member' })

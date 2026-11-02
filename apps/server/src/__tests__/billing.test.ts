@@ -11,13 +11,14 @@ import { apps, llmBalanceCache, topupOrders, userGroupMembers, userGroups, users
 import { seedSettings } from '../lib/settings.js';
 import {
   cancelOrder,
-  assertPublicAppQuota,
+  assertAppUploadQuota,
+  assertMembershipTierAllowed,
   activateMembership,
   confirmOrder,
   createOrder,
   createPlan,
   downgradeExpired,
-  getPublicAppQuota,
+  getAppUploadQuota,
   listPlans,
   reconcileRecent,
 } from '../lib/billing.js';
@@ -35,7 +36,7 @@ beforeAll(async () => {
 
   const [g] = await getDb().insert(userGroups).values({ name: '会员-高级', createdAt: Date.now() }).returning({ id: userGroups.id });
   groupId = Number(g!.id);
-  planId = await createPlan({ name: '高级会员', groupId, durationDays: 30, priceFen: 3000, tokenGrant: 50_000, tier: 3, publicAppLimit: 1 });
+  planId = await createPlan({ name: '高级会员', groupId, durationDays: 30, priceFen: 3000, tokenGrant: 50_000, tier: 3, appUploadLimit: 2 });
 
   const [u] = await getDb()
     .insert(users)
@@ -52,6 +53,23 @@ afterAll(async () => {
 describe('M3 计费闭环（D1/D2）', () => {
   it('套餐列表保留权益等级', async () => {
     expect(await (await listPlans()).find((plan) => plan.id === planId)?.tier).toBe(3);
+  });
+
+  it('套餐保存可选兑换码链接，并拒绝非 HTTP(S) 链接', async () => {
+    const linkedPlanId = await createPlan({
+      name: '外部兑换套餐',
+      groupId,
+      durationDays: 30,
+      redeemUrl: 'https://redeem.example.com/coupon',
+    });
+    expect((await listPlans()).find((plan) => plan.id === linkedPlanId)?.redeemUrl)
+      .toBe('https://redeem.example.com/coupon');
+    await expect(createPlan({
+      name: '非法兑换套餐',
+      groupId,
+      durationDays: 30,
+      redeemUrl: 'javascript:alert(1)',
+    })).rejects.toMatchObject({ code: 'INVALID_REDEEM_URL' });
   });
 
   it('订单：创建（manual 渠道）→ 确认到账 → 会员生效入组 + 额度到账', async () => {
@@ -83,11 +101,11 @@ describe('M3 计费闭环（D1/D2）', () => {
     expect(after - before).toBeGreaterThanOrEqual(29 * 86_400_000);
   });
 
-  it('公开应用额度：按用户当前公开应用数计算剩余名额', async () => {
+  it('上传应用额度：统计私有和公开应用，忽略上游应用', async () => {
     await activateMembership(userId, planId);
     await getDb().insert(apps).values({
-      id: 'public-quota-test',
-      name: '公开额度测试',
+      id: 'public-upload-quota-test',
+      name: '公开应用',
       ownerUserId: userId,
       visibility: 'public',
       kind: 'package',
@@ -95,10 +113,29 @@ describe('M3 计费闭环（D1/D2）', () => {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     });
+    await getDb().insert(apps).values({
+      id: 'private-upload-quota-test',
+      name: '私有应用',
+      ownerUserId: userId,
+      visibility: 'private',
+      kind: 'html',
+      upstream: '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    await getDb().insert(apps).values({
+      id: 'upstream-upload-quota-test',
+      name: '上游应用',
+      ownerUserId: userId,
+      visibility: 'public',
+      kind: 'upstream',
+      upstream: 'http://127.0.0.1',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
 
-    expect(await getPublicAppQuota(userId)).toEqual({ limit: 1, used: 1, remaining: 0 });
-    await expect(assertPublicAppQuota(userId)).rejects.toThrow(/数量已用完/);
-    expect((await getPublicAppQuota(userId, 'public-quota-test')).remaining).toBe(1);
+    expect(await getAppUploadQuota(userId)).toEqual({ limit: 2, used: 2, remaining: 0 });
+    await expect(assertAppUploadQuota(userId)).rejects.toMatchObject({ code: 'APP_UPLOAD_LIMIT_REACHED' });
   });
 
   it('取消：pending 可取消，已付不可取消', async () => {
@@ -122,6 +159,78 @@ describe('M3 计费闭环（D1/D2）', () => {
       .from(userGroupMembers)
       .where(eq(userGroupMembers.userId, userId));
     expect(inGroup.filter((m) => m.groupId === groupId)).toHaveLength(0);
+  });
+
+  it('订阅等级：禁止降级、同级从当前到期时间续期、升级立即生效', async () => {
+    const lowerPlanId = await createPlan({
+      name: '基础会员',
+      groupId,
+      durationDays: 30,
+      tier: 2,
+    });
+    const [renewalGroup] = await getDb()
+      .insert(userGroups)
+      .values({ name: '会员-同级续期', createdAt: Date.now() })
+      .returning({ id: userGroups.id });
+    const [higherGroup] = await getDb()
+      .insert(userGroups)
+      .values({ name: '会员-升级', createdAt: Date.now() })
+      .returning({ id: userGroups.id });
+    const sameTierPlanId = await createPlan({
+      name: '高级会员续期方案',
+      groupId: renewalGroup!.id,
+      durationDays: 7,
+      tier: 3,
+    });
+    const higherPlanId = await createPlan({
+      name: '尊享会员',
+      groupId: higherGroup!.id,
+      durationDays: 10,
+      tier: 4,
+    });
+    const originalExpiration = Date.now() + 20 * 86_400_000;
+    const [subscriber] = await getDb()
+      .insert(users)
+      .values({
+        kind: 'local',
+        username: 'tierchange',
+        membershipPlanId: planId,
+        membershipExpiresAt: originalExpiration,
+        createdAt: Date.now(),
+      })
+      .returning({ id: users.id });
+    const subscriberId = subscriber!.id;
+    await getDb().insert(userGroupMembers).values({
+      groupId,
+      userId: subscriberId,
+      createdAt: Date.now(),
+    });
+
+    const lowerPlan = (await listPlans()).find((plan) => plan.id === lowerPlanId)!;
+    await expect(assertMembershipTierAllowed(subscriberId, lowerPlan))
+      .rejects.toMatchObject({ code: 'LOWER_TIER_MEMBERSHIP_ACTIVE' });
+    await expect(activateMembership(subscriberId, lowerPlanId))
+      .rejects.toMatchObject({ code: 'LOWER_TIER_MEMBERSHIP_ACTIVE' });
+    expect((await getDb().select().from(users).where(eq(users.id, subscriberId)))[0]?.membershipPlanId)
+      .toBe(planId);
+
+    await activateMembership(subscriberId, sameTierPlanId);
+    const renewed = (await getDb().select().from(users).where(eq(users.id, subscriberId)))[0]!;
+    expect(renewed.membershipPlanId).toBe(sameTierPlanId);
+    expect(renewed.membershipExpiresAt).toBe(originalExpiration + 7 * 86_400_000);
+    let activeGroups = await getDb().select().from(userGroupMembers).where(eq(userGroupMembers.userId, subscriberId));
+    expect(activeGroups.map((membership) => membership.groupId)).toContain(renewalGroup!.id);
+    expect(activeGroups.map((membership) => membership.groupId)).not.toContain(groupId);
+
+    const upgradedAt = Date.now();
+    await activateMembership(subscriberId, higherPlanId);
+    const upgraded = (await getDb().select().from(users).where(eq(users.id, subscriberId)))[0]!;
+    expect(upgraded.membershipPlanId).toBe(higherPlanId);
+    expect(upgraded.membershipExpiresAt).toBeGreaterThanOrEqual(upgradedAt + 10 * 86_400_000);
+    expect(upgraded.membershipExpiresAt).toBeLessThan(upgradedAt + 10 * 86_400_000 + 5_000);
+    activeGroups = await getDb().select().from(userGroupMembers).where(eq(userGroupMembers.userId, subscriberId));
+    expect(activeGroups.map((membership) => membership.groupId)).toContain(higherGroup!.id);
+    expect(activeGroups.map((membership) => membership.groupId)).not.toContain(renewalGroup!.id);
   });
 });
 
@@ -161,7 +270,7 @@ describe('M3 结算对账（D2a）', () => {
 
 // ---------- 卡券码（充值码/会员码） ----------
 
-import { disableCode, generateBatch, normalizeCode, redeem } from '../lib/redeem.js';
+import { batchSummaries, disableCode, generateBatch, listCodes, normalizeCode, redeem } from '../lib/redeem.js';
 
 describe('M3 卡券码（兑换）', () => {
   it('额度码：生成 → 兑换入账 → 双花拒绝 → 作废拒绝', async () => {
@@ -177,6 +286,14 @@ describe('M3 卡券码（兑换）', () => {
     const { batchId, codes } = await generateBatch({ kind: 'tokens', count: 2, tokens: 777, note: 'test', byUserId: 1 });
     expect(codes).toHaveLength(2);
     expect(codes[0]).toMatch(/^AAP-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+    expect(await listCodes({ batchId })).toHaveLength(2);
+    expect(await batchSummaries()).toContainEqual(expect.objectContaining({
+      batchId,
+      kind: 'tokens',
+      total: 2,
+      used: 0,
+      tokens: 777,
+    }));
 
     const r = await redeem(row.id, codes[0]!, null);
     expect(r).toMatchObject({ kind: 'tokens', tokens: 777 });

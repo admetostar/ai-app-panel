@@ -7,6 +7,8 @@ import { getSetting } from '../lib/settings.js';
 import { oidcEnabled } from '../lib/oidc.js';
 import { listPlans } from '../lib/billing.js';
 import { listGroups } from '../lib/groups.js';
+import { appDomainRoot } from '../gateway/appDomains.js';
+import { config } from '../config/index.js';
 
 /**
  * 门户公共引导信息（未登录可读）：品牌数据（A1）+ 注册开关状态 + 初始化标记。
@@ -19,6 +21,8 @@ const REGISTRATION_MODES: RegistrationMode[] = ['closed', 'open', 'invite'];
 portalRouter.get('/portal/bootstrap', async (_req, res) => {
   const mode = (getSetting('REGISTRATION_MODE') ?? 'closed') as RegistrationMode;
   const bootstrap: PortalBootstrap = {
+    appDomainRoot: appDomainRoot(),
+    appPort: appDomainRoot() === 'localhost' ? config.port : null,
     branding: {
       siteName: getSetting('SITE_NAME') || 'AI超级面板',
       tagline: getSetting('SITE_TAGLINE') || '',

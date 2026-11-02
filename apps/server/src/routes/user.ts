@@ -12,7 +12,7 @@ import { publicUserOf } from './shared.js';
 import { registerPurgeTask } from '../lib/audit.js';
 import { getSetting, getSettingBool, getSettingInt } from '../lib/settings.js';
 import { issueCode, verifyCode } from '../lib/verification.js';
-import { activateMembership, cancelOrder, createOrder, isFreePlan, listPlans } from '../lib/billing.js';
+import { activateMembership, assertMembershipTierAllowed, cancelOrder, createOrder, isFreePlan, listPlans } from '../lib/billing.js';
 import { redeem as redeemCodeLib } from '../lib/redeem.js';
 import { audit } from '../lib/audit.js';
 import { recomputeBalance } from '../lib/llm.js';
@@ -192,7 +192,7 @@ userRouter.get(
 userRouter.get(
   '/user/membership',
   h(async (req, res) => {
-    const { getPublicAppQuota, listPlans, listUserOrders } = await import('../lib/billing.js');
+    const { getAppUploadQuota, listPlans, listUserOrders } = await import('../lib/billing.js');
     const { listGroups } = await import('../lib/groups.js');
     const uid = req.user!.id;
     const me = (await getDb().select().from(users).where(eq(users.id, uid)))[0];
@@ -201,7 +201,7 @@ userRouter.get(
       : undefined;
     const activePlan = plan && me?.membershipExpiresAt && me.membershipExpiresAt > Date.now() ? plan : undefined;
     const groupNames = new Map(await (await listGroups()).map((group) => [group.id, group.name]));
-    const publicQuota = await getPublicAppQuota(uid);
+    const uploadQuota = await getAppUploadQuota(uid);
     res.json({
       membership: activePlan && me?.membershipExpiresAt
         ? {
@@ -209,9 +209,9 @@ userRouter.get(
             tier: activePlan.tier,
             groupName: groupNames.get(activePlan.groupId) ?? `#${activePlan.groupId}`,
             expiresAt: me.membershipExpiresAt,
-            publicAppLimit: publicQuota.limit,
-            publicAppsUsed: publicQuota.used,
-            remainingPublicApps: publicQuota.remaining,
+            appUploadLimit: uploadQuota.limit,
+            appsUsed: uploadQuota.used,
+            remainingUploadApps: uploadQuota.remaining,
           }
         : null,
       tokenBalance: await recomputeBalance(uid),
@@ -243,6 +243,7 @@ userRouter.post(
     const body = (req.body ?? {}) as { planId?: number };
     const plan = await (await listPlans(true)).find((item) => item.id === Number(body.planId));
     if (!plan) throw new HttpError(404, 'PLAN_NOT_FOUND', '权益包不存在或已下架');
+    await assertMembershipTierAllowed(req.user!.id, plan);
 
     let orderId: string | null = null;
     await getDb().transaction(async (tx) => {
@@ -311,6 +312,7 @@ userRouter.post(
     const body = (req.body ?? {}) as { planId?: number };
     const plan = await (await listPlans(true)).find((p) => p.id === Number(body.planId));
     if (!plan) throw new HttpError(404, 'PLAN_NOT_FOUND', '套餐不存在或已下架');
+    await assertMembershipTierAllowed(req.user!.id, plan);
     if ((plan.priceCurrency === 'POINTS' && plan.pricePoints > 0) || isFreePlan(plan)) {
       await getDb().transaction(async (tx) => {
         const current = (await tx
