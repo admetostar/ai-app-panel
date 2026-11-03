@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env bash
 # ============================================================
-# build-fpk.sh — 组装 AI-SuperPanel 的飞牛 FPK 包（原生形态）
+# build-fpk.sh — 组装 ai-app-panel 的飞牛 FPK 包（原生形态）
 #
 # 形态（app-develop-internal.skill §8，2026-09 定稿）：
 #   - 原生 FPK：载荷 = deploy/native 自包含包（自带 glibc Node 22 和 PostgreSQL
@@ -43,7 +43,7 @@ build_one() {
   # ① 原生包定位（显式参数 > dist 目录按版本+架构查找）
   local tarball="$NATIVE_TARBALL"
   if [ -z "$tarball" ]; then
-    tarball="$NATIVE_DIST/ai-app-portal-native_${VERSION}_linux_${arch}.tar.gz"
+    tarball="$NATIVE_DIST/ai-app-panel-native_${VERSION}_linux_${arch}.tar.gz"
   fi
   if [ ! -f "$tarball" ]; then
     echo "✗ 缺少原生包 $tarball" >&2
@@ -52,7 +52,7 @@ build_one() {
   fi
 
   local stage
-  stage="$(mktemp -d)/AI-SuperPanel"
+  stage="$(mktemp -d)/ai-app-panel"
   mkdir -p "$stage"
 
   # ② 模板 + 占位符（manifest 版本 / 平台）
@@ -65,7 +65,7 @@ build_one() {
   # ③ 载荷：原生自包含包 → app/server/（安装后 $TRIM_APPDEST/server）
   mkdir -p "$stage/app"
   tar -xzf "$tarball" -C "$stage/app"
-  mv "$stage/app/ai-app-portal-native_${VERSION}_linux_${arch}" "$stage/app/server"
+  mv "$stage/app/ai-app-panel-native_${VERSION}_linux_${arch}" "$stage/app/server"
   # 开发指南/平台文档随包（guideRouter 定位 <载荷根>/assets/；旧 native 包亦补齐）
   mkdir -p "$stage/app/server/assets"
   cp "$REPO/apps/server/assets/app-develop.skill-v0.3.md" \
@@ -93,7 +93,7 @@ build_one() {
   #    a) 内层 app.tgz = gzip(tar(app/** ++ config/** 副本))
   #    b) manifest 按 key 宽度对齐「 = 」并追加 checksum = md5(app.tgz)（安装器完整性校验）
   #    c) 外层 tar.gz：app.tgz 置首 + 其余条目平铺
-  local out="$OUT/AI-SuperPanel_${VERSION}_${platform}.fpk"
+  local out="$OUT/ai-app-panel_${VERSION}_${platform}.fpk"
   rm -f "$out"
   # COPYFILE_DISABLE + --no-xattrs：禁止 macOS tar 把扩展属性打成 ._*/PaxHeader 条目
   export COPYFILE_DISABLE=1

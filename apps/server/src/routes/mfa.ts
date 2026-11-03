@@ -112,7 +112,7 @@ mfaRouter.post(
   requireStepUp,
   h(async (req, res) => {
     const u = req.user!;
-    const { secret, otpauthUri } = await enrollTotp(u.id, getSetting('SITE_NAME') || 'AI超级面板', u.username ?? u.name);
+    const { secret, otpauthUri } = await enrollTotp(u.id, getSetting('SITE_NAME') || 'ai-app-panel', u.username ?? u.name);
     res.json({ secret, otpauthUri });
   }),
 );
@@ -342,4 +342,3 @@ mfaRouter.post(
     res.json({ stepUpUntil: until, ttlSec: stepUpTtlSec() });
   }),
 );
-

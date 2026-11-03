@@ -11,7 +11,7 @@ import fs, { statfsSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import express, { Router } from 'express';
-import { and, eq, gt, inArray, ne, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNotNull, ne, sql } from 'drizzle-orm';
 import type { AppCard, OwnedAppCard } from '@aap/shared';
 import { getDb } from '../db/index.js';
 import {
@@ -92,10 +92,13 @@ appsRunRouter.get(
   '/apps/:id/icon/:filename',
   h(async (req, res) => {
     const app = await loadApp(String(req.params.id));
+    const canView = app?.visibility === 'login'
+      ? Boolean(req.user && req.user.authState === 'full')
+      : Boolean(app && isVisibleInPortal(app, req.user ?? null));
     const filename = String(req.params.filename);
     if (
       !app ||
-      !isVisibleInPortal(app, req.user ?? null) ||
+      !canView ||
       iconFilenameFor(app) !== filename
     ) {
       throw new HttpError(404, 'APP_ICON_NOT_FOUND', '应用图标不存在或不可访问');
@@ -309,6 +312,9 @@ async function updateOwnedAppVisibility(
     if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
     if (app.ownerUserId !== userId) throw new HttpError(403, 'FORBIDDEN', '只有应用归属者可以修改应用设置');
     if (app.kind === 'upstream') throw new HttpError(400, 'NOT_PACKAGE', '仅托管应用可以修改可见范围');
+    if (app.clonedFromAppId && visibility !== 'private') {
+      throw new HttpError(403, 'CLONED_APP_PRIVATE', '站内应用克隆只能保持仅自己可见');
+    }
 
     let rewardPoints = app.publicationRewardPoints;
     let awarded = 0;
@@ -378,7 +384,7 @@ appsRunRouter.put(
     }
     const visibility = body.visibility;
     if (visibility !== 'public' && visibility !== 'login' && visibility !== 'private') {
-      throw new HttpError(400, 'INVALID_VISIBILITY', '可见范围必须是公开、需登录或仅自己');
+      throw new HttpError(400, 'INVALID_VISIBILITY', '可见范围必须是公开、站内或仅自己');
     }
 
     const values = {
@@ -691,6 +697,9 @@ appsRunRouter.get(
         const capabilities = Array.isArray(manifest?.capabilities)
           ? manifest.capabilities.filter((value): value is string => typeof value === 'string')
           : [];
+        const network = Array.isArray(manifest?.network)
+          ? manifest.network.filter((value): value is string => typeof value === 'string')
+          : [];
         return {
           id: r.id,
           name: r.name,
@@ -700,6 +709,7 @@ appsRunRouter.get(
           kind: r.kind as OwnedAppCard['kind'],
           runtimeMode: r.runtimeMode as OwnedAppCard['runtimeMode'],
           visibility: r.visibility as AppCard['visibility'],
+          isClone: r.clonedFromAppId !== null,
           status: (r.healthState as AppCard['status']) ?? 'unknown',
           sort: r.sort,
           accessible: r.enabled,
@@ -712,6 +722,7 @@ appsRunRouter.get(
             ? platform.packageSizeBytes
             : null,
           capabilities,
+          network,
         };
       }),
     });
@@ -729,7 +740,7 @@ appsRunRouter.get(
       .where(and(
         eq(apps.enabled, true),
         ne(apps.kind, 'upstream'),
-        inArray(apps.visibility, ['public', 'login']),
+        eq(apps.visibility, 'public'),
       ));
     const visibleRows = rows.filter((app) => app.ownerUserId !== uid);
     const cards = await Promise.all(visibleRows.map(async (app): Promise<AppCard | null> => {
@@ -752,6 +763,167 @@ appsRunRouter.get(
   }),
 );
 
+appsRunRouter.get(
+  '/apps/site-shared',
+  requireAuth,
+  h(async (req, res) => {
+    const rows = await getDb()
+      .select()
+      .from(apps)
+      .where(and(
+        eq(apps.enabled, true),
+        ne(apps.kind, 'upstream'),
+        eq(apps.visibility, 'login'),
+      ));
+    res.json({
+      apps: rows
+        .filter((app) => app.ownerUserId !== req.user!.id)
+        .map((app): AppCard => ({
+          id: app.id,
+          name: app.name,
+          description: app.description,
+          icon: app.icon,
+          category: app.category,
+          visibility: app.visibility as AppCard['visibility'],
+          accessible: false,
+          status: (app.healthState as AppCard['status']) ?? 'unknown',
+          sort: app.sort,
+          kind: app.kind as AppCard['kind'],
+          runtimeMode: app.runtimeMode as AppCard['runtimeMode'],
+        })),
+    });
+  }),
+);
+
+appsRunRouter.post(
+  '/apps/:id/clone',
+  requireAuth,
+  h(async (req, res) => {
+    const sourceId = String(req.params.id);
+    const cloneId = `clone-${randomBytes(16).toString('hex')}`;
+    const now = Date.now();
+    let cloneIcon: string | null = null;
+    let createdOnDisk = false;
+    let iconOnDisk = false;
+
+    try {
+      await getDb().transaction(async (tx) => {
+        const source = (await tx.select().from(apps).where(eq(apps.id, sourceId)).for('update'))[0];
+        if (!source || !source.enabled || source.kind === 'upstream' || source.visibility !== 'login') {
+          throw new HttpError(404, 'SITE_APP_NOT_FOUND', '站内共享应用不存在或已不可克隆');
+        }
+        if (source.ownerUserId === req.user!.id) {
+          throw new HttpError(409, 'APP_ALREADY_OWNED', '不能克隆自己拥有的应用');
+        }
+
+        const user = (await tx
+          .select({ membershipPlanId: users.membershipPlanId, membershipExpiresAt: users.membershipExpiresAt })
+          .from(users)
+          .where(eq(users.id, req.user!.id))
+          .for('update'))[0];
+        if (!user) throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
+        const plan = user.membershipPlanId && user.membershipExpiresAt && user.membershipExpiresAt > now
+          ? (await tx.select().from(membershipPlans).where(eq(membershipPlans.id, user.membershipPlanId)))[0]
+          : undefined;
+        const used = Number((await tx
+          .select({ count: sql<number>`count(*)` })
+          .from(apps)
+          .where(and(eq(apps.ownerUserId, req.user!.id), isNotNull(apps.clonedFromAppId))))[0]?.count ?? 0);
+        const limit = plan?.appCloneLimit ?? 0;
+        if (used >= limit) {
+          throw new HttpError(403, 'APP_CLONE_LIMIT_REACHED', `当前权益可克隆应用数量已达上限（${used}/${limit}），请升级权益或删除已有克隆`);
+        }
+
+        const sourceDir = appSiteDir(source.id);
+        if (!fs.existsSync(sourceDir)) throw new HttpError(409, 'APP_FILES_NOT_FOUND', '源应用文件已缺失，暂时无法克隆');
+        createdOnDisk = true;
+        fs.cpSync(sourceDir, appSiteDir(cloneId), {
+          recursive: true,
+          errorOnExist: true,
+          filter: (file) => {
+            const relative = path.relative(sourceDir, file);
+            return relative !== 'app.sqlite'
+              && relative !== 'storage'
+              && !relative.startsWith(`storage${path.sep}`);
+          },
+        });
+        const uploadedIcon = iconFilenameFor(source);
+        if (uploadedIcon) {
+          const sourceIcon = path.join(appIconDir(source.id), uploadedIcon);
+          if (!fs.existsSync(sourceIcon)) throw new HttpError(409, 'APP_ICON_NOT_FOUND', '源应用图标文件已缺失，暂时无法克隆');
+          iconOnDisk = true;
+          fs.mkdirSync(appIconDir(cloneId), { recursive: true });
+          fs.copyFileSync(sourceIcon, path.join(appIconDir(cloneId), uploadedIcon));
+          cloneIcon = `/api/apps/${encodeURIComponent(cloneId)}/icon/${uploadedIcon}`;
+        } else {
+          cloneIcon = source.icon;
+        }
+
+        let manifest = safeParse(source.manifestJson);
+        if (manifest) {
+          const cloneName = `${source.name}（副本）`.slice(0, 191);
+          manifest = { ...manifest, name: cloneId, displayName: cloneName };
+          const manifestPath = path.join(appSiteDir(cloneId), 'manifest.json');
+          if (fs.existsSync(manifestPath)) fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+        }
+        const cloneName = `${source.name}（副本）`.slice(0, 191);
+        await tx.insert(apps).values({
+          id: cloneId,
+          name: cloneName,
+          description: source.description,
+          icon: cloneIcon,
+          category: source.category,
+          visibility: 'private',
+          kind: source.kind,
+          ownerUserId: req.user!.id,
+          clonedFromAppId: source.id,
+          manifestJson: manifest ? JSON.stringify(manifest) : source.manifestJson,
+          runtimeMode: source.runtimeMode,
+          reviewStatus: 'none',
+          signatureStatus: null,
+          inputSchema: source.inputSchema,
+          passUser: source.passUser,
+          upstream: '',
+          enabled: true,
+          sort: 0,
+          healthState: 'unknown',
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        const envVars = await tx.select().from(appEnvVars).where(eq(appEnvVars.appId, source.id));
+        if (envVars.length > 0) {
+          await tx.insert(appEnvVars).values(envVars.map((variable) => ({
+            appId: cloneId,
+            name: variable.name,
+            valueEnc: variable.valueEnc,
+            isSecret: variable.isSecret,
+            updatedAt: now,
+          })));
+        }
+      });
+    } catch (error) {
+      if (createdOnDisk) fs.rmSync(appSiteDir(cloneId), { recursive: true, force: true });
+      if (iconOnDisk) fs.rmSync(appIconDir(cloneId), { recursive: true, force: true });
+      throw error;
+    }
+
+    try {
+      await ensureAutoProvisionedToken(cloneId);
+    } catch (error) {
+      await getDb().delete(apps).where(eq(apps.id, cloneId));
+      fs.rmSync(appSiteDir(cloneId), { recursive: true, force: true });
+      if (iconOnDisk) fs.rmSync(appIconDir(cloneId), { recursive: true, force: true });
+      throw error;
+    }
+    await audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.clone', {
+      appId: cloneId,
+      sourceAppId: sourceId,
+    });
+    res.status(201).json({ ok: true, id: cloneId });
+  }),
+);
+
 appsRunRouter.delete(
   '/apps/:id',
   requireStepUp,
@@ -763,7 +935,6 @@ appsRunRouter.delete(
     if (app.kind === 'upstream') throw new HttpError(400, 'NOT_PACKAGE', '仅托管应用可以在个人中心删除');
 
     stopPersistentFor(id);
-    fs.rmSync(appSiteDir(id), { recursive: true, force: true });
     const pointsDeducted = await getDb().transaction(async (tx) => {
       const current = (
         await tx.select().from(apps).where(eq(apps.id, id)).for('update')
@@ -794,6 +965,8 @@ appsRunRouter.delete(
       await tx.delete(apps).where(eq(apps.id, id));
       return deducted;
     });
+    fs.rmSync(appSiteDir(id), { recursive: true, force: true });
+    fs.rmSync(appIconDir(id), { recursive: true, force: true });
     await audit(`user:${req.user!.id}`, req.clientIp ?? null, 'app.delete', { appId: id, pointsDeducted });
     res.json({ ok: true, pointsDeducted });
   }),
@@ -808,7 +981,7 @@ appsRunRouter.post(
     const body = (req.body ?? {}) as { visibility?: unknown };
     const visibility = body.visibility ?? 'public';
     if (visibility !== 'public' && visibility !== 'login' && visibility !== 'private') {
-      throw new HttpError(400, 'INVALID_VISIBILITY', '可见范围必须是公开、需登录或仅自己');
+      throw new HttpError(400, 'INVALID_VISIBILITY', '可见范围必须是公开、站内或仅自己');
     }
     const app = await loadApp(String(req.params.id));
     if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');

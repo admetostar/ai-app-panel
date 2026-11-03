@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { generate as totpGenerate } from 'otplib';
@@ -15,18 +16,53 @@ import { generate as totpGenerate } from 'otplib';
 
 export const PORTAL = 'http://127.0.0.1:9910';
 export const UPSTREAM = 'http://127.0.0.1:9912'; // 避开本地体验用的 9911
-export const INIT_ADMIN_PASSWORD = 'e2e-init-password';
-export const ADMIN_NEW_PASSWORD = 'e2e-new-password-123';
+export const INIT_ADMIN_PASSWORD = 'E2e-init-password-123';
+export const ADMIN_NEW_PASSWORD = 'E2e-new-password-123';
 /** 预置普通用户（mustChangePassword=1）：验收「普通用户不强制绑 MFA」回归。
  *  密码用常量显式传入（worker 进程读不到 setup 进程的模块状态） */
 export const NORMAL_USERNAME = 'e2e-normal';
-export const NORMAL_INIT_PASSWORD = 'e2e-normal-init-password';
+export const NORMAL_INIT_PASSWORD = 'E2e-normal-init-password-123';
 
 const RUN_DIR = path.join(__dirname, '.run');
 const SERVER_LOG = path.join(RUN_DIR, 'server.log');
+const SCHEMA_FILE = path.join(RUN_DIR, 'database-schema');
+const SERVER_DIR = path.join(__dirname, '../apps/server');
 
 let portal: ChildProcess | null = null;
 let upstream: http.Server | null = null;
+
+function baseDatabaseUrl(): string {
+  const url = process.env.E2E_DATABASE_URL ?? process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
+  if (!url) {
+    throw new Error('E2E tests require E2E_DATABASE_URL, TEST_DATABASE_URL, or DATABASE_URL');
+  }
+  return url;
+}
+
+function scopedDatabaseUrl(url: string, schema: string): string {
+  const scoped = new URL(url);
+  scoped.searchParams.set('options', `-c search_path=${schema}`);
+  return scoped.toString();
+}
+
+function runPg(url: string, query: string, values: unknown[] = []): Array<Record<string, unknown>> {
+  const script =
+    "const {Pool}=require('pg');const pool=new Pool({connectionString:process.env.E2E_PG_URL});" +
+    "(async()=>{try{const result=await pool.query(process.argv[1],JSON.parse(process.argv[2]));" +
+    "console.log(JSON.stringify(result.rows));}finally{await pool.end();}})()" +
+    ".catch(error=>{console.error(error);process.exitCode=1});";
+  const output = execFileSync(
+    'node',
+    ['-e', script, query, JSON.stringify(values)],
+    { cwd: SERVER_DIR, env: { ...process.env, E2E_PG_URL: url } },
+  ).toString();
+  return JSON.parse(output) as Array<Record<string, unknown>>;
+}
+
+export function runDatabaseQuery(query: string, values: unknown[] = []): Array<Record<string, unknown>> {
+  const schema = fs.readFileSync(SCHEMA_FILE, 'utf8').trim();
+  return runPg(scopedDatabaseUrl(baseDatabaseUrl(), schema), query, values);
+}
 
 export async function setup(): Promise<void> {
   fs.mkdirSync(RUN_DIR, { recursive: true });
@@ -39,6 +75,13 @@ export async function setup(): Promise<void> {
   await new Promise((r) => setTimeout(r, 800));
   fs.rmSync(path.join(RUN_DIR, 'data'), { recursive: true, force: true });
   fs.writeFileSync(SERVER_LOG, '');
+
+  const databaseUrl = baseDatabaseUrl();
+  const schema = `ai_app_panel_e2e_${randomBytes(8).toString('hex')}`;
+  fs.writeFileSync(SCHEMA_FILE, schema);
+  runPg(databaseUrl, `CREATE SCHEMA "${schema}"`);
+  process.env.E2E_DATABASE_URL = databaseUrl;
+  process.env.DATABASE_URL = scopedDatabaseUrl(databaseUrl, schema);
 
   // mock 上游应用
   upstream = http.createServer((req, res) => {
@@ -58,14 +101,14 @@ export async function setup(): Promise<void> {
   await new Promise<void>((r) => upstream!.listen(9912, '127.0.0.1', r));
 
   // 门户服务（tsx 直跑，生产 web 产物由 WEB_DIST 指定）
-  const serverDir = path.join(__dirname, '../apps/server');
-  portal = spawn(process.execPath, [path.join(serverDir, 'node_modules', 'tsx', 'dist', 'cli.mjs'), 'src/server.ts'], {
-    cwd: serverDir,
+  portal = spawn(process.execPath, [path.join(SERVER_DIR, 'node_modules', 'tsx', 'dist', 'cli.mjs'), 'src/server.ts'], {
+    cwd: SERVER_DIR,
     env: {
       ...process.env,
       PORT: '9910',
       DATA_DIR: path.join(RUN_DIR, 'data'),
       WEB_DIST: path.join(__dirname, '../apps/web/dist'),
+      MIGRATIONS_SCHEMA: schema,
       ADMIN_INITIAL_PASSWORD: INIT_ADMIN_PASSWORD,
       ADMIN_USERNAME: 'admin',
     },
@@ -84,18 +127,12 @@ export async function setup(): Promise<void> {
   const cookie = (login.headers.getSetCookie().find((c) => c.startsWith('aap_sid=')) ?? '').split(';')[0];
 
   // 记录初始 admin 行（用于配置后还原初始态，F3 继续验收首启向导）。
-  // better-sqlite3 须从 server 的 node_modules 解析（pnpm 严格布局），故 cwd 指向 apps/server。
-  const dbPath = path.join(RUN_DIR, 'data', 'app.db');
-  const runDb = (script: string, ...args: string[]): string =>
-    execFileSync('node', ['-e', script, dbPath, ...args], { cwd: path.join(__dirname, '../apps/server') }).toString();
-  const pristine = JSON.parse(
-    runDb(
-      "const D=require('better-sqlite3');const db=new D(process.argv[1],{readonly:true});" +
-        "const u=db.prepare('SELECT * FROM users WHERE username=?').get('admin');" +
-        "const c=db.prepare('SELECT password_hash FROM local_credentials WHERE user_id=?').get(u.id);" +
-        "console.log(JSON.stringify({...u,__password_hash:c.password_hash}))",
-    ),
-  ) as Record<string, unknown> & { __password_hash: string };
+  const [pristine] = runDatabaseQuery(
+    'SELECT users.*, local_credentials.password_hash AS "__password_hash" ' +
+      'FROM users JOIN local_credentials ON local_credentials.user_id = users.id WHERE users.username = $1',
+    ['admin'],
+  );
+  if (!pristine) throw new Error('E2E 数据库中未找到初始管理员');
 
   // 强制流程门禁（P1-6）：改密 → 步升 → 绑 TOTP，之后管理端点才放行
   const cp = await api('POST', '/api/auth/change-password', { currentPassword: INIT_ADMIN_PASSWORD, newPassword: ADMIN_NEW_PASSWORD }, cookie);
@@ -119,8 +156,6 @@ export async function setup(): Promise<void> {
   );
   if (plan.status >= 300) throw new Error(`零价权益包创建失败: ${JSON.stringify(plan.body)}`);
 
-  const settings = await api('PUT', '/api/admin/settings', { REGISTRATION_MODE: 'open' }, cookie);
-  if (settings.status >= 300) throw new Error(`开放注册失败: ${JSON.stringify(settings.body)}`);
   const app = await api(
     'POST',
     '/api/admin/apps',
@@ -150,21 +185,57 @@ export async function setup(): Promise<void> {
   {
     const { __password_hash, ...userRow } = pristine;
     const cols = Object.keys(userRow);
-    runDb(
-      "const D=require('better-sqlite3');const db=new D(process.argv[1]);" +
-        `db.prepare('UPDATE users SET ${cols.map((c) => `${c}=@${c}`).join(', ')} WHERE username=@un').run(JSON.parse(process.argv[2]));` +
-        "db.prepare('DELETE FROM totp_secrets WHERE user_id=(SELECT id FROM users WHERE username=?)').run('admin');" +
-        "db.prepare('DELETE FROM recovery_codes WHERE user_id=(SELECT id FROM users WHERE username=?)').run('admin');" +
-        "db.prepare('UPDATE local_credentials SET password_hash=? WHERE user_id=(SELECT id FROM users WHERE username=?)').run(process.argv[3],'admin');",
-      JSON.stringify({ ...userRow, un: 'admin' }),
-      __password_hash as string,
+    const assignments = cols
+      .map((column, index) => `"${column.replaceAll('"', '""')}" = $${index + 1}`)
+      .join(', ');
+    runDatabaseQuery(
+      `UPDATE users SET ${assignments} WHERE username = $${cols.length + 1}`,
+      [...Object.values(userRow), 'admin'],
+    );
+    runDatabaseQuery(
+      'DELETE FROM totp_secrets WHERE user_id = (SELECT id FROM users WHERE username = $1)',
+      ['admin'],
+    );
+    runDatabaseQuery(
+      'DELETE FROM recovery_codes WHERE user_id = (SELECT id FROM users WHERE username = $1)',
+      ['admin'],
+    );
+    runDatabaseQuery(
+      'UPDATE local_credentials SET password_hash = $1 WHERE user_id = (SELECT id FROM users WHERE username = $2)',
+      [__password_hash, 'admin'],
     );
   }
 }
 
 export async function teardown(): Promise<void> {
-  portal?.kill('SIGTERM');
-  upstream?.close();
+  if (portal) {
+    const process = portal;
+    portal = null;
+    if (process.exitCode === null && process.signalCode === null) {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('E2E 服务未能在 10 秒内退出')), 10_000);
+        process.once('exit', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        process.kill('SIGTERM');
+      });
+    }
+  }
+  if (upstream) {
+    const server = upstream;
+    upstream = null;
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  }
+  if (fs.existsSync(SCHEMA_FILE)) {
+    const schema = fs.readFileSync(SCHEMA_FILE, 'utf8').trim();
+    runPg(baseDatabaseUrl(), `DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    fs.rmSync(SCHEMA_FILE);
+  }
 }
 
 async function api(

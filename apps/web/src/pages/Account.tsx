@@ -32,9 +32,11 @@ import { useStepUp, withStepUp } from '../components/StepUpModal';
 import { registerNewPasskey } from '../lib/mfaClient';
 import { AppSettingsModal } from '../components/AppSettingsModal';
 import { TierBadge } from '../components/TierBadge';
-import type { MembershipOrderSummary, MembershipPlanSummary, OwnedAppCard, UserMembershipData } from '@aap/shared';
+import type { MembershipOrderSummary, MembershipPlanSummary, OwnedAppCard, PortalBootstrap, UserMembershipData } from '@aap/shared';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '@aap/shared';
-import { formatMembershipOrderPrice, formatMembershipPlanPrice, isFreeMembershipPlan } from '../lib/membershipPricing';
+import { formatEntitlementCount, formatMembershipOrderPrice, formatMembershipPlanPrice, isFreeMembershipPlan } from '../lib/membershipPricing';
+import { downloadInviteIdentityCard } from '../lib/inviteIdentityCard';
+import { bytesToBase64 } from '../lib/base64';
 
 // ---------- 主页面 ----------
 
@@ -58,6 +60,7 @@ export function AccountPage() {
   const [stepUpModal, ensureStepUp] = useStepUp(activeUserPageTheme);
   const [profileForm] = Form.useForm();
   const [saving, setSaving] = useState(false);
+  const [exportingInviteCard, setExportingInviteCard] = useState(false);
   const [emailModal, setEmailModal] = useState(false);
   const [emailForm] = Form.useForm();
   const [emailCooldown, setEmailCooldown] = useState(0);
@@ -138,6 +141,41 @@ export function AccountPage() {
       message.error(err instanceof Error ? err.message : '保存失败');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function exportInviteCard(): Promise<void> {
+    if (!user) {
+      message.error('请先登录后再导出邀请电子卡');
+      return;
+    }
+    setExportingInviteCard(true);
+    try {
+      const [invite, bootstrap] = await Promise.all([
+        qc.fetchQuery({
+          queryKey: ['user-invite'],
+          queryFn: () => api<{ code: string; useCount: number }>('/api/user/invite'),
+          staleTime: 30_000,
+        }),
+        qc.fetchQuery({
+          queryKey: ['bootstrap'],
+          queryFn: () => api<PortalBootstrap>('/api/portal/bootstrap'),
+          staleTime: 30_000,
+        }),
+      ]);
+      await downloadInviteIdentityCard({
+        siteName: bootstrap.branding.siteName || 'ai-app-panel',
+        logo: bootstrap.branding.logo,
+        userName: user.name,
+        code: invite.code,
+        useCount: invite.useCount,
+        theme: activeUserPageTheme,
+      });
+      message.success('邀请电子卡 PNG 已导出');
+    } catch (error) {
+      message.error(error instanceof Error ? `导出失败：${error.message}` : '导出失败，请稍后重试');
+    } finally {
+      setExportingInviteCard(false);
     }
   }
 
@@ -266,9 +304,14 @@ export function AccountPage() {
                         {user.role === 'admin' ? <Tag color="gold">管理员</Tag> : <Tag>用户</Tag>}
                       </Descriptions.Item>
                     </Descriptions>
-                    <Button type="primary" htmlType="submit" loading={saving}>
-                      保存
-                    </Button>
+                    <Space wrap>
+                      <Button type="primary" htmlType="submit" loading={saving}>
+                        保存
+                      </Button>
+                      <Button loading={exportingInviteCard} onClick={() => void exportInviteCard()}>
+                        导出邀请电子卡
+                      </Button>
+                    </Space>
                   </Form>
                 </Card>
                 <Card size="small" title="绑定邮箱">
@@ -765,21 +808,31 @@ function MembershipTopupTab({ section, theme }: {
               <Typography.Text strong className="membership-current-plan__value">{d?.membership?.groupName ?? '—'}</Typography.Text>
             </div>
             <div className="membership-current-plan__item">
-              <Typography.Text type="secondary">可上传应用</Typography.Text>
+              <Typography.Text type="secondary">可创建应用</Typography.Text>
               <Typography.Text strong className="membership-current-plan__value">
-                {d?.membership ? `${d.membership.remainingUploadApps} / ${d.membership.appUploadLimit} 个` : '0 个'}
+                {d?.membership
+                  ? `${formatEntitlementCount(d.membership.remainingUploadApps)} / ${formatEntitlementCount(d.membership.appUploadLimit, ' 个')}`
+                  : '—'}
+              </Typography.Text>
+            </div>
+            <div className="membership-current-plan__item">
+              <Typography.Text type="secondary">可克隆应用</Typography.Text>
+              <Typography.Text strong className="membership-current-plan__value">
+                {d?.membership
+                  ? `${formatEntitlementCount(d.membership.remainingCloneApps)} / ${formatEntitlementCount(d.membership.appCloneLimit, ' 个')}`
+                  : '—'}
               </Typography.Text>
             </div>
             <div className="membership-current-plan__item">
               <Typography.Text type="secondary">剩余 Token 额度</Typography.Text>
               <Typography.Text strong className="membership-current-plan__value">
-                {d?.tokenBalance?.toLocaleString() ?? '—'}
+                {d?.tokenBalance === undefined ? '—' : formatEntitlementCount(d.tokenBalance)}
               </Typography.Text>
             </div>
             <div className="membership-current-plan__item">
               <Typography.Text type="secondary">可用积分</Typography.Text>
               <Typography.Text strong className="membership-current-plan__value">
-                {d?.pointsBalance?.toLocaleString() ?? '—'}
+                {d?.pointsBalance === undefined ? '—' : formatEntitlementCount(d.pointsBalance)}
               </Typography.Text>
             </div>
           </div>
@@ -789,9 +842,6 @@ function MembershipTopupTab({ section, theme }: {
 
       {section === 'acquire' ? (
       <Card size="small" className="membership-plan-card" title="可选择权益包">
-        <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-          权益获取方式：积分达到方案要求时可直接兑换；也可使用有效兑换码获取指定订阅或 Token 额度。其他方案按页面账单说明办理。
-        </Typography.Paragraph>
         {d?.plans.length ? (
           <div className="membership-plan-grid">
             {d.plans.map((plan) => (
@@ -809,8 +859,9 @@ function MembershipTopupTab({ section, theme }: {
                 <div className="membership-plan-option__details">
                   <div><Typography.Text type="secondary">权益分组</Typography.Text><Typography.Text>{plan.groupName}</Typography.Text></div>
                   <div><Typography.Text type="secondary">可用时间</Typography.Text><Typography.Text>{membershipDurationLabel(plan.durationDays)}</Typography.Text></div>
-                  <div><Typography.Text type="secondary">可上传应用</Typography.Text><Typography.Text>{plan.appUploadLimit} 个</Typography.Text></div>
-                  <div><Typography.Text type="secondary">Token 额度</Typography.Text><Typography.Text>{plan.tokenGrant.toLocaleString()}</Typography.Text></div>
+                  <div><Typography.Text type="secondary">可创建应用</Typography.Text><Typography.Text>{formatEntitlementCount(plan.appUploadLimit, ' 个')}</Typography.Text></div>
+                  <div><Typography.Text type="secondary">可克隆应用</Typography.Text><Typography.Text>{formatEntitlementCount(plan.appCloneLimit, ' 个')}</Typography.Text></div>
+                  <div><Typography.Text type="secondary">Token 额度</Typography.Text><Typography.Text>{formatEntitlementCount(plan.tokenGrant)}</Typography.Text></div>
                 </div>
                 <div className="membership-plan-option__footer">
                   <Typography.Text strong style={{ color: 'var(--aap-primary)' }}>{formatMembershipPlanPrice(plan)}</Typography.Text>
@@ -933,7 +984,7 @@ function MembershipTopupTab({ section, theme }: {
       ) : null}
 
       <Modal
-        title="订阅账单"
+        title="订阅详情"
         open={selectedPlan !== null}
         onCancel={() => setSelectedPlan(null)}
         footer={null}
@@ -942,47 +993,39 @@ function MembershipTopupTab({ section, theme }: {
       >
         {selectedPlan ? (
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-            <div style={{
-              padding: 16,
-              borderRadius: 8,
-              background: theme === 'dark' ? '#14171c' : 'var(--aap-bg-layout)',
-              border: `1px solid ${theme === 'dark' ? '#2e333d' : 'var(--aap-border)'}`,
-            }}>
-              <Typography.Text type="secondary">订阅方案</Typography.Text>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 6 }}>
-                <Space align="center" size={8}>
-                  <TierBadge tier={selectedPlan.tier} />
-                  <Typography.Title level={4} style={{ margin: 0 }}>{selectedPlan.name}</Typography.Title>
-                </Space>
-                <Tag color="blue">{membershipDurationLabel(selectedPlan.durationDays)}</Tag>
+            <section className="aap-subscription-bill" aria-label="订阅详情">
+              <header className="aap-subscription-bill__header">
+                <span>订阅方案</span>
+                <strong>{selectedPlan.name}</strong>
+                <span><b>等级 {selectedPlan.tier}</b><i />{membershipDurationLabel(selectedPlan.durationDays)}</span>
+              </header>
+              <div className="aap-subscription-bill__details">
+                <div><span>权益等级</span><strong>{selectedPlan.tier}<small>级</small></strong></div>
+                <div><span>服务分组</span><strong>{selectedPlan.groupName}</strong></div>
+                <div><span>可创建应用</span><strong>{formatEntitlementCount(selectedPlan.appUploadLimit, ' 个')}</strong></div>
+                <div><span>可克隆应用</span><strong>{formatEntitlementCount(selectedPlan.appCloneLimit, ' 个')}</strong></div>
+                <div><span>Token 额度</span><strong>{formatEntitlementCount(selectedPlan.tokenGrant)}</strong></div>
               </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '10px 16px', marginTop: 16 }}>
-                    <Typography.Text type="secondary">权益等级</Typography.Text>
-                    <TierBadge tier={selectedPlan.tier} />
-                    <Typography.Text type="secondary">服务分组</Typography.Text>
-                    <Typography.Text>{selectedPlan.groupName}</Typography.Text>
-                <Typography.Text type="secondary">可上传应用</Typography.Text>
-                <Tag color="green" style={{ borderRadius: 999, marginInlineEnd: 0 }}>{selectedPlan.appUploadLimit} 个</Tag>
-                <Typography.Text type="secondary">Token 额度</Typography.Text>
-                <Tag color="green" style={{ borderRadius: 999, marginInlineEnd: 0 }}>{selectedPlan.tokenGrant.toLocaleString()}</Tag>
+              <div className="aap-subscription-bill__total">
+                <strong>应付总额</strong>
+                <span>{formatMembershipPlanPrice(selectedPlan)}</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderTop: '1px solid var(--aap-border)', marginTop: 16, paddingTop: 14 }}>
-                <Typography.Text strong>应付总额</Typography.Text>
-                <Typography.Title level={3} style={{ margin: 0, color: 'var(--aap-primary)' }}>{formatMembershipPlanPrice(selectedPlan)}</Typography.Title>
-              </div>
+            </section>
+            <div className={`aap-subscription-bill__notice${selectedPlan.priceCurrency === 'POINTS' && (d?.pointsBalance ?? 0) < selectedPlan.pricePoints ? ' is-warning' : ''}`}>
+              <strong>{selectedPlan.priceCurrency === 'POINTS' ? '积分兑换' : '订阅说明'}</strong>
+              {selectedPlan.priceCurrency === 'POINTS' ? (
+                <p>
+                  需支付 <b>{selectedPlan.pricePoints.toLocaleString()}</b> 积分，当前余额 <b>{(d?.pointsBalance ?? 0).toLocaleString()}</b> 积分。
+                  积分足额后立即扣减并开通。
+                </p>
+              ) : (
+                <p>
+                  {isFreeMembershipPlan(selectedPlan)
+                    ? '此权益包免费，确认后立即开通。'
+                    : '提交订单后请完成付款，由管理员确认到账后开通订阅权益。'}
+                </p>
+              )}
             </div>
-            <Alert
-              type={selectedPlan.priceCurrency === 'POINTS' && (d?.pointsBalance ?? 0) < selectedPlan.pricePoints ? 'warning' : 'info'}
-              showIcon
-              message={selectedPlan.priceCurrency === 'POINTS' ? '积分兑换' : '确认订阅方案'}
-              description={
-                selectedPlan.priceCurrency === 'POINTS'
-                  ? `兑换需要 ${selectedPlan.pricePoints.toLocaleString()} 积分，当前余额 ${(d?.pointsBalance ?? 0).toLocaleString()} 积分。积分足额后立即扣减并开通。`
-                  : isFreeMembershipPlan(selectedPlan)
-                    ? '这是零价权益包，确认后立即开通。'
-                    : '提交订单后请完成付款；当前由管理员人工确认到账，确认后订阅权益自动生效。'
-              }
-            />
             {selectedPlan.redeemUrl ? (
               <div style={{ textAlign: 'right' }}>
                 <Typography.Link
@@ -1021,6 +1064,20 @@ function MembershipTopupTab({ section, theme }: {
 
 type MyAppRow = OwnedAppCard;
 
+const PLATFORM_CAPABILITY_ICONS: Record<string, { file: string; label: string }> = {
+  db: { file: 'database.svg', label: '数据库' },
+  llm: { file: 'llm.svg', label: '大模型' },
+  storage: { file: 'storage.svg', label: '存储' },
+};
+
+function platformCapabilityIcons(app: MyAppRow): Array<{ file: string; label: string }> {
+  const icons = app.capabilities
+    .map((capability) => PLATFORM_CAPABILITY_ICONS[capability])
+    .filter((icon): icon is { file: string; label: string } => icon !== undefined);
+  if (app.network?.length) icons.push({ file: 'network.svg', label: '网络白名单' });
+  return icons;
+}
+
 function formatPackageSize(bytes: number | null): string {
   if (bytes == null) return '未记录（旧版本）';
   if (bytes < 1024) return `${bytes} B`;
@@ -1056,7 +1113,7 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
     setUploading(true);
     setLastError(null);
     try {
-      const dataBase64 = String(await f.arrayBuffer().then((b) => btoa(String.fromCharCode(...new Uint8Array(b)))));
+      const dataBase64 = bytesToBase64(new Uint8Array(await f.arrayBuffer()));
       const r = await api<{ id: string }>('/api/apps/submit', { method: 'POST', json: { filename: f.name, dataBase64 } });
       message.success(`包「${r.id}」上传成功，默认仅自己可见`);
       void qc.invalidateQueries({ queryKey: ['my-apps'] });
@@ -1072,7 +1129,7 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Card size="small" title="上传 .awpk 包" extra={<Tag bordered={false} color="blue" style={{ fontSize: 11 }}>python 沙箱运行时已上线</Tag>}>
         <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-          平台按当前权益包限制可上传应用数量；应用上传后默认仅自己可见，发布为公开不再受数量限制。
+          平台按当前权益包限制可创建应用数量（通过上传应用包创建）；创建后默认仅自己可见，发布为公开不再受数量限制。
         </Typography.Paragraph>
         <Button danger disabled={uploading} onClick={() => fileInputRef.current?.click()}>
           选择文件
@@ -1135,18 +1192,27 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
               },
               {
                 title: '平台支持',
-                width: 126,
-                render: (_, app) => app.capabilities.length > 0
-                  ? <Space size={[4, 4]} wrap>{app.capabilities.map((capability) => (
-                    <Tag
-                      key={capability}
-                      color="green"
-                      style={{ borderRadius: 999, marginInlineEnd: 0 }}
-                    >
-                      {capability}
-                    </Tag>
-                  ))}</Space>
-                  : <Typography.Text type="secondary">无</Typography.Text>,
+                width: 112,
+                render: (_, app) => {
+                  const icons = platformCapabilityIcons(app);
+                  return icons.length > 0
+                    ? (
+                      <Space size={6}>
+                        {icons.map((icon) => (
+                          <img
+                            key={icon.file}
+                            src={withBase(`/assets/ui-icons/${icon.file}`)}
+                            alt={icon.label}
+                            title={icon.label}
+                            width={20}
+                            height={20}
+                            style={{ display: 'block' }}
+                          />
+                        ))}
+                      </Space>
+                    )
+                    : <Typography.Text type="secondary">—</Typography.Text>;
+                },
               },
               { title: '运行', width: 88, render: (_, r) => r.kind === 'html' ? 'HTML 页面' : r.runtimeMode === 'invoked' ? '按调用' : r.runtimeMode === 'persistent' ? '持久服务' : '—' },
               {
@@ -1157,7 +1223,7 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
                     color={r.visibility === 'public' ? 'green' : r.visibility === 'private' ? 'default' : 'blue'}
                     title={r.visibility === 'restricted' ? '仅满足管理员指定分组或账号条件的登录用户可访问' : undefined}
                   >
-                    {r.visibility === 'public' ? '公开' : r.visibility === 'private' ? '仅自己' : '需登录'}
+                    {r.visibility === 'public' ? '公开' : r.visibility === 'private' ? '仅自己' : '站内'}
                   </Tag>
                 ),
               },

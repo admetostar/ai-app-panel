@@ -1,20 +1,20 @@
-﻿# AI超级面板 — Docker Compose
+# ai-app-panel — Docker Compose
 # 用法：cd deploy/docker && docker compose up -d
 # PostgreSQL 数据库与门户文件分别由 Docker 命名卷持久化；首次启动看日志获取初始管理员密码：
 #   docker compose logs | grep -A4 "初始管理员凭据"
-name: ai-superpanel
+name: ai-app-panel
 
 services:
   postgres:
     image: postgres:17-alpine
-    container_name: ai-superpanel-db
+    container_name: ai-app-panel-db
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-ai_app_portal}
-      POSTGRES_USER: ${POSTGRES_USER:-aap}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_app_panel}
+      POSTGRES_USER: ${POSTGRES_USER:-ai_app_panel}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in deploy/docker/.env}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - ai-app-panel-postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 10s
@@ -27,9 +27,9 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
     # 本地构建镜像；正式部署改为拉取发布镜像：
-    #   image: ghcr.io/neon9809/ai-superpanel:latest（CI 随 tag 自动发布多架构）
-    image: ai-superpanel:latest
-    container_name: ai-superpanel
+    #   image: ghcr.io/admetostar/ai-app-panel:latest（CI 随 tag 自动发布多架构）
+    image: ai-app-panel:latest
+    container_name: ai-app-panel
     restart: unless-stopped
     depends_on:
       postgres:
@@ -39,19 +39,19 @@ services:
       - "443:8443"    # HTTPS（配置证书后启用）
     volumes:
       # Logo 上传到 /data/admin/site-logo；/data 父目录由此命名卷持久化。
-      - portal-data:/data
+      - ai-app-panel-data:/data
       # 纯门户模式（反代外置给 Caddy/nginx）时不需要暴露 8443
     environment:
       TRUST_PROXY: "0"           # 有前置反代（nginx/Caddy）时改为 1
       # .awpk Python 运行时入口：容器内 REPO_ROOT 推导失效（代码在 /out），
       # 必须显式指定，否则所有 Python 包执行报 runner.py 缺失
       AAP_RUNNER: "/out/aap-sdk/aap_runtime/runner.py"
-      # 沙箱降权（默认开启）：Python 包进程以预建非特权用户 aap(10001) 运行。
-      # 存量部署迁移数据后需确保应用目录属主为 10001:10001
+      # 沙箱降权（默认开启）：Python 包进程以预建非特权用户 ai-app-panel(10001) 运行。
+      # 新项目数据目录属主为 10001:10001
       # （开放注册 + 允许用户上传包的部署必须启用，否则任意注册用户可读全站凭据哈希）
       SANDBOX_UID: "10001"
       SANDBOX_GID: "10001"
-      DATABASE_URL: "postgresql://${POSTGRES_USER:-aap}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_app_portal}"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-ai_app_panel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_app_panel}"
       MIGRATIONS_DIR: "/out/drizzle-pg"
       # 进一步加固（可选）：以非 root 运行主进程（注意先把数据卷属主改为 10001:10001）
       # user: "10001:10001"
@@ -59,6 +59,6 @@ services:
       # ADMIN_INITIAL_PASSWORD: ""
 
 volumes:
-  postgres-data:
-  portal-data:
-    name: ai-superpanel-data
+  ai-app-panel-postgres-data:
+  ai-app-panel-data:
+    name: ai-app-panel-data

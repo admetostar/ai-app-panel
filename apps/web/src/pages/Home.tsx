@@ -8,7 +8,7 @@ import type { AppCard, MembershipPlanSummary, PortalBootstrap } from '@aap/share
 import { api } from '../api/client';
 import { useSession } from '../state/session';
 import { GUIDE_FAQ_ITEMS } from '../lib/guideFaq';
-import { formatMembershipPlanPrice } from '../lib/membershipPricing';
+import { formatEntitlementCount, formatMembershipPlanPrice } from '../lib/membershipPricing';
 import { PortalAppCard } from '../components/PortalAppCard';
 import { TierBadge } from '../components/TierBadge';
 
@@ -38,7 +38,7 @@ export function HomePage() {
     queryFn: () => api<{ plans: MembershipPlanSummary[] }>('/api/portal/plans'),
   });
   const planRows = plans.data?.plans ?? [];
-  const siteName = boot.data?.branding.siteName ?? 'AI超级面板';
+  const siteName = boot.data?.branding.siteName ?? 'ai-app-panel';
 
   useEffect(() => {
     if (!location.hash) return;
@@ -153,8 +153,9 @@ export function HomePage() {
                   <div className="aap-home-plan-card__price">{formatMembershipPlanPrice(plan)}<span> / 套</span></div>
                   <div className="aap-home-plan-card__features">
                     <div><span>权益分组</span><strong>{plan.groupName}</strong></div>
-                    <div><span>可上传应用</span><strong>{plan.appUploadLimit} 个</strong></div>
-                    <div><span>赠送额度</span><strong>{plan.tokenGrant.toLocaleString()}</strong></div>
+                    <div><span>可创建应用</span><strong>{formatEntitlementCount(plan.appUploadLimit, ' 个')}</strong></div>
+                    <div><span>可克隆应用</span><strong>{formatEntitlementCount(plan.appCloneLimit, ' 个')}</strong></div>
+                    <div><span>赠送额度</span><strong>{formatEntitlementCount(plan.tokenGrant)}</strong></div>
                     <div><span>有效时间</span><strong>{plan.durationDays >= 100_000 ? '长期' : `${plan.durationDays} 天`}</strong></div>
                   </div>
                   <Button

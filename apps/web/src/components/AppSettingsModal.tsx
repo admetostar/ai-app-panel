@@ -198,12 +198,21 @@ export function AppSettingsModal({ app, open, onClose, onSaved, theme }: {
                         message="当前应用由管理员设置为指定范围可见；保存后会按下方选择的范围生效。"
                       />
                     ) : null}
+                    {app.isClone ? (
+                      <Alert
+                        type="info"
+                        showIcon
+                        style={{ marginBottom: 16 }}
+                        message="站内应用克隆固定为仅自己可见；删除克隆后会归还一个可克隆名额。"
+                      />
+                    ) : null}
                     <Form.Item name="visibility" label="可见范围" rules={[{ required: true }]}>
                       <Select
+                        disabled={app.isClone}
                         popupClassName={`aap-account-modal-select-dropdown aap-account-modal-select-dropdown--${theme}`}
                         options={[
                           { value: 'public', label: '公开 — 所有人都可以发现并访问' },
-                          { value: 'login', label: '需登录 — 登录用户可以发现并访问' },
+                          { value: 'login', label: '站内 — 他人可克隆，不可直接访问' },
                           { value: 'private', label: '仅自己 — 只有你可以发现并访问' },
                         ]}
                       />

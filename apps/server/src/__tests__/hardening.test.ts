@@ -35,8 +35,10 @@ import { signIdentity, verifyIdentity } from '../gateway/identity.js';
 import { hasLeadingZeroBits } from '../lib/pow.js';
 import { appendLedger, cachedBalance, createAppToken, grantTokens, precheck, recomputeBalance, settleEstimate } from '../lib/llm.js';
 import { HttpError } from '../lib/httpError.js';
-import { apps, inviteCodes, userGroupMembers, userGroups, verificationCodes } from '../db/schema.js';
+import { appEnvVars, apps, userGroupMembers, userGroups } from '../db/schema.js';
 import { writeLocalCredentials } from '../lib/bootstrap.js';
+import { encryptSecret } from '../lib/cryptoSecrets.js';
+import { createPlan, getAppCloneQuota } from '../lib/billing.js';
 
 let server: Server;
 let base = '';
@@ -45,6 +47,7 @@ let adminCookie = '';
 let ownerCookie = '';
 let otherCookie = '';
 let ownerId = 0;
+let otherId = 0;
 
 function zipPkg(files: Record<string, string>): Buffer {
   return testPackage(files);
@@ -113,7 +116,8 @@ beforeAll(async () => {
   ownerId = Number(o!.id);
   await writeLocalCredentials(ownerId, 'owner-password');
   const [t] = await getDb().insert(users).values({ kind: 'local', username: 'other', role: 'user', createdAt: Date.now() }).returning({ id: users.id });
-  await writeLocalCredentials(t!.id, 'other-password');
+  otherId = t!.id;
+  await writeLocalCredentials(otherId, 'other-password');
 
   adminCookie = await sessionCookieFor(Number(a!.id));
   ownerCookie = await login('pkgowner', 'owner-password');
@@ -507,7 +511,10 @@ describe('公开可见性与发布', () => {
     expect(loginVisibility.status).toBe(200);
     expect(await loginVisibility.json()).toMatchObject({ visibility: 'login' });
     const sharedLoginResponse = await fetch(`${base}/api/apps/shared`, { headers: { cookie: otherCookie } });
-    expect(((await sharedLoginResponse.json()) as { apps: Array<{ id: string }> }).apps.some((item) => item.id === 'rev-app')).toBe(true);
+    expect(((await sharedLoginResponse.json()) as { apps: Array<{ id: string }> }).apps.some((item) => item.id === 'rev-app')).toBe(false);
+    const siteSharedResponse = await fetch(`${base}/api/apps/site-shared`, { headers: { cookie: otherCookie } });
+    expect(((await siteSharedResponse.json()) as { apps: Array<{ id: string }> }).apps.some((item) => item.id === 'rev-app')).toBe(true);
+    expect((await getAppHost('rev-app', '/', { cookie: otherCookie })).status).toBe(403);
 
     const privateVisibility = await fetch(`${base}/api/apps/rev-app/publish`, {
       method: 'POST',
@@ -532,6 +539,103 @@ describe('公开可见性与发布', () => {
     });
     expect(restorePublic.status).toBe(200);
     expect((await getAppHost('rev-app', '/')).status).toBe(200);
+  });
+
+  it('站内共享只可克隆；复制环境变量、固定私有范围，删除后归还名额', async () => {
+    const now = Date.now();
+    const [group] = await getDb().insert(userGroups).values({
+      name: '站内克隆权益组',
+      createdAt: now,
+    }).returning({ id: userGroups.id });
+    const planId = await createPlan({
+      name: '站内克隆测试权益',
+      groupId: group!.id,
+      durationDays: 30,
+      appCloneLimit: 1,
+    });
+    await getDb().update(users).set({
+      membershipPlanId: planId,
+      membershipExpiresAt: now + 30 * 86_400_000,
+    }).where(eq(users.id, otherId));
+
+    fs.mkdirSync(appSiteDir('clone-source-test'), { recursive: true });
+    fs.writeFileSync(path.join(appSiteDir('clone-source-test'), 'manifest.json'), JSON.stringify({
+      name: 'clone-source-test',
+      displayName: '站内源应用',
+      type: 'html',
+      version: '1.0.0',
+    }));
+    fs.writeFileSync(path.join(appSiteDir('clone-source-test'), 'index.html'), '<h1>source</h1>');
+    fs.mkdirSync(path.join(appSiteDir('clone-source-test'), 'storage'), { recursive: true });
+    fs.writeFileSync(path.join(appSiteDir('clone-source-test'), 'storage', 'private.txt'), 'not cloned');
+    await getDb().insert(apps).values({
+      id: 'clone-source-test',
+      name: '站内源应用',
+      visibility: 'login',
+      kind: 'html',
+      upstream: '',
+      ownerUserId: ownerId,
+      manifestJson: JSON.stringify({ name: 'clone-source-test', displayName: '站内源应用', type: 'html', version: '1.0.0' }),
+      createdAt: now,
+      updatedAt: now,
+    });
+    const [secret] = await getDb().insert(appEnvVars).values({
+      appId: 'clone-source-test',
+      name: 'SOURCE_SECRET',
+      valueEnc: encryptSecret('copied-secret'),
+      isSecret: true,
+      updatedAt: now,
+    }).returning({ valueEnc: appEnvVars.valueEnc });
+
+    const clone = async (): Promise<{ status: number; id?: string }> => {
+      const response = await fetch(`${base}/api/apps/clone-source-test/clone`, {
+        method: 'POST',
+        headers: { origin: base, cookie: otherCookie },
+      });
+      return { status: response.status, ...(response.status === 201 ? await response.json() as { id: string } : {}) };
+    };
+    const first = await clone();
+    expect(first.status).toBe(201);
+    const cloneId = first.id!;
+    const cloneRow = (await getDb().select().from(apps).where(eq(apps.id, cloneId)))[0];
+    expect(cloneRow).toMatchObject({
+      ownerUserId: otherId,
+      clonedFromAppId: 'clone-source-test',
+      visibility: 'private',
+    });
+    expect((await getDb().select().from(appEnvVars).where(eq(appEnvVars.appId, cloneId)))[0]?.valueEnc).toBe(secret!.valueEnc);
+    expect(fs.existsSync(path.join(appSiteDir(cloneId), 'storage', 'private.txt'))).toBe(false);
+    expect((await getAppHost('clone-source-test', '/', { cookie: otherCookie })).status).toBe(403);
+    expect((await getAppHost(cloneId, '/', { cookie: otherCookie })).status).toBe(200);
+    expect(await getAppCloneQuota(otherId)).toEqual({ limit: 1, used: 1, remaining: 0 });
+    const mine = await fetch(`${base}/api/apps/mine`, { headers: { cookie: otherCookie } });
+    expect(mine.status).toBe(200);
+    expect((await mine.json() as { apps: Array<{ id: string; isClone: boolean }> }).apps)
+      .toContainEqual(expect.objectContaining({ id: cloneId, isClone: true }));
+
+    const changeVisibility = await fetch(`${base}/api/apps/${cloneId}/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', origin: base, cookie: otherCookie },
+      body: JSON.stringify({ name: '尝试公开克隆', description: '', visibility: 'public' }),
+    });
+    expect(changeVisibility.status).toBe(403);
+    expect((await clone()).status).toBe(403);
+
+    const stepUpCookie = await sessionCookieFor(otherId);
+    const remove = await fetch(`${base}/api/apps/${cloneId}`, {
+      method: 'DELETE',
+      headers: { origin: base, cookie: stepUpCookie },
+    });
+    expect(remove.status).toBe(200);
+    expect(await getAppCloneQuota(otherId)).toEqual({ limit: 1, used: 0, remaining: 1 });
+    const afterDelete = await clone();
+    expect(afterDelete.status).toBe(201);
+    const removeAgain = await fetch(`${base}/api/apps/${afterDelete.id}`, {
+      method: 'DELETE',
+      headers: { origin: base, cookie: stepUpCookie },
+    });
+    expect(removeAgain.status).toBe(200);
+    fs.rmSync(appSiteDir('clone-source-test'), { recursive: true, force: true });
   });
 });
 
@@ -883,45 +987,6 @@ describe('身份头验签（P3-16：exp 强制 + jti 一次性）', () => {
     const expired = verifyIdentity(payloadB64, sig, secret, 'aud-app');
     expect(expired.ok).toBe(false);
     if (!expired.ok) expect(expired.error).toBe('EXPIRED');
-  });
-});
-
-describe('邀请码并发双花（批二⑧）', () => {
-  it('verify 消费带 usedBy IS NULL 条件：码已被占用 → 409 且不建号', async () => {
-    await getDb().insert(inviteCodes).values({ code: 'HARD-CODE-01', createdBy: 1, createdAt: Date.now() });
-    await setSetting('REGISTRATION_MODE', 'invite');
-    try {
-      const powToken = await solvePow();
-      const start = await fetch(`${base}/api/auth/register/start`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ username: 'harden1', password: 'Harden-pass-123', email: 'harden1@example.com', inviteCode: 'HARD-CODE-01', powToken }),
-      });
-      expect(start.status).toBe(200);
-      const { registrationId } = (await start.json()) as { registrationId: string };
-
-      // 直插一个未消费验证码（已知 code=654321、salt=hardensalt）
-      const now = Date.now();
-      await getDb().insert(verificationCodes).values({
-        channel: 'email', target: 'harden1@example.com', purpose: 'register',
-        codeHash: `hardensalt:${createHash('sha256').update('hardensalt:654321').digest('hex')}`,
-        ip: null, createdAt: now, expiresAt: now + 5 * 60_000,
-      });
-      // 邀请码被「另一个注册」抢先消费
-      await getDb().update(inviteCodes).set({ usedBy: 9999, usedAt: now }).where(eq(inviteCodes.code, 'HARD-CODE-01'));
-
-      const verify = await fetch(`${base}/api/auth/register/verify`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ registrationId, code: '654321' }),
-      });
-      expect(verify.status).toBe(409);
-      expect(((await verify.json()) as { error?: { code?: string } }).error?.code).toBe('INVITE_CODE_USED');
-      // 回滚：用户未创建
-      expect((await getDb().select().from(users).where(eq(users.username, 'harden1')))[0]).toBeUndefined();
-    } finally {
-      await setSetting('REGISTRATION_MODE', 'closed');
-    }
   });
 });
 

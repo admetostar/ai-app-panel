@@ -1,1 +1,0 @@
-ALTER TABLE `membership_plans` ADD `tier` integer DEFAULT 0 NOT NULL;

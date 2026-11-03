@@ -1,5 +1,5 @@
-﻿# AI超级面板 — 单镜像（Docker 形态；FPK 复用同一镜像）
-# 构建：docker build -f deploy/docker/Dockerfile -t ai-superpanel:latest .
+# ai-app-panel — 单镜像（Docker 形态；FPK 复用同一镜像）
+# 构建：docker build -f deploy/docker/Dockerfile -t ai-app-panel:latest .
 # 运行：见 docker-compose.yml；数据卷 /data（证书、密钥、头像与托管应用文件）
 
 # ---------- 构建阶段 ----------
@@ -45,7 +45,7 @@ RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.cloud.tencent.com#g
  # 会在上传时报错——属预期行为
  # 沙箱可选降权：预建非特权用户；运行时加 SANDBOX_UID=10001 SANDBOX_GID=10001 生效
  # （需保证数据卷对 10001 可写，如：docker run 时对挂载目录 chown 10001:10001）
- && addgroup -g 10001 aap && adduser -D -u 10001 -G aap aap
+ && addgroup -g 10001 ai-app-panel && adduser -D -u 10001 -G ai-app-panel ai-app-panel
 WORKDIR /out
 # pnpm deploy 产物：package.json + node_modules（含 @aap/shared 构建产物）
 COPY --from=build /out ./

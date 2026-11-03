@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import type { MembershipPlanSummary, UserMembershipData } from '@aap/shared';
 import { api } from '../api/client';
 import { TierBadge } from '../components/TierBadge';
+import { formatEntitlementCount } from '../lib/membershipPricing';
 import { useSession } from '../state/session';
 import { formatMembershipPlanPrice, isFreeMembershipPlan } from '../lib/membershipPricing';
 
@@ -151,8 +152,9 @@ export function MembershipSelectionPage() {
                     <div className="aap-home-plan-card__features">
                       <div><span>权益等级</span><strong>{plan.tier}</strong></div>
                       <div><span>权益分组</span><strong>{plan.groupName}</strong></div>
-                      <div><span>可上传应用</span><strong>{plan.appUploadLimit} 个</strong></div>
-                      <div><span>赠送额度</span><strong>{plan.tokenGrant.toLocaleString()}</strong></div>
+                      <div><span>可创建应用</span><strong>{formatEntitlementCount(plan.appUploadLimit, ' 个')}</strong></div>
+                      <div><span>可克隆应用</span><strong>{formatEntitlementCount(plan.appCloneLimit, ' 个')}</strong></div>
+                      <div><span>赠送额度</span><strong>{formatEntitlementCount(plan.tokenGrant)}</strong></div>
                     </div>
                     <Button
                       type="primary"

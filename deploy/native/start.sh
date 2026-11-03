@@ -1,5 +1,5 @@
 ﻿#!/usr/bin/env bash
-# AI超级面板 原生运行入口（无 Docker）。说明见 README-NATIVE.md。
+# ai-app-panel 原生运行入口（无 Docker）。说明见 README-NATIVE.md。
 # 必需外部依赖仅 python3（沙箱运行时；Debian 系系统自带）。
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"

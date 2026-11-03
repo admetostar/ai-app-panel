@@ -13,6 +13,10 @@ export function formatMembershipPlanPrice(plan: MembershipPlanSummary): string {
   return `¥${(plan.priceFen / 100).toFixed(2)}`;
 }
 
+export function formatEntitlementCount(value: number, unit = ''): string {
+  return value > 0 ? `${value.toLocaleString()}${unit}` : '—';
+}
+
 export function formatMembershipOrderPrice(order: MembershipOrderSummary): string {
   return order.priceCurrency === 'USD'
     ? `$${(order.priceCents / 100).toFixed(2)}`

@@ -1,5 +1,5 @@
 ﻿/**
- * 部署基路径（FPK 统一网关形态）：构建期 VITE_BASE 注入（如 /app/AI-SuperPanel/），
+ * 部署基路径（FPK 统一网关形态）：构建期 VITE_BASE 注入（如 /app/ai-app-panel/），
  * 与服务端 GATEWAY_PREFIX 对齐——网关把带前缀请求转发给服务端后由其剥前缀，
  * 前端只需保证「发出的 URL 自带前缀」。默认构建 VITE_BASE='/' 时 APP_BASE 为空串，
  * 所有 URL 与历史行为逐字节一致。
@@ -16,4 +16,3 @@ export const APP_BASE = RAW_BASE === '/' ? '' : RAW_BASE.replace(/\/+$/, '');
 export function withBase(p: string): string {
   return `${APP_BASE}${p}`;
 }
-

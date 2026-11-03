@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import express, { Router } from 'express';
-import { and, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import { isIP } from 'node:net';
 import { AAP_VERSION, isPasswordValid, PASSWORD_POLICY_MESSAGE } from '@aap/shared';
@@ -33,6 +33,7 @@ import { status as tlsStatus } from '../gateway/tls.js';
 import { defaultAvatarForUser } from '../lib/userAvatar.js';
 import { isFreePlan, listPlans } from '../lib/billing.js';
 import { config } from '../config/index.js';
+import { ensureInviteCode } from '../lib/invites.js';
 
 export const adminRouter = Router();
 
@@ -143,6 +144,7 @@ adminRouter.post(
       .returning({ id: users.id });
     if (!created) throw new Error('Failed to create user');
     const uid = created.id;
+    await ensureInviteCode(uid);
     await getDb().update(users).set({ avatar: defaultAvatarForUser(uid) }).where(eq(users.id, uid));
     await writeLocalCredentials(uid, password);
     await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.user.created', { uid, username });
@@ -260,6 +262,12 @@ adminRouter.put(
         const points = Number(body[key]);
         if (!Number.isSafeInteger(points) || points < 0 || points > 2_147_483_647) {
           throw new HttpError(400, 'INVALID_SETTING', '注册赠送积分必须是 0 到 2147483647 之间的整数');
+        }
+      }
+      if (key === 'INVITE_REWARD_POINTS') {
+        const points = Number(body[key]);
+        if (!Number.isSafeInteger(points) || points < 0 || points > 2_147_483_647) {
+          throw new HttpError(400, 'INVALID_SETTING', '邀请注册奖励积分必须是 0 到 2147483647 之间的整数');
         }
       }
       await updateSettingFromAdmin(key, String(body[key] ?? ''));
@@ -397,26 +405,41 @@ adminRouter.get(
 adminRouter.get(
   '/admin/invites',
   h(async (_req, res) => {
-    const rows = await getDb().select().from(inviteCodes).orderBy(sql`created_at DESC`).limit(100);
+    const rows = await getDb()
+      .select({
+        code: inviteCodes.code,
+        ownerUserId: users.id,
+        ownerUsername: users.username,
+        ownerEmail: users.email,
+        ownerName: users.name,
+        enabled: inviteCodes.enabled,
+        useCount: inviteCodes.useCount,
+        createdAt: inviteCodes.createdAt,
+      })
+      .from(inviteCodes)
+      .innerJoin(users, eq(inviteCodes.ownerUserId, users.id))
+      .orderBy(sql`invite_codes.created_at DESC`);
     res.json({ invites: rows });
   }),
 );
 
-adminRouter.post(
-  '/admin/invites',
+adminRouter.patch(
+  '/admin/invites/:code',
   h(async (req, res) => {
-    const body = (req.body ?? {}) as { note?: string; count?: number };
-    const count = Math.min(20, Math.max(1, Number(body.count ?? 1) || 1));
-    const codes: string[] = [];
-    for (let i = 0; i < count; i++) {
-      const code = randomBytes(4).toString('hex').toUpperCase().replace(/(.{4})/, '$1-');
-      await getDb()
-        .insert(inviteCodes)
-        .values({ code, createdBy: req.user!.id, note: body.note ?? null, createdAt: Date.now() });
-      codes.push(code);
-    }
-    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.invites.created', { count });
-    res.json({ codes });
+    const body = (req.body ?? {}) as { enabled?: unknown };
+    if (typeof body.enabled !== 'boolean') throw new HttpError(400, 'INVALID_STATUS', '邀请码状态必须是布尔值');
+    const code = String(req.params.code ?? '').toUpperCase();
+    const [updated] = await getDb()
+      .update(inviteCodes)
+      .set({ enabled: body.enabled })
+      .where(eq(inviteCodes.code, code))
+      .returning({ code: inviteCodes.code });
+    if (!updated) throw new HttpError(404, 'INVITE_NOT_FOUND', '邀请码不存在');
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'admin.invite.status', {
+      code,
+      enabled: body.enabled,
+    });
+    res.json({ ok: true });
   }),
 );
 
@@ -433,14 +456,6 @@ adminRouter.get(
       .select({ n: sql<number>`count(*)` })
       .from(sessions)
       .where(gt(sessions.expiresAt, Date.now())))[0]?.n ?? 0);
-    const recoveryUnused = me
-      ? Number((await getDb()
-          .select({ n: sql<number>`count(*)` })
-          .from(inviteCodes)
-          .where(isNull(inviteCodes.usedBy)))[0]?.n ?? 0)
-      : 0;
-    void recoveryUnused;
-
     res.json({
       version: 'ok',
       // 服务版本与运行时长仅管理员可见（匿名 /api/health 已收敛为仅 ok）
@@ -452,7 +467,6 @@ adminRouter.get(
         tls: tlsStatus().mode,
         httpsEnabled: tlsStatus().httpsEnabled,
         certDaysRemaining: tlsStatus().cert?.daysRemaining ?? null,
-        registrationMode: getSetting('REGISTRATION_MODE') ?? 'closed',
         freePlanConfigured: await (await listPlans(true)).some(isFreePlan),
         appCount,
       },

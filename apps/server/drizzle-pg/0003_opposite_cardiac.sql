@@ -1,1 +1,0 @@
-ALTER TABLE "membership_plans" ADD COLUMN "redeem_url" text;

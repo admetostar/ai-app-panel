@@ -72,6 +72,7 @@ export interface MembershipPlanSummary {
   tokenGrant: number;
   tier: number;
   appUploadLimit: number;
+  appCloneLimit: number;
   enabled: boolean;
 }
 
@@ -96,6 +97,9 @@ export interface UserMembershipData {
     appUploadLimit: number;
     appsUsed: number;
     remainingUploadApps: number;
+    appCloneLimit: number;
+    appsCloned: number;
+    remainingCloneApps: number;
   } | null;
   tokenBalance: number;
   pointsBalance: number;
@@ -119,8 +123,8 @@ export interface BrandingInfo {
   policeNumber: string | null;
 }
 
-/** 注册开关三档：closed 关闭 / open 开放 / invite 开放+邀请码 */
-export type RegistrationMode = 'closed' | 'open' | 'invite';
+/** 当前注册策略固定为开放注册 */
+export type RegistrationMode = 'open';
 
 /** 门户公共引导信息（未登录可读） */
 export interface PortalBootstrap {
@@ -163,12 +167,14 @@ export interface AppCard {
 
 /** Owner-scoped application card data used by /api/apps/mine. */
 export interface OwnedAppCard extends AppCard {
+  isClone: boolean;
   enabled: boolean;
   updatedAt: number;
   installedAt: number;
   version: string | null;
   packageSizeBytes: number | null;
   capabilities: string[];
+  network?: string[];
   signatureStatus: string | null;
 }
 

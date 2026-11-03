@@ -27,6 +27,7 @@ import { audit, registerPurgeTask } from '../lib/audit.js';
 import { publicUserOf } from './shared.js';
 import { defaultAvatarForUser } from '../lib/userAvatar.js';
 import { listPlans } from '../lib/billing.js';
+import { ensureInviteCode } from '../lib/invites.js';
 
 export const authRouter = Router();
 
@@ -119,10 +120,6 @@ authRouter.post(
   '/auth/register/start',
   h(async (req, res) => {
     const ip = req.clientIp ?? 'unknown';
-    const mode = registrationMode();
-    if (mode === 'closed') {
-      throw new HttpError(403, 'REGISTRATION_CLOSED', '本站未开放注册');
-    }
     const body = (req.body ?? {}) as {
       username?: string;
       password?: string;
@@ -146,18 +143,9 @@ authRouter.post(
       throw new HttpError(400, 'INVALID_EMAIL', '邮箱格式不正确');
     }
 
-    // 邀请码校验（invite 档）
-    let inviteCode: string | null = null;
-    if (mode === 'invite') {
-      const code = String(body.inviteCode ?? '').trim();
-      const row = code
-        ? (await getDb()
-            .select({ code: inviteCodes.code })
-            .from(inviteCodes)
-            .where(and(eq(inviteCodes.code, code), isNull(inviteCodes.usedBy))))[0]
-        : undefined;
-      if (!row) throw new HttpError(403, 'INVALID_INVITE_CODE', '邀请码无效或已被使用');
-      inviteCode = row.code;
+    const inviteCode = String(body.inviteCode ?? '').trim().toUpperCase() || null;
+    if (inviteCode && inviteCode.length > 191) {
+      throw new HttpError(400, 'INVALID_INVITE_CODE', '邀请码长度无效');
     }
 
     // 同 IP 24h ≤ N 号
@@ -240,8 +228,7 @@ authRouter.post(
       throw new HttpError(400, result.error === 'CODE_MISMATCH' ? 'CODE_MISMATCH' : 'CODE_INVALID', '验证码错误或已过期');
     }
 
-    // 首账号自动 admin（PRD A2）；建号/发凭据/消费邀请码/删注册单同一事务——
-    // 邀请码消费带 usedBy IS NULL 条件，防并发双花（两人各持同码均通过 start 校验）
+    // 首账号自动 admin；账号、凭据、邀请码计数与奖励在同一事务内完成。
     const promote = await adminCount() === 0;
     const membershipSelectionRequired = !promote && (await listPlans(true)).length > 0;
     const now = Date.now();
@@ -270,13 +257,29 @@ authRouter.post(
         .values({ userId, passwordHash: reg.passwordHash, updatedAt: now });
 
       if (reg.inviteCode) {
-        const used = await tx
-          .update(inviteCodes)
-          .set({ usedBy: userId, usedAt: now })
-          .where(and(eq(inviteCodes.code, reg.inviteCode), isNull(inviteCodes.usedBy)))
-          .returning({ code: inviteCodes.code });
-        if (used.length === 0) throw new HttpError(409, 'INVITE_CODE_USED', '邀请码已被使用，请更换邀请码重新注册');
+        const invite = (await tx
+          .select()
+          .from(inviteCodes)
+          .where(eq(inviteCodes.code, reg.inviteCode))
+          .for('update'))[0];
+        if (invite && invite.ownerUserId !== userId) {
+          await tx
+            .update(inviteCodes)
+            .set({ useCount: sql`${inviteCodes.useCount} + 1` })
+            .where(eq(inviteCodes.code, invite.code));
+          if (invite.enabled) {
+            const reward = getSettingInt('INVITE_REWARD_POINTS', 100);
+            if (!Number.isSafeInteger(reward) || reward < 0 || reward > 2_147_483_647) {
+              throw new Error('INVITE_REWARD_POINTS must be an integer between 0 and 2147483647');
+            }
+            await tx
+              .update(users)
+              .set({ pointsBalance: sql`LEAST(${users.pointsBalance}::bigint + ${reward}, 2147483647)::integer` })
+              .where(eq(users.id, invite.ownerUserId));
+          }
+        }
       }
+      await ensureInviteCode(userId, tx);
       // 完成不删行：置 completedAt 保留（同 IP 24h 注册名额继续计入，终审 P1-5）；
       // 超过 24h 后由清理任务删除
       await tx.update(registrations).set({ completedAt: now }).where(eq(registrations.id, reg.id));
@@ -466,6 +469,7 @@ authRouter.get('/auth/oidc/callback', h(async (req, res) => {
           .returning({ id: users.id });
         if (!created) throw new Error('Failed to create OIDC user');
         const userId = created.id;
+        await ensureInviteCode(userId);
         await getDb().update(users).set({ avatar: defaultAvatarForUser(userId) }).where(eq(users.id, userId));
         await audit(`oidc:${profile.subject}`, ip, 'user.oidc.pending_approval', { userId });
         res.redirect(302, '/login?error=oidc_pending');
@@ -486,6 +490,7 @@ authRouter.get('/auth/oidc/callback', h(async (req, res) => {
         .returning({ id: users.id });
         if (!created) throw new Error('Failed to create OIDC user');
         const userId = created.id;
+        await ensureInviteCode(userId);
         await getDb().update(users).set({ avatar: defaultAvatarForUser(userId) }).where(eq(users.id, userId));
         row = (await getDb().select().from(users).where(eq(users.id, userId)))[0];
       // 白名单内的待批准账号：自动激活并提升
@@ -672,11 +677,6 @@ authRouter.post(
     res.json({ ok: true });
   }),
 );
-
-function registrationMode(): 'closed' | 'open' | 'invite' {
-  const m = getSetting('REGISTRATION_MODE') ?? 'closed';
-  return m === 'open' || m === 'invite' ? m : 'closed';
-}
 
 // 废弃注册清理（A2），挂进统一清理循环：
 //  - 已完成行（completedAt 非空）：超过 24h 即删——同 IP 24h 名额计数窗口不再引用它；

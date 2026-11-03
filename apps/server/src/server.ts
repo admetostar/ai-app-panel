@@ -16,14 +16,20 @@ import * as tls from './gateway/tls.js';
 import { stopAllPersistent } from './lib/sandbox.js';
 import { stripGatewayPrefix } from './lib/gatewayPrefix.js';
 import { ensureInitialAdmin } from './lib/bootstrap.js';
+import { ensureInviteCodesForExistingUsers } from './lib/invites.js';
 import { seedSettings } from './lib/settings.js';
 import { createApp } from './app.js';
 
 async function main(): Promise<void> {
   if (!config.databaseUrl) throw new Error('DATABASE_URL is required');
-  await initDb({ url: config.databaseUrl, migrationsDir: config.migrationsDir });
+  await initDb({
+    url: config.databaseUrl,
+    migrationsDir: config.migrationsDir,
+    migrationsSchema: config.migrationsSchema,
+  });
   await seedSettings();
   await ensureInitialAdmin(); // F3：users 为空时创建初始管理员（Docker 首启打印密码 + 一次性凭据文件）
+  await ensureInviteCodesForExistingUsers();
   startPurgeLoop();
   startHealthLoop();
   await startBillingLoop();
@@ -54,7 +60,7 @@ async function main(): Promise<void> {
   const tcpListenOpts: { port: number; host?: string } = { port: config.port };
   if (config.host) tcpListenOpts.host = config.host;
   server.listen(tcpListenOpts, () => {
-    console.log(`[aap] AI超级面板 listening on http://${config.host ?? '0.0.0.0'}:${config.port}`);
+    console.log(`[aap] ai-app-panel listening on http://${config.host ?? '0.0.0.0'}:${config.port}`);
     console.log(`[aap] data dir: ${config.dataDir}`);
   });
 

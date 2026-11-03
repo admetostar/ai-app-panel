@@ -48,7 +48,7 @@ export function rpInfo(req: Request): { rpID: string; rpName: string; origin: st
   const rpID = req.hostname;
   const hostHeader = (req.headers.host ?? req.hostname) as string;
   const proto = req.protocol;
-  return { rpID, rpName: getSetting('SITE_NAME') || 'AI超级面板', origin: `${proto}://${hostHeader}` };
+  return { rpID, rpName: getSetting('SITE_NAME') || 'ai-app-panel', origin: `${proto}://${hostHeader}` };
 }
 
 export interface PasskeyView {

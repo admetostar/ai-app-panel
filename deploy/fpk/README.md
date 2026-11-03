@@ -25,7 +25,7 @@
 ## 包结构（fnpack 必检项全过）
 
 ```
-AI-SuperPanel/
+ai-app-panel/
 ├── app/
 │   ├── server/          ← deploy/native 自包含包（bin/node, dist, public, aap-sdk, assets=开发指南三件…）
 │   └── ui/
@@ -33,7 +33,7 @@ AI-SuperPanel/
 │       └── images/icon_{64,256}.png
 ├── cmd/                 ← main（start/stop/status）+ 8 个生命周期脚本（config_callback 提交向导后重启生效）
 ├── config/
-│   ├── privilege        ← run-as=package 专用用户 AI-SuperPanel
+│   ├── privilege        ← run-as=package 专用用户 ai-app-panel
 │   └── resource         ← {}（数据只落 TRIM_PKGVAR，不开放文件管理器共享）
 ├── wizard/
 │   ├── install          ← PostgreSQL 连接串 wizard_database_url + 服务端口 + 可选初始管理员密码
@@ -56,7 +56,7 @@ FPK 不内置 PostgreSQL 服务。安装前需准备可从 NAS 访问的 Postgre
 
 # 打包：版本 + 平台（x86|arm|all）
 ./deploy/fpk/build-fpk.sh 0.1.0 all
-# → dist/AI-SuperPanel_0.1.0_x86.fpk / _arm.fpk（各约 52MB）
+# → dist/ai-app-panel_0.1.0_x86.fpk / _arm.fpk（各约 52MB）
 
 **.fpk 真实格式**（官方 fnpack 1.2.3 产物逆向 + `fnos-dashboard/fpk-sandbox`
 已验证实现；**不是 zip**——zip 打包真机报「不是有效的fpk文件」）：

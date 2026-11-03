@@ -5,7 +5,7 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
 
 # app-develop.skill.md
 
-> AI超级面板（AI-SuperPanel）应用开发规范 · 供开发 Agent 使用
+> ai-app-panel 应用开发规范 · 供开发 Agent 使用
 > 版本 v0.3.1（2026-11）· 配套平台 PRD v0.3+
 >
 > **v0.3.1 变更**：补充未配置 `SITE_DOMAIN` 时的本地路径沙箱回退；需验证应用独立 origin 与浏览器存储时，应配置应用域名。
@@ -32,9 +32,9 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
 
 ## 你是谁、要做什么
 
-你正在为 **AI超级面板** 开发一个新应用。用户会告诉你需求设想；你的产出是一个符合本规范的 **`.awpk` 包**（ZIP 文件）。打包后无需签名或联系管理员登记密钥，用户可以直接上传。
+你正在为 **ai-app-panel** 开发一个新应用。用户会告诉你需求设想；你的产出是一个符合本规范的 **`.awpk` 包**（ZIP 文件）。打包后无需签名或联系管理员登记密钥，用户可以直接上传。
 
-`.awpk` = **AI-SuperPanel** 的缩写。包内只有两种形态，按需求二选一：
+`.awpk` 是 **ai-app-panel** 的应用包格式。包内只有两种形态，按需求二选一：
 
 | 形态 | 适合 | 包内容 |
 |---|---|---|
@@ -498,4 +498,4 @@ aap-dev run mod.py --reset                # 顺带清空本地 db/storage（.aap
 
 ---
 
-*本规范由 AI-SuperPanel 平台维护；接口面（§三）变更必须升版本并同步 `app-develop-internal.skill.md` 的平台实现约定。*
+*本规范由 ai-app-panel 维护；接口面（§三）变更必须升版本并同步 `app-develop-internal.skill.md` 的平台实现约定。*

@@ -11,13 +11,13 @@ import { useSession } from '../state/session';
 import { GUIDE_FAQ_ITEMS } from '../lib/guideFaq';
 
 const GUIDE_MD = [
-  '## 一、什么是AI超级面板',
+  '## 一、什么是 ai-app-panel',
   '',
-  'AI超级面板可以托管你制作的小应用：Agent 负责制作并打包成 `.awpk` 应用包，你上传后即可试用或分享。AWPK 是 ZIP 容器，包含 manifest 和应用文件；平台只接受 `.awpk`，不会兼容旧扩展名或普通 `.zip`。',
+  'ai-app-panel 可以托管你制作的小应用：Agent 负责制作并打包成 `.awpk` 应用包，你上传后即可试用或分享。AWPK 是 ZIP 容器，包含 manifest 和应用文件；平台只接受 `.awpk`，不会兼容旧扩展名或普通 `.zip`。',
   '',
   '开始前准备：',
   '',
-  '- 一个可以使用的 AI超级面板账号（向管理员申请，或在登录页自行注册）',
+  '- 一个可以使用的 ai-app-panel 账号（向管理员申请，或在登录页自行注册）',
   '- 一个支持安装技能、并能运行代码的 AI 助手（Agent）',
   '- 从本页下载并准备 `awpk-app-develop.skill`、`awpk-app-develop.zip`，或 `awpk-app-develop.md`',
   '',
@@ -37,7 +37,7 @@ const GUIDE_MD = [
   '',
   '将 `awpk-app-develop.md` 的内容发给 Agent，并告诉它按这份规范开发应用。',
   '',
-  '确认安装：问 Agent“你知道怎么制作并打包 AI超级面板应用吗？”确认它能识别 .awpk 即可。',
+  '确认安装：问 Agent“你知道怎么制作并打包 ai-app-panel 应用吗？”确认它能识别 .awpk 即可。',
   '',
   '## 三、让 Agent 做出你的应用',
   '',
@@ -51,7 +51,7 @@ const GUIDE_MD = [
   '',
   '下载 Agent 提供的 `.awpk` 文件并阅读交付说明。发现交付物有问题时，告诉 Agent 修复并重新打包。',
   '',
-  '## 四、上传到 AI超级面板',
+  '## 四、上传到 ai-app-panel',
   '',
   '### 上传应用',
   '',
@@ -75,12 +75,13 @@ const GUIDE_MD = [
   '',
   '在用户中心的“应用管理”板块选择可见范围。确认首页卡片或目标用户可访问后，复制应用链接分享。',
   '',
-  '每个账号可上传应用的数量受当前权益包限制，可在用户中心 → 我的权益查看；公开发布不限制应用数量。',
+  '每个账号可创建的应用数量和可克隆站内共享应用数量分别受当前权益包限制，可在用户中心 → 我的权益查看；克隆只能设为仅自己可见，删除克隆会归还名额。',
   '',
   '| 可见范围 | 谁能访问 |',
   '| --- | --- |',
   '| 公开 | 所有人 |',
-  '| 需登录 | 登录用户 |',
+  '| 站内 | 其他用户可在“我的应用 → 站内共享”克隆；不能直接访问 |',
+  '| 指定范围 | 管理员配置的分组或账号 |',
   '| 仅自己 | 只有自己 |',
   '',
   '## 六、常见问题',
@@ -96,12 +97,12 @@ const GUIDE_MD = [
   '3. 下载包：保存 Agent 给你的 `.awpk` 文件，认真看交付说明。',
   '4. 上传：用户中心 → 应用管理 → 上传 `.awpk`。',
   '5. 配置：按说明填写环境变量和入参，然后在“我的应用”中试用。',
-  '6. 发布分享：确认运行正常后选择公开、需登录或仅自己 → 分享应用链接。',
+  '6. 发布分享：确认运行正常后选择公开、站内或仅自己；站内应用不能直接访问，其他用户可克隆到自己的账号。',
 ].join('\n');
 
 const GUIDE_CHAPTERS = ['一', '二', '三', '四', '五'] as const;
 function buildGuideSteps(siteName: string) {
-  return GUIDE_MD.replaceAll('AI超级面板', siteName)
+  return GUIDE_MD.replaceAll('ai-app-panel', siteName)
     .split(/(?=^## )/m)
     .map((content) => content.trim())
     .filter(Boolean)
@@ -161,7 +162,7 @@ export function GuidePage() {
     queryKey: ['bootstrap'],
     queryFn: () => api<PortalBootstrap>('/api/portal/bootstrap'),
   });
-  const siteName = bootstrap.data?.branding.siteName ?? 'AI超级面板';
+  const siteName = bootstrap.data?.branding.siteName ?? 'ai-app-panel';
   const guideSteps = buildGuideSteps(siteName);
   const [activeStep, setActiveStep] = useState(0);
   const currentStep = guideSteps[activeStep];

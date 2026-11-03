@@ -61,8 +61,8 @@ export function isSlug(id: string): boolean {
 }
 
 /**
- * FPK 统一网关形态下，应用 ID 不得与网关前缀末段相同（GATEWAY_PREFIX=/app/AI-SuperPanel
- * 时即禁止 id=AI-SuperPanel）：入口层会把 /app/<末段>/... 整体剥前缀进门户路由，
+ * FPK 统一网关形态下，应用 ID 不得与网关前缀末段相同（GATEWAY_PREFIX=/app/ai-app-panel
+ * 时即禁止 id=ai-app-panel）：入口层会把 /app/<末段>/... 整体剥前缀进门户路由，
  * 同名应用的反代路径将永远不可达。端口/容器形态（未配置前缀）不受限。
  */
 export function idConflictsWithGatewayPrefix(id: string, prefix = config.gatewayPrefix): boolean {
@@ -103,7 +103,7 @@ function isAdminUser(user: { role: string } | null | undefined): boolean {
 /**
  * 可见性模型（P）：
  *  - public：全员（含匿名）
- *  - login：全部登录用户
+ *  - login：站内共享，仅归属者与管理员可直接访问；其他用户从「站内共享」克隆
  *  - restricted：登录 + 指定分组/指定账号任一命中；ACL 为空 = 全部登录用户；归属者与管理员始终可见
  *  - private：仅归属者（用户自建应用默认）
  */
@@ -116,7 +116,7 @@ export async function canAccess(
     case 'public':
       return true;
     case 'login':
-      return Boolean(user && user.authState === 'full');
+      return Boolean(user && user.authState === 'full' && app.ownerUserId === user.id);
     case 'private':
       return Boolean(user && user.authState === 'full' && app.ownerUserId === user.id);
     case 'restricted': {
@@ -136,6 +136,7 @@ export async function canAccess(
 /** 门户卡片是否对该用户展示（private 且非归属者/管理员 → 隐藏） */
 export function isVisibleInPortal(app: AppRow, user: { id: number; role: string } | null | undefined): boolean {
   if (isAdminUser(user)) return true;
+  if (app.visibility === 'login') return Boolean(user && app.ownerUserId === user.id);
   if (app.visibility !== 'private') return true;
   return Boolean(user && app.ownerUserId === user.id);
 }

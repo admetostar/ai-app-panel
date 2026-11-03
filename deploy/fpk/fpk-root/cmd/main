@@ -1,6 +1,6 @@
 ﻿#!/bin/bash
 # ============================================================
-# AI超级面板 生命周期控制（start/stop/status）——飞牛 FPK 原生形态
+# ai-app-panel 生命周期控制（start/stop/status）——飞牛 FPK 原生形态
 #
 # 运行身份：包用户（config/privilege run-as=package）
 # 平台数据库：外部 PostgreSQL（wizard_database_url）；TRIM_PKGVAR 保存上传件、
@@ -13,7 +13,7 @@
 # ============================================================
 set -u
 
-APP_NAME="AI-SuperPanel"
+APP_NAME="ai-app-panel"
 LOG_FILE="${TRIM_PKGVAR}/app.log"
 PID_FILE="${TRIM_PKGVAR}/app.pid"
 APP_DIR="${TRIM_APPDEST}/server"

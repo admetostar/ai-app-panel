@@ -36,12 +36,12 @@ describe('W1 冒烟', () => {
     expect(body.version).toBeUndefined();
   });
 
-  it('GET /api/portal/bootstrap 返回默认品牌与关闭注册、needsInit=true', async () => {
+  it('GET /api/portal/bootstrap 返回默认品牌与开放注册、needsInit=true', async () => {
     const res = await fetch(`${baseUrl}/api/portal/bootstrap`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as PortalBootstrap;
-    expect(body.branding.siteName).toBe('AI超级面板');
-    expect(body.registration.mode).toBe('closed');
+    expect(body.branding.siteName).toBe('ai-app-panel');
+    expect(body.registration.mode).toBe('open');
     expect(body.appDomainRoot).toBe('localhost');
     expect(body.appPort).toBe(8080);
     expect(body.needsInit).toBe(true);
@@ -49,15 +49,31 @@ describe('W1 冒烟', () => {
 
   it('GET /api/portal/plans 匿名返回管理员启用的权益套餐', async () => {
     const groupId = await createGroup('公开套餐分组', '');
-    await createPlan({ name: '可见权益包', groupId, durationDays: 30, priceFen: 1200, tokenGrant: 500, tier: 4, appUploadLimit: 2 });
+    await createPlan({
+      name: '可见权益包',
+      groupId,
+      durationDays: 30,
+      priceFen: 1200,
+      tokenGrant: 500,
+      tier: 4,
+      appUploadLimit: 2,
+      appCloneLimit: 3,
+    });
     const hiddenPlanId = await createPlan({ name: '停售权益包', groupId, durationDays: 30, priceFen: 1000 });
     await updatePlan(hiddenPlanId, { enabled: false });
 
     const res = await fetch(`${baseUrl}/api/portal/plans`);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { plans: Array<{ name: string; groupName: string; tier: number }> };
+    const body = (await res.json()) as {
+      plans: Array<{ name: string; groupName: string; tier: number; appCloneLimit: number }>;
+    };
     expect(body.plans).toHaveLength(1);
-    expect(body.plans[0]).toMatchObject({ name: '可见权益包', groupName: '公开套餐分组', tier: 4 });
+    expect(body.plans[0]).toMatchObject({
+      name: '可见权益包',
+      groupName: '公开套餐分组',
+      tier: 4,
+      appCloneLimit: 3,
+    });
   });
 
   it('未知 /api 路径返回 JSON 404（不被 SPA 兜底吞掉）', async () => {

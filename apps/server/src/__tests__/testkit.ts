@@ -11,7 +11,7 @@ import { createSession } from '../lib/session.js';
 
 const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../drizzle-pg');
 const TEST_DATABASE_URL =
-  process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgres://aap:aap@localhost:5432/ai_app_portal';
+  process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? 'postgres://aap:aap@localhost:5432/ai_app_panel';
 
 export function testPackage(files: Record<string, string>): Buffer {
   const zip = new AdmZip();
@@ -26,7 +26,7 @@ function scopedUrl(schema: string): string {
 }
 
 export async function setupTestDb(opts?: { seed?: boolean }): Promise<{ dir: string }> {
-  const dir = `aap_test_${randomBytes(8).toString('hex')}`;
+  const dir = `ai_app_panel_test_${randomBytes(8).toString('hex')}`;
   const admin = new Pool({ connectionString: TEST_DATABASE_URL });
   try {
     await admin.query(`CREATE SCHEMA "${dir}"`);

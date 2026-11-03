@@ -159,7 +159,7 @@ adminAppsRouter.post(
       parseUpstream(body.upstream);
     }
     if (body.visibility && !VISIBILITIES.has(body.visibility)) {
-      throw new HttpError(400, 'INVALID_VISIBILITY', '访问策略必须是 public/login/member');
+      throw new HttpError(400, 'INVALID_VISIBILITY', '访问策略必须是 public/login（站内）/restricted/private');
     }
 
     const now = Date.now();
@@ -225,7 +225,7 @@ adminAppsRouter.put(
     if (body.icon !== undefined) patch.icon = body.icon;
     if (body.category !== undefined) patch.category = body.category;
     if (body.visibility !== undefined) {
-      if (!VISIBILITIES.has(body.visibility)) throw new HttpError(400, 'INVALID_VISIBILITY', '访问策略必须是 public/login/member');
+      if (!VISIBILITIES.has(body.visibility)) throw new HttpError(400, 'INVALID_VISIBILITY', '访问策略必须是 public/login（站内）/restricted/private');
       patch.visibility = body.visibility;
     }
     if (body.passUser !== undefined) {

@@ -3,7 +3,7 @@
  *   总览（仪表卡 + 快捷入口 + 最近动态）
  *   站点设置（品牌/备案）
  *   应用管理（应用列表 + 网关限流）
- *   用户与注册（用户列表 + 注册策略 + 邀请码）
+ *   用户与注册（用户列表 + 注册策略 + 邀请奖励）
  *   安全（防爆破/PoW/会话/签名密钥/Turnstile + 审计日志）
  *   通知通道（邮件 [SMTP/Resend] / 未来短信 + 发信测试）
  *   证书（状态/ACME/PEM/HTTPS 跳转）
@@ -41,7 +41,7 @@ import { api } from '../api/client';
 import { useSession } from '../state/session';
 import { AppEnvModal } from '../components/AppEnvModal';
 import { TierBadge } from '../components/TierBadge';
-import { formatMembershipOrderPrice, formatMembershipPlanPrice } from '../lib/membershipPricing';
+import { formatEntitlementCount, formatMembershipOrderPrice, formatMembershipPlanPrice } from '../lib/membershipPricing';
 import type { PublicUser } from '@aap/shared';
 
 // ---------- 类型 ----------
@@ -92,7 +92,6 @@ interface Overview {
     tls: 'off' | 'manual' | 'acme';
     httpsEnabled: boolean;
     certDaysRemaining: number | null;
-    registrationMode: string;
     freePlanConfigured: boolean;
     appCount: number;
   };
@@ -123,7 +122,12 @@ interface AppRuntimeEvent {
 }
 interface Invite {
   code: string;
-  usedBy: number | null;
+  ownerUserId: number;
+  ownerUsername: string | null;
+  ownerEmail: string | null;
+  ownerName: string;
+  enabled: boolean;
+  useCount: number;
   createdAt: number;
 }
 
@@ -362,19 +366,16 @@ export function AdminPage() {
 
   // 首配向导（左侧竖向）：跳过/完成状态持久化
   const [skipCert, setSkipCert] = useState(() => localStorage.getItem('aap.wizard.skipCert') === '1');
-  const [skipReg, setSkipReg] = useState(() => localStorage.getItem('aap.wizard.skipReg') === '1');
-  const markSkip = (k: 'cert' | 'reg'): void => {
-    localStorage.setItem(`aap.wizard.skip${k === 'cert' ? 'Cert' : 'Reg'}`, '1');
-    if (k === 'cert') setSkipCert(true);
-    else setSkipReg(true);
+  const markSkip = (): void => {
+    localStorage.setItem('aap.wizard.skipCert', '1');
+    setSkipCert(true);
   };
   const wizardDone = Boolean(
     c &&
     c.adminPasswordChanged &&
     c.adminMfaEnabled &&
     (c.httpsEnabled || skipCert) &&
-      c.appCount > 0 &&
-      (c.registrationMode !== 'closed' || skipReg),
+      c.appCount > 0,
   );
   const showRail = !railCollapsed && !wizardDone;
 
@@ -429,7 +430,7 @@ export function AdminPage() {
                   description: (
                     <>
                       <a onClick={go('tls')}>去配置</a>
-                      {!c.httpsEnabled ? <> · <a onClick={() => markSkip('cert')}>跳过（内网）</a></> : null}
+                      {!c.httpsEnabled ? <> · <a onClick={markSkip}>跳过（内网）</a></> : null}
                     </>
                   ),
                 },
@@ -437,16 +438,6 @@ export function AdminPage() {
                   title: '可选：配置零价权益包',
                   status: c.freePlanConfigured ? 'finish' : 'wait',
                   description: <a onClick={go('ops')}>{c.freePlanConfigured ? '查看权益包' : '去创建'}</a>,
-                },
-                {
-                  title: '注册策略',
-                  status: c.registrationMode !== 'closed' ? 'finish' : skipReg ? 'finish' : 'wait',
-                  description: (
-                    <>
-                      <a onClick={go('users')}>去设置</a>
-                      {c.registrationMode === 'closed' ? <> · <a onClick={() => markSkip('reg')}>保持关闭</a></> : null}
-                    </>
-                  ),
                 },
                 {
                   title: '接第一个应用',
@@ -531,7 +522,7 @@ function OverviewTab({ onShowRail, onGoTab }: { onShowRail: () => void; onGoTab:
         <Space wrap>
           <Button onClick={() => onGoTab('apps')}>接第一个应用</Button>
           <Button onClick={() => onGoTab('tls')}>配置证书</Button>
-          <Button onClick={() => onGoTab('users')}>注册策略</Button>
+          <Button onClick={() => onGoTab('users')}>注册与邀请奖励</Button>
           <Button type="text" onClick={onShowRail}>显示首配向导</Button>
         </Space>
       </Card>
@@ -608,7 +599,7 @@ function AppsTab(): ReactNode {
 
   const VIS_OPTIONS = [
     { value: 'public', label: '公开（免登录）' },
-    { value: 'login', label: '需登录（全部用户）' },
+    { value: 'login', label: '站内（其他用户可克隆，不可直接访问）' },
     { value: 'restricted', label: '指定分组与账号' },
     { value: 'private', label: '仅自己（私有）' },
   ];
@@ -760,8 +751,8 @@ function AppsTab(): ReactNode {
                     : r.visibility === 'private'
                       ? '仅自己'
                       : r.visibility === 'restricted'
-                        ? '需登录（指定范围）'
-                        : '需登录'}
+                        ? '站内（指定范围）'
+                        : '站内'}
                 </Tag>
               ),
             },
@@ -1046,7 +1037,7 @@ function AppsTab(): ReactNode {
   );
 }
 
-// ---------- 用户与注册（用户列表 + 注册策略 + 邀请码） ----------
+// ---------- 用户与注册（用户列表 + 邀请奖励） ----------
 
 function UsersRegTab(): ReactNode {
   const qc = useQueryClient();
@@ -1201,10 +1192,10 @@ function UsersRegTab(): ReactNode {
       <Alert
         type="info"
         showIcon
-        message="权益包为可选配置"
-        description="开放注册不要求预先配置零价权益包。没有可用权益包时，新用户以未订阅状态进入个人中心，初始积分按注册策略发放。"
+        message="本站默认开放注册"
+        description="邀请码为选填项；使用有效邀请码注册后，邀请人获得配置的奖励积分。管理员停用邀请码后仍可继续注册，但不发放邀请奖励。"
       />
-      <Card size="small" title="注册策略">
+      <Card size="small" title="注册与邀请奖励">
         <SettingsForm groups={['注册与账号']} />
       </Card>
 
@@ -1212,27 +1203,57 @@ function UsersRegTab(): ReactNode {
 
       <Card
         size="small"
-        title="邀请码（注册开关 = 邀请制时使用）"
-        extra={
-          <Button
-            onClick={async () => {
-              await api('/api/admin/invites', { method: 'POST', json: { count: 5 } });
-              message.success('已生成 5 枚');
-              void qc.invalidateQueries({ queryKey: ['admin-invites'] });
-            }}
-          >
-            生成 5 枚
-          </Button>
-        }
+        title="账号邀请码"
       >
+        {invitesQ.isError ? (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="邀请码列表加载失败"
+            description={invitesQ.error instanceof Error ? invitesQ.error.message : '请稍后重试'}
+          />
+        ) : null}
         <Table<Invite>
           rowKey="code"
           size="small"
           dataSource={invitesQ.data?.invites ?? []}
-          pagination={false}
+          loading={invitesQ.isLoading}
+          pagination={{ pageSize: 10, showSizeChanger: true }}
           columns={[
             { title: '邀请码', dataIndex: 'code', render: (v: string) => <Typography.Text copyable code>{v}</Typography.Text> },
-            { title: '状态', width: 120, render: (_, r) => (r.usedBy ? <Tag>已使用</Tag> : <Tag color="green">可用</Tag>) },
+            {
+              title: '属主账号',
+              render: (_, r) => (
+                <span title={`用户 ID：${r.ownerUserId}`}>
+                  {r.ownerUsername ?? r.ownerEmail ?? r.ownerName}（{r.ownerUserId}）
+                </span>
+              ),
+            },
+            { title: '成功注册数', dataIndex: 'useCount', width: 110 },
+            {
+              title: '邀请奖励',
+              width: 130,
+              render: (_, r) => (
+                <Switch
+                  checked={r.enabled}
+                  checkedChildren="启用"
+                  unCheckedChildren="停用"
+                  onChange={async (enabled) => {
+                    try {
+                      await api(`/api/admin/invites/${encodeURIComponent(r.code)}`, {
+                        method: 'PATCH',
+                        json: { enabled },
+                      });
+                      message.success(enabled ? '邀请码已启用' : '邀请码已停用；后续注册不发奖励');
+                      void qc.invalidateQueries({ queryKey: ['admin-invites'] });
+                    } catch (err) {
+                      message.error(err instanceof Error ? err.message : '更新邀请码状态失败');
+                    }
+                  }}
+                />
+              ),
+            },
             { title: '创建时间', width: 180, render: (_, r) => new Date(r.createdAt).toLocaleString() },
           ]}
         />
@@ -2038,6 +2059,7 @@ interface PlanRowUI {
   tokenGrant: number;
   tier: number;
   appUploadLimit: number;
+  appCloneLimit: number;
   enabled: boolean;
 }
 interface OrderRowUI {
@@ -2119,8 +2141,9 @@ function OpsTab(): ReactNode {
             { title: '权益等级', dataIndex: 'tier', width: 120, render: (tier: number) => <TierBadge tier={tier} /> },
             { title: '分组', dataIndex: 'groupName', width: 140 },
             { title: '可用时间', dataIndex: 'durationDays', width: 130, render: (v: number) => planDurationLabel(v) },
-            { title: '可上传应用数', dataIndex: 'appUploadLimit', width: 150 },
-            { title: 'Token 额度', dataIndex: 'tokenGrant', width: 120, render: (v: number) => v.toLocaleString() },
+            { title: '可创建应用', dataIndex: 'appUploadLimit', width: 150, render: (v: number) => formatEntitlementCount(v) },
+            { title: '可克隆应用数', dataIndex: 'appCloneLimit', width: 150, render: (v: number) => formatEntitlementCount(v) },
+            { title: 'Token 额度', dataIndex: 'tokenGrant', width: 120, render: (v: number) => formatEntitlementCount(v) },
             { title: '价格', width: 120, render: (_, r) => formatMembershipPlanPrice(r) },
             { title: '状态', width: 80, render: (_, r) => (r.enabled ? <Tag color="green">在售</Tag> : <Tag>停售</Tag>) },
             {
@@ -2165,7 +2188,7 @@ function OpsTab(): ReactNode {
         <Form
           form={planForm}
           layout="vertical"
-          initialValues={{ durationUnit: 'month', tier: 0, appUploadLimit: 10, tokenGrant: 0, priceCurrency: 'CNY', priceAmount: 0 }}
+          initialValues={{ durationUnit: 'month', tier: 0, appUploadLimit: 10, appCloneLimit: 0, tokenGrant: 0, priceCurrency: 'CNY', priceAmount: 0 }}
           onFinish={async (values) => {
             setPlanSaving(true);
             try {
@@ -2177,6 +2200,7 @@ function OpsTab(): ReactNode {
                   durationDays: PLAN_DURATION_DAYS[String(values.durationUnit)],
                   tier: Number(values.tier),
                   appUploadLimit: Number(values.appUploadLimit),
+                  appCloneLimit: Number(values.appCloneLimit ?? 0),
                   tokenGrant: Number(values.tokenGrant ?? 0),
                   priceCurrency: values.priceCurrency,
                   priceFen: values.priceCurrency === 'CNY' ? Math.round(Number(values.priceAmount ?? 0) * 100) : 0,
@@ -2213,7 +2237,10 @@ function OpsTab(): ReactNode {
           <Form.Item name="durationUnit" label="可用时间" rules={[{ required: true }]}>
             <Select options={[{ value: 'month', label: '月（30 天）' }, { value: 'quarter', label: '季度（90 天）' }, { value: 'year', label: '年（365 天）' }]} />
           </Form.Item>
-          <Form.Item name="appUploadLimit" label="可上传应用数量" rules={[{ required: true, message: '请设置可上传应用数量' }]}>
+          <Form.Item name="appUploadLimit" label="可创建应用" rules={[{ required: true, message: '请设置可创建应用数量' }]}>
+            <InputNumber min={0} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="appCloneLimit" label="可克隆应用数量" rules={[{ required: true, message: '请设置可克隆应用数量' }]}>
             <InputNumber min={0} precision={0} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="tokenGrant" label="Token 额度">

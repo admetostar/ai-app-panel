@@ -3,7 +3,7 @@
 # build-native.sh — 产出「无 Docker」原生部署包（自含 glibc Node 22）
 #
 # 用法：./build-native.sh linux/arm64|linux/amd64
-# 产物：dist/ai-app-portal-native_<版本>_linux_<arch>.tar.gz
+# 原生运行包构建入口。
 #
 # 原理：在 node:22-bookworm（glibc Debian）容器内构建产物；
 #   Node 二进制取自同一镜像，包内 JavaScript 依赖无需原生数据库模块。
@@ -51,7 +51,7 @@ docker cp "$CID:/usr/local/bin/node" "$DIST/node-$ARCH"
 docker rm "$CID" >/dev/null
 
 echo "⑤ 组装包"
-BUNDLE="$DIST/ai-app-portal-native_${VER}_linux_$ARCH"
+BUNDLE="$DIST/ai-app-panel-native_${VER}_linux_$ARCH"
 rm -rf "$BUNDLE" && mkdir -p "$BUNDLE/bin"
 cp "$DIST/node-$ARCH" "$BUNDLE/bin/node" && chmod +x "$BUNDLE/bin/node"
 cp -R "$DIST/out-$ARCH/out/node_modules" "$BUNDLE/node_modules"

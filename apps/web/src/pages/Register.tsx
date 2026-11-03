@@ -1,9 +1,7 @@
-/** 注册页（A2）：读门户注册开关；两步注册（资料 → 邮箱验证码）；全程 PoW。 */
-import { Alert, Button, Form, Input, Result, Typography, message } from 'antd';
+/** 注册页（A2）：始终开放注册；两步注册（资料 → 邮箱验证码）；全程 PoW。 */
+import { Alert, Button, Form, Input, Typography, message } from 'antd';
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import type { PortalBootstrap } from '@aap/shared';
+import { Link, useSearchParams } from 'react-router-dom';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '@aap/shared';
 import { api } from '../api/client';
 import { obtainPowToken } from '../lib/pow';
@@ -18,16 +16,11 @@ interface StartResult {
 
 export function RegisterPage() {
   const redirect = usePostAuthRedirect();
-  const { data: boot } = useQuery({
-    queryKey: ['bootstrap'],
-    queryFn: () => api<PortalBootstrap>('/api/portal/bootstrap'),
-  });
-  const [step, setStep] = useState<'form' | 'code'>(boot?.registration.mode === 'open' ? 'form' : 'form');
+  const [searchParams] = useSearchParams();
+  const [step, setStep] = useState<'form' | 'code'>('form');
   const [start, setStart] = useState<StartResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [form] = Form.useForm();
-
-  const mode = boot?.registration.mode ?? 'closed';
 
   async function onFormFinish(values: {
     username: string;
@@ -72,19 +65,6 @@ export function RegisterPage() {
     }
   }
 
-  if (mode === 'closed') {
-    return (
-      <AuthPanel>
-        <Result
-          status="403"
-          title="本站未开放注册"
-          subTitle="如需账号，请联系管理员。"
-          extra={<Link to="/login">返回登录</Link>}
-        />
-      </AuthPanel>
-    );
-  }
-
   return (
     <AuthPanel>
       <Typography.Title level={3} className="aap-auth-title">
@@ -95,7 +75,12 @@ export function RegisterPage() {
       </Typography.Paragraph>
 
       {step === 'form' ? (
-        <Form form={form} layout="vertical" onFinish={onFormFinish}>
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={onFormFinish}
+          initialValues={{ inviteCode: searchParams.get('invite') ?? '' }}
+        >
           <Form.Item
             name="username"
             label="用户名"
@@ -148,11 +133,13 @@ export function RegisterPage() {
           >
             <Input />
           </Form.Item>
-          {mode === 'invite' ? (
-            <Form.Item name="inviteCode" label="邀请码" rules={[{ required: true, message: '本站注册需邀请码' }]}>
-              <Input placeholder="xxxx-xxxx" />
-            </Form.Item>
-          ) : null}
+          <Form.Item
+            name="inviteCode"
+            label="邀请码（选填）"
+            extra="填写有效邀请码，邀请人可获得奖励积分；无效或已停用的邀请码不影响注册。"
+          >
+            <Input placeholder="xxxx-xxxx-xxxx-xxxx" maxLength={191} />
+          </Form.Item>
           <Button type="primary" htmlType="submit" loading={loading} block>
             获取邮箱验证码
           </Button>

@@ -16,7 +16,7 @@
 | 网关 / LLM 网关 / 沙箱 / 计费 / 账号安全的架构设计，或接口面契约变更 | `docs/app-develop-internal.skill.md`（ADR，已定决策勿再反复讨论） |
 | 开发或审查 .awpk 包 | `docs/app-develop.skill-v0.3.md` |
 | 架构 / 配置 / 运行机制速查 | `docs/DEVELOPMENT.md` |
-| 产品需求 | `docs/ai-app-portal-PRD-v0.3.1.md` |
+| 产品需求 | `docs/ai-app-panel-PRD-v0.3.1.md` |
 
 ## 交互约定
 

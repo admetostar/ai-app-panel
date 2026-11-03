@@ -262,6 +262,9 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
         : '/login';
       return htmlError(res, 403, '需要登录', `应用「%%」需要登录后访问，<a href="${loginHref}">去登录</a>`, app.name);
     }
+    if (app.visibility === 'login') {
+      return htmlError(res, 403, '站内共享', '此应用不可直接访问，请前往“我的应用”克隆后使用');
+    }
     if (user.authState !== 'full') {
       return htmlError(res, 403, '需要完成验证', '请先完成多因子认证');
     }

@@ -1,1 +1,0 @@
-ALTER TABLE `registrations` ADD `completed_at` integer;

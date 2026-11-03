@@ -3,5 +3,5 @@
 export type VerifyChannel = 'email' | 'phone';
 export type CodePurpose = 'register' | 'reset' | 'bind';
 
-/** 注册开关三档（settings.REGISTRATION_MODE） */
-export type RegistrationMode = 'closed' | 'open' | 'invite';
+/** 当前注册策略固定为开放注册 */
+export type RegistrationMode = 'open';

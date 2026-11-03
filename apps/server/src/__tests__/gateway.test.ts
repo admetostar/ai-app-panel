@@ -123,7 +123,7 @@ beforeAll(async () => {
     .returning({ id: users.id });
   await writeLocalCredentials(u!.id, 'free-password');
 
-  // 注册应用：公开(passUser) / 需登录 / 会员 / path 型凭据
+  // 注册应用：公开(passUser) / 站内共享 / 会员 / path 型凭据
   await createAppViaAdmin({ id: 'pub', name: '公开应用', upstream: `http://127.0.0.1:${upPort}`, visibility: 'public', passUser: true });
   await createAppViaAdmin({ id: 'priv', name: '登录应用', upstream: `http://127.0.0.1:${upPort}`, visibility: 'login' });
   await createAppViaAdmin({ id: 'vip', name: '受限应用', upstream: `http://127.0.0.1:${upPort}`, visibility: 'restricted', allowedGroupIds: [999999] });
@@ -262,9 +262,8 @@ describe('W5 访问策略（B4 三态）', () => {
     const anon = await fetch(`http://127.0.0.1:${gwPort}/api/apps`);
     const anonBody = (await anon.json()) as { apps: Array<{ id: string; accessible: boolean }> };
     const pubCard = anonBody.apps.find((a) => a.id === 'pub');
-    const privCard = anonBody.apps.find((a) => a.id === 'priv');
     expect(pubCard?.accessible).toBe(true);
-    expect(privCard?.accessible).toBe(false);
+    expect(anonBody.apps.some((a) => a.id === 'priv')).toBe(false);
   });
 });
 
@@ -421,15 +420,15 @@ describe('P 可见性新模型（restricted/private/分组）', () => {
   });
 });
 
-describe('P 可见性矩阵（login 态）', () => {
-  it('login 应用：匿名 403 需要登录；登录用户 200；卡片墙 accessible=true', async () => {
+describe('站内共享可见性矩阵', () => {
+  it('站内应用：匿名需登录；其他登录用户不能直接访问或在发现页打开', async () => {
     const base = `http://127.0.0.1:${gwPort}`;
     // 匿名 → 403 引导登录
     const anon = await fetch(`${base}/app/priv/`);
     expect(anon.status).toBe(403);
     expect(await anon.text()).toContain('需要登录');
 
-    // 登录普通用户 → 可访问（入口 HTML 正常返回）
+    // 其他登录用户仍不可直接访问
     const login = await fetch(`${base}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base },
@@ -437,24 +436,17 @@ describe('P 可见性矩阵（login 态）', () => {
     });
     const cookie = cookieOf(login);
     const entry = await fetch(`${base}/app/priv/`, { headers: { cookie } });
-    expect(entry.status).toBe(200);
-    expect(await entry.text()).toContain('<base href="/app/priv/">');
+    expect(entry.status).toBe(403);
+    expect(await entry.text()).toContain('站内共享');
 
-    // 卡片墙：登录用户 accessible=true（回归：canAccess 曾缺 login 分支恒 false）
+    // 站内共享只会显示在「我的应用 → 站内共享」，不进入发现页。
     const wall = await fetch(`${base}/api/apps`, { headers: { cookie } });
     const wallBody = (await wall.json()) as { apps: Array<{ id: string; accessible: boolean }> };
-    expect(wallBody.apps.find((a) => a.id === 'priv')?.accessible).toBe(true);
+    expect(wallBody.apps.some((a) => a.id === 'priv')).toBe(false);
   });
 
-  it('login 应用：登录用户 WS 正常升级（匿名此前已被独立用例覆盖）', async () => {
-    const base = `http://127.0.0.1:${gwPort}`;
-    const login = await fetch(`${base}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({ username: 'freeuser', password: 'free-password' }),
-    });
-    const cookie = cookieOf(login);
-    const ws = new WebSocket(`ws://127.0.0.1:${gwPort}/app/priv/echo`, { headers: { cookie } });
+  it('站内源应用归属管理员可通过 WebSocket 访问，普通登录用户不能访问', async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${gwPort}/app/priv/echo`, { headers: { cookie: adminCookie } });
     const received = await new Promise<string>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error('timeout')), 5000);
       ws.on('open', () => ws.send('matrix'));

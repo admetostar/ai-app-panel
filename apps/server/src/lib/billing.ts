@@ -7,7 +7,7 @@
  * 账本与缓存的边界不变：账本 append-only，缓存可重算。
  */
 import { randomBytes } from 'node:crypto';
-import { and, eq, gt, ne, sql } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import type { MembershipPriceCurrency } from '@aap/shared';
 import { getDb, type DbExecutor } from '../db/index.js';
 import { apps, llmBalanceCache, llmLedger, llmRoutes, membershipPlans, topupOrders, userGroupMembers, users } from '../db/schema.js';
@@ -34,6 +34,7 @@ export interface PlanRow {
   tokenGrant: number;
   tier: number;
   appUploadLimit: number;
+  appCloneLimit: number;
   enabled: boolean;
 }
 
@@ -57,6 +58,7 @@ async function activeMembershipPlan(
     tokenGrant: row.tokenGrant,
     tier: row.tier,
     appUploadLimit: row.appUploadLimit,
+    appCloneLimit: row.appCloneLimit,
     enabled: row.enabled,
   };
 }
@@ -98,6 +100,7 @@ export async function listPlans(onlyEnabled = false): Promise<PlanRow[]> {
     tokenGrant: r.tokenGrant,
     tier: r.tier,
     appUploadLimit: r.appUploadLimit,
+    appCloneLimit: r.appCloneLimit,
     enabled: r.enabled,
   }));
 }
@@ -121,6 +124,7 @@ export async function createPlan(p: {
   tokenGrant?: number;
   tier?: number;
   appUploadLimit?: number;
+  appCloneLimit?: number;
 }): Promise<number> {
   const priceCurrency = p.priceCurrency ?? 'CNY';
   if (!['CNY', 'USD', 'POINTS'].includes(priceCurrency)) throw new HttpError(400, 'INVALID_CURRENCY', '不支持的套餐计价单位');
@@ -144,6 +148,7 @@ export async function createPlan(p: {
       tokenGrant: Math.max(0, p.tokenGrant ?? 0),
       tier: Math.min(5, Math.max(0, Math.trunc(p.tier ?? 0))),
       appUploadLimit: Math.max(0, p.appUploadLimit ?? 10),
+      appCloneLimit: Math.max(0, p.appCloneLimit ?? 0),
       createdAt: Date.now(),
     })
     .returning({ id: membershipPlans.id });
@@ -161,6 +166,7 @@ export async function updatePlan(id: number, patch: {
   redeemUrl?: unknown;
   tokenGrant?: number;
   appUploadLimit?: number;
+  appCloneLimit?: number;
   enabled?: boolean;
 }): Promise<void> {
   const set: Partial<typeof membershipPlans.$inferInsert> = {};
@@ -181,6 +187,7 @@ export async function updatePlan(id: number, patch: {
   }
   if (patch.tokenGrant !== undefined) set.tokenGrant = Math.max(0, patch.tokenGrant);
   if (patch.appUploadLimit !== undefined) set.appUploadLimit = Math.max(0, patch.appUploadLimit);
+  if (patch.appCloneLimit !== undefined) set.appCloneLimit = Math.max(0, patch.appCloneLimit);
   if (patch.enabled !== undefined) set.enabled = patch.enabled;
   await getDb().update(membershipPlans).set(set).where(eq(membershipPlans.id, id));
 }
@@ -224,15 +231,38 @@ export async function getAppUploadQuota(userId: number): Promise<AppUploadQuota>
   const used = Number((await db
     .select({ count: sql<number>`count(*)` })
     .from(apps)
-    .where(and(eq(apps.ownerUserId, userId), ne(apps.kind, 'upstream'))))[0]?.count ?? 0);
+    .where(and(eq(apps.ownerUserId, userId), ne(apps.kind, 'upstream'), isNull(apps.clonedFromAppId))))[0]?.count ?? 0);
   const limit = plan?.appUploadLimit ?? 0;
+  return { limit, used, remaining: Math.max(0, limit - used) };
+}
+
+export interface AppCloneQuota {
+  limit: number;
+  used: number;
+  remaining: number;
+}
+
+export async function getAppCloneQuota(userId: number): Promise<AppCloneQuota> {
+  const db = getDb();
+  const user = (await db
+    .select({ membershipPlanId: users.membershipPlanId, membershipExpiresAt: users.membershipExpiresAt })
+    .from(users)
+    .where(eq(users.id, userId)))[0];
+  const plan = user?.membershipPlanId && user.membershipExpiresAt && user.membershipExpiresAt > Date.now()
+    ? (await db.select().from(membershipPlans).where(eq(membershipPlans.id, user.membershipPlanId)))[0]
+    : undefined;
+  const used = Number((await db
+    .select({ count: sql<number>`count(*)` })
+    .from(apps)
+    .where(and(eq(apps.ownerUserId, userId), isNotNull(apps.clonedFromAppId))))[0]?.count ?? 0);
+  const limit = plan?.appCloneLimit ?? 0;
   return { limit, used, remaining: Math.max(0, limit - used) };
 }
 
 export async function assertAppUploadQuota(userId: number): Promise<AppUploadQuota> {
   const quota = await getAppUploadQuota(userId);
   if (quota.remaining <= 0) {
-    throw new HttpError(403, 'APP_UPLOAD_LIMIT_REACHED', `当前权益包可上传应用数量已达上限（${quota.used}/${quota.limit}），请删除已有应用或升级权益包`);
+    throw new HttpError(403, 'APP_UPLOAD_LIMIT_REACHED', `当前权益包可创建应用数量已达上限（${quota.used}/${quota.limit}），请删除已有应用或升级权益包`);
   }
   return quota;
 }
@@ -367,6 +397,7 @@ export async function activateMembership(userId: number, planId: number, executo
       tokenGrant: planRow.tokenGrant,
       tier: planRow.tier,
       appUploadLimit: planRow.appUploadLimit,
+      appCloneLimit: planRow.appCloneLimit,
       enabled: planRow.enabled,
     };
     const me = (await tx.select().from(users).where(eq(users.id, userId)).for('update'))[0];

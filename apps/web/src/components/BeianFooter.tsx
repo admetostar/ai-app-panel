@@ -1,9 +1,9 @@
 ﻿import type { BrandingInfo } from '@aap/shared';
 
 /** 项目主页（页脚未配置文案时的默认署名链接） */
-const PROJECT_URL = 'https://github.com/neon9809/AI-SuperPanel';
+const PROJECT_URL = 'https://github.com/admetostar/ai-app-panel';
 
-/** 页脚：署名（未配置文案时默认展示「AI超级面板」并链接项目主页）+ ICP + 公安备案组件。 */
+/** 页脚：署名（未配置文案时默认展示「ai-app-panel」并链接项目主页）+ ICP + 公安备案组件。 */
 export function BeianFooter({ branding }: { branding: BrandingInfo }) {
   const year = new Date().getFullYear();
   const icp = branding.icpNumber?.trim();
@@ -50,4 +50,3 @@ export function BeianFooter({ branding }: { branding: BrandingInfo }) {
     </footer>
   );
 }
-

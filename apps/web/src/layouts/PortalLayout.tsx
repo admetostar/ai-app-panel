@@ -20,6 +20,7 @@ import { useSession, useLogout } from '../state/session';
 import { userAvatarSrc } from '../lib/userAvatar';
 import type { AppCard } from '@aap/shared';
 import { TierBadge } from '../components/TierBadge';
+import { InviteIdentityCard } from '../components/InviteIdentityCard';
 
 type UserPageTheme = 'light' | 'dark' | 'system';
 const USER_PAGE_THEME_COOKIE = 'aap_user_page_theme';
@@ -73,7 +74,7 @@ export function PortalLayout() {
 
   const branding = data?.branding;
   useEffect(() => {
-    const siteName = branding?.siteName?.trim() || 'AI超级面板';
+    const siteName = branding?.siteName?.trim() || 'ai-app-panel';
     document.title = siteName;
 
     const existingIcon = document.head.querySelector<HTMLLinkElement>('link[data-aap-site-icon]');
@@ -203,7 +204,7 @@ export function PortalLayout() {
       {isUserPage ? (
         <aside className={`aap-user-sidebar${sidebarCollapsed ? ' aap-user-sidebar--collapsed' : ''}`} aria-label="个人中心导航">
           <div className="aap-user-sidebar__top">
-            <Link to="/" className="aap-user-sidebar__brand" aria-label={branding?.siteName ?? 'AI超级面板'}>
+            <Link to="/" className="aap-user-sidebar__brand" aria-label={branding?.siteName ?? 'ai-app-panel'}>
               {branding?.logo ? (
                 <img src={branding.logo} alt="" />
               ) : (
@@ -211,7 +212,7 @@ export function PortalLayout() {
                   {branding?.siteName?.[0] ?? 'A'}
                 </span>
               )}
-              <span className="aap-user-sidebar__brand-name">{branding?.siteName ?? 'AI超级面板'}</span>
+              <span className="aap-user-sidebar__brand-name">{branding?.siteName ?? 'ai-app-panel'}</span>
             </Link>
             <Button
               type="text"
@@ -308,6 +309,13 @@ export function PortalLayout() {
                       </div>
                     </div>
                     <div className="aap-user-dropdown__menu">{menu}</div>
+                    <InviteIdentityCard
+                      open={userMenuOpen}
+                      siteName={branding?.siteName ?? 'ai-app-panel'}
+                      logo={branding?.logo ?? null}
+                      userName={me.user.name}
+                      theme={activeUserPageTheme}
+                    />
                   </div>
                 )}
               >
@@ -330,7 +338,7 @@ export function PortalLayout() {
                 {branding?.siteName?.[0] ?? 'A'}
               </span>
             )}
-            <span className="aap-site-name">{branding?.siteName ?? 'AI超级面板'}</span>
+            <span className="aap-site-name">{branding?.siteName ?? 'ai-app-panel'}</span>
           </div>
         </Link>
         {branding?.tagline ? <span className="aap-tagline">{branding.tagline}</span> : null}
@@ -434,6 +442,13 @@ export function PortalLayout() {
                     </div>
                   </div>
                   <div className="aap-user-dropdown__menu">{menu}</div>
+                  <InviteIdentityCard
+                    open={userMenuOpen}
+                    siteName={branding?.siteName ?? 'ai-app-panel'}
+                    logo={branding?.logo ?? null}
+                    userName={me.user.name}
+                    theme={activeUserPageTheme}
+                  />
                 </div>
               )}
             >

@@ -47,8 +47,8 @@ class ResendEmailChannel implements CodeChannel {
   readonly id = 'email' as const;
   async send(target: string, code: string, purpose: CodePurpose): Promise<void> {
     const key = getSetting('RESEND_API_KEY') ?? '';
-    const from = getSetting('RESEND_FROM') || 'AI超级面板 <onboarding@resend.dev>';
-    const site = getSetting('SITE_NAME') || 'AI超级面板';
+    const from = getSetting('RESEND_FROM') || 'ai-app-panel <onboarding@resend.dev>';
+    const site = getSetting('SITE_NAME') || 'ai-app-panel';
     const purposeText: Record<CodePurpose, string> = {
       register: '注册账号',
       reset: '重置密码',
@@ -85,7 +85,7 @@ class SmtpEmailChannel implements CodeChannel {
       },
     });
     const from = getSetting('SMTP_FROM') || getSetting('SMTP_USER') || '';
-    const site = getSetting('SITE_NAME') || 'AI超级面板';
+    const site = getSetting('SITE_NAME') || 'ai-app-panel';
     const purposeText: Record<CodePurpose, string> = {
       register: '注册账号',
       reset: '重置密码',

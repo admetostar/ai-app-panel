@@ -161,7 +161,7 @@ export function createApp(cfg: AapConfig = config): Express {
   // 应用域名脚本入口（历史路径兼容）与 LLM 网关。
   // 统一页面元素脚本（P3）：被注入到所有门户代理/托管的 HTML 应用
   app.get('/portal-chrome.js', (_req, res) => {
-    res.type('text/javascript; charset=utf-8').send(portalChromeJs(getSetting('SITE_NAME') || 'AI超级面板'));
+    res.type('text/javascript; charset=utf-8').send(portalChromeJs(getSetting('SITE_NAME') || 'ai-app-panel'));
   });
   app.get('/portal-app-bridge-host.js', (_req, res) => {
     res.type('text/javascript; charset=utf-8').send(sandboxBridgeHostJs());

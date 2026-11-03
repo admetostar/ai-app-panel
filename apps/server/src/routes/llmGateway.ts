@@ -43,7 +43,7 @@ function fullTimeoutMs(): number {
 const DEFAULT_TOKEN_PER_MIN = 60;
 
 function openaiError(status: number, code: string, message: string): { status: number; body: { error: { message: string; type: string; code: string } } } {
-  return { status, body: { error: { message, type: 'ai_app_portal_error', code } } };
+  return { status, body: { error: { message, type: 'ai_app_panel_error', code } } };
 }
 
 // ---------- 认证与应用级限流（C2/C5） ----------
@@ -121,7 +121,7 @@ llmGatewayRouter.get(
     const now = Math.floor(Date.now() / 1000);
     res.json({
       object: 'list',
-      data: await (await modelCatalog()).map((m) => ({ id: m, object: 'model', created: now, owned_by: 'AI-SuperPanel' })),
+      data: await (await modelCatalog()).map((m) => ({ id: m, object: 'model', created: now, owned_by: 'ai-app-panel' })),
     });
   }),
 );

@@ -23,10 +23,10 @@
 set -euo pipefail
 
 HOST="${AAP_DEPLOY_HOST:?'必须通过环境变量指定部署目标：AAP_DEPLOY_HOST=user@host ./deploy/fast-deploy.sh'}"
-KEY="${AAP_DEPLOY_KEY:-$HOME/.ssh/aap_portal_test}"
+KEY="${AAP_DEPLOY_KEY:-$HOME/.ssh/ai-app-panel}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REMOTE_DIR="/opt/AI-SuperPanel"
-CONTAINER="AI-SuperPanel"
+REMOTE_DIR="/opt/ai-app-panel"
+CONTAINER="ai-app-panel"
 
 echo "==> [1/3] 本地构建 shared -> server -> web"
 pnpm skills:sync
@@ -52,11 +52,11 @@ echo "==> [3/3] docker cp -> $CONTAINER:/out 并重启"
 ssh -i "$KEY" -o BatchMode=yes -o ConnectTimeout=15 "$HOST" \
   REMOTE_DIR="$REMOTE_DIR" CONTAINER="$CONTAINER" 'bash -s' <<'REMOTE_SCRIPT'
 set -e
-docker exec "$CONTAINER" sh -c 'rm -rf /out/dist/* /out/public/* /out/aap-sdk/* /out/drizzle/*'
+docker exec "$CONTAINER" sh -c 'rm -rf /out/dist/* /out/public/* /out/aap-sdk/* /out/drizzle-pg/*'
 docker cp "$REMOTE_DIR/apps/server/dist/."           "$CONTAINER:/out/dist/"
 docker cp "$REMOTE_DIR/apps/web/dist/."              "$CONTAINER:/out/public/"
 docker cp "$REMOTE_DIR/packages/aap-sdk/."           "$CONTAINER:/out/aap-sdk/"
-docker cp "$REMOTE_DIR/apps/server/drizzle/."        "$CONTAINER:/out/drizzle/"
+docker cp "$REMOTE_DIR/apps/server/drizzle-pg/."     "$CONTAINER:/out/drizzle-pg/"
 docker cp "$REMOTE_DIR/apps/server/assets/app-develop.skill-v0.3.md" "$CONTAINER:/out/assets/app-develop.skill-v0.3.md"
 docker cp "$REMOTE_DIR/apps/server/assets/awpk-app-develop.skill"    "$CONTAINER:/out/assets/awpk-app-develop.skill"
 docker cp "$REMOTE_DIR/apps/server/assets/awpk-app-develop.zip"      "$CONTAINER:/out/assets/awpk-app-develop.zip"

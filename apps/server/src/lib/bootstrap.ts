@@ -13,6 +13,7 @@ import { localCredentials, users } from '../db/schema.js';
 import { generatePassword, hashPassword } from './passwords.js';
 import { audit } from './audit.js';
 import { defaultAvatarForUser } from './userAvatar.js';
+import { ensureInviteCode } from './invites.js';
 
 export const CREDENTIALS_FILE = 'admin-credentials.txt';
 const INITIAL_ADMIN_POINTS = 99_999_999;
@@ -56,12 +57,13 @@ export async function ensureInitialAdmin(): Promise<void> {
     .returning({ id: users.id });
   if (!created) throw new Error('Failed to create bootstrap administrator');
   const userId = created.id;
+  await ensureInviteCode(userId);
   await getDb().update(users).set({ avatar: defaultAvatarForUser(userId) }).where(eq(users.id, userId));
   await writeLocalCredentials(userId, password);
 
   // 凭据落盘（0600）+ 打印日志
   const content = [
-    '=== AI超级面板 初始管理员凭据（一次性，首次登录后本文件自动删除） ===',
+    '=== ai-app-panel 初始管理员凭据（一次性，首次登录后本文件自动删除） ===',
     `地址: http://localhost:${config.port}`,
     `用户名: ${username}`,
     `密码: ${password}`,

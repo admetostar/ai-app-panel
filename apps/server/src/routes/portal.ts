@@ -1,6 +1,6 @@
 ﻿import { Router } from 'express';
 import { sql } from 'drizzle-orm';
-import type { PortalBootstrap, RegistrationMode } from '@aap/shared';
+import type { PortalBootstrap } from '@aap/shared';
 import { getDb } from '../db/index.js';
 import { users } from '../db/schema.js';
 import { getSetting } from '../lib/settings.js';
@@ -16,15 +16,12 @@ import { config } from '../config/index.js';
  */
 export const portalRouter = Router();
 
-const REGISTRATION_MODES: RegistrationMode[] = ['closed', 'open', 'invite'];
-
 portalRouter.get('/portal/bootstrap', async (_req, res) => {
-  const mode = (getSetting('REGISTRATION_MODE') ?? 'closed') as RegistrationMode;
   const bootstrap: PortalBootstrap = {
     appDomainRoot: appDomainRoot(),
     appPort: appDomainRoot() === 'localhost' ? config.port : null,
     branding: {
-      siteName: getSetting('SITE_NAME') || 'AI超级面板',
+      siteName: getSetting('SITE_NAME') || 'ai-app-panel',
       tagline: getSetting('SITE_TAGLINE') || '',
       logo: getSetting('LOGO') || null,
       themeId: 'graphite',
@@ -34,7 +31,7 @@ portalRouter.get('/portal/bootstrap', async (_req, res) => {
       policeNumber: getSetting('POLICE_NUMBER') || null,
     },
     registration: {
-      mode: REGISTRATION_MODES.includes(mode) ? mode : 'closed',
+      mode: 'open',
       turnstileEnabled: Boolean(getSetting('TURNSTILE_SITE_KEY')),
     },
     needsInit: Number((await getDb().select({ n: sql<number>`count(*)` }).from(users))[0]?.n ?? 0) === 0,

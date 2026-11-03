@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { and, eq, gt, ne, sql } from 'drizzle-orm';
 import { getDb } from '../db/index.js';
-import { llmLedger, membershipPlans, sessions, users } from '../db/schema.js';
+import { inviteCodes, llmLedger, membershipPlans, sessions, users } from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
 import { requireAuth, requireStepUp } from '../lib/auth.js';
 import { publicUserOf } from './shared.js';
@@ -28,6 +28,7 @@ userRouter.use('/user', (req, res, next) => {
   if (
     !req.user?.membershipSelectionRequired ||
     req.path === '/membership/select-plan' ||
+    req.path === '/membership/skip-selection' ||
     isMembershipSummaryRequest
   ) {
     next();
@@ -40,6 +41,18 @@ userRouter.use('/user', (req, res, next) => {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_AVATAR_BYTES = 100 * 1024;
+
+userRouter.get(
+  '/user/invite',
+  h(async (req, res) => {
+    const row = (await getDb()
+      .select({ code: inviteCodes.code, useCount: inviteCodes.useCount })
+      .from(inviteCodes)
+      .where(eq(inviteCodes.ownerUserId, req.user!.id)))[0];
+    if (!row) throw new HttpError(404, 'INVITE_NOT_FOUND', '账号邀请码尚未生成，请稍后重试');
+    res.json(row);
+  }),
+);
 
 userRouter.get(
   '/user/profile',
@@ -192,7 +205,7 @@ userRouter.get(
 userRouter.get(
   '/user/membership',
   h(async (req, res) => {
-    const { getAppUploadQuota, listPlans, listUserOrders } = await import('../lib/billing.js');
+    const { getAppUploadQuota, getAppCloneQuota, listPlans, listUserOrders } = await import('../lib/billing.js');
     const { listGroups } = await import('../lib/groups.js');
     const uid = req.user!.id;
     const me = (await getDb().select().from(users).where(eq(users.id, uid)))[0];
@@ -202,6 +215,7 @@ userRouter.get(
     const activePlan = plan && me?.membershipExpiresAt && me.membershipExpiresAt > Date.now() ? plan : undefined;
     const groupNames = new Map(await (await listGroups()).map((group) => [group.id, group.name]));
     const uploadQuota = await getAppUploadQuota(uid);
+    const cloneQuota = await getAppCloneQuota(uid);
     res.json({
       membership: activePlan && me?.membershipExpiresAt
         ? {
@@ -212,6 +226,9 @@ userRouter.get(
             appUploadLimit: uploadQuota.limit,
             appsUsed: uploadQuota.used,
             remainingUploadApps: uploadQuota.remaining,
+            appCloneLimit: cloneQuota.limit,
+            appsCloned: cloneQuota.used,
+            remainingCloneApps: cloneQuota.remaining,
           }
         : null,
       tokenBalance: await recomputeBalance(uid),

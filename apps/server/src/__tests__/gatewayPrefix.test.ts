@@ -17,7 +17,7 @@ import { stripGatewayPrefix } from '../lib/gatewayPrefix.js';
 import { idConflictsWithGatewayPrefix } from '../gateway/registry.js';
 import { setupTestDb, teardownTestDb } from './testkit.js';
 
-const PREFIX = '/app/AI-SuperPanel';
+const PREFIX = '/app/ai-app-panel';
 
 describe('stripGatewayPrefix 单元', () => {
   it('无前缀配置时恒等', () => {
@@ -43,12 +43,12 @@ describe('stripGatewayPrefix 单元', () => {
 describe('loadConfig 网关形态字段', () => {
   it('GATEWAY_PREFIX/SOCKET_PATH/HOST 解析与尾斜杠归一', () => {
     const cfg = loadConfig({
-      GATEWAY_PREFIX: '/app/AI-SuperPanel/',
+      GATEWAY_PREFIX: '/app/ai-app-panel/',
       SOCKET_PATH: '/run/aap/app.sock',
       HOST: '127.0.0.1',
       DATA_DIR: './data-x',
     } as unknown as NodeJS.ProcessEnv);
-    expect(cfg.gatewayPrefix).toBe('/app/AI-SuperPanel');
+    expect(cfg.gatewayPrefix).toBe('/app/ai-app-panel');
     expect(cfg.socketPath).toBe('/run/aap/app.sock');
     expect(cfg.host).toBe('127.0.0.1');
     const plain = loadConfig({ DATA_DIR: './data-y' } as unknown as NodeJS.ProcessEnv);
@@ -60,9 +60,9 @@ describe('loadConfig 网关形态字段', () => {
 
 describe('idConflictsWithGatewayPrefix', () => {
   it('与网关前缀末段同名即冲突（大小写不敏感），否则放行', () => {
-    expect(idConflictsWithGatewayPrefix('AI-SuperPanel', PREFIX)).toBe(true);
-    expect(idConflictsWithGatewayPrefix('AI-SuperPanel', PREFIX)).toBe(true);
-    expect(idConflictsWithGatewayPrefix('ai-app-portalx', PREFIX)).toBe(false);
+    expect(idConflictsWithGatewayPrefix('ai-app-panel', PREFIX)).toBe(true);
+    expect(idConflictsWithGatewayPrefix('ai-app-panel', PREFIX)).toBe(true);
+    expect(idConflictsWithGatewayPrefix('ai-app-panelx', PREFIX)).toBe(false);
     expect(idConflictsWithGatewayPrefix('ip-analyzer', PREFIX)).toBe(false);
     expect(idConflictsWithGatewayPrefix('anything', null)).toBe(false);
   });

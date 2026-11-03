@@ -5,7 +5,7 @@ export default defineConfig({
   schema: './src/db/schema.ts',
   out: './drizzle-pg',
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? 'postgres://aap:aap@localhost:5432/ai_app_portal',
+    url: process.env.DATABASE_URL ?? 'postgres://aap:aap@localhost:5432/ai_app_panel',
   },
   strict: true,
   verbose: true,

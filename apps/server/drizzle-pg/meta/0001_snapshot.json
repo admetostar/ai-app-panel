@@ -1,6 +1,6 @@
 {
-  "id": "e7a3d9e1-9fdd-41ae-b6ae-a2f719893dfe",
-  "prevId": "630665bd-6785-48f5-a2bb-3c26854f11cb",
+  "id": "02c4d5f0-f3e7-436f-a339-1a0bf151652c",
+  "prevId": "bfe86255-37b2-4318-a101-81d92ede6f64",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -200,6 +200,122 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.app_runtime_events": {
+      "name": "app_runtime_events",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "app_id": {
+          "name": "app_id",
+          "type": "varchar(191)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ts": {
+          "name": "ts",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "level": {
+          "name": "level",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event": {
+          "name": "event",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "method": {
+          "name": "method",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "path": {
+          "name": "path",
+          "type": "varchar(512)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status_code": {
+          "name": "status_code",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "duration_ms": {
+          "name": "duration_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "details": {
+          "name": "details",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "app_runtime_events_ts_idx": {
+          "name": "app_runtime_events_ts_idx",
+          "columns": [
+            {
+              "expression": "ts",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "app_runtime_events_app_ts_idx": {
+          "name": "app_runtime_events_app_ts_idx",
+          "columns": [
+            {
+              "expression": "app_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "ts",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.apps": {
       "name": "apps",
       "schema": "",
@@ -252,6 +368,18 @@
         },
         "owner_user_id": {
           "name": "owner_user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cloned_from_app_id": {
+          "name": "cloned_from_app_id",
+          "type": "varchar(512)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "publication_reward_points": {
+          "name": "publication_reward_points",
           "type": "integer",
           "primaryKey": false,
           "notNull": false
@@ -358,7 +486,29 @@
           "notNull": true
         }
       },
-      "indexes": {},
+      "indexes": {
+        "apps_owner_clone_idx": {
+          "name": "apps_owner_clone_idx",
+          "columns": [
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "cloned_from_app_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
@@ -441,29 +591,25 @@
           "primaryKey": true,
           "notNull": true
         },
-        "created_by": {
-          "name": "created_by",
+        "owner_user_id": {
+          "name": "owner_user_id",
           "type": "integer",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
-        "note": {
-          "name": "note",
-          "type": "text",
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true,
+          "default": true
         },
-        "used_by": {
-          "name": "used_by",
+        "use_count": {
+          "name": "use_count",
           "type": "integer",
           "primaryKey": false,
-          "notNull": false
-        },
-        "used_at": {
-          "name": "used_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
+          "notNull": true,
+          "default": 0
         },
         "created_at": {
           "name": "created_at",
@@ -472,8 +618,38 @@
           "notNull": true
         }
       },
-      "indexes": {},
-      "foreignKeys": {},
+      "indexes": {
+        "invite_codes_owner_user_id_uq": {
+          "name": "invite_codes_owner_user_id_uq",
+          "columns": [
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "invite_codes_owner_user_id_users_id_fk": {
+          "name": "invite_codes_owner_user_id_users_id_fk",
+          "tableFrom": "invite_codes",
+          "tableTo": "users",
+          "columnsFrom": [
+            "owner_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -1135,6 +1311,12 @@
           "notNull": true,
           "default": 0
         },
+        "redeem_url": {
+          "name": "redeem_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "token_grant": {
           "name": "token_grant",
           "type": "bigint",
@@ -1155,6 +1337,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": 10
+        },
+        "app_clone_limit": {
+          "name": "app_clone_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "enabled": {
           "name": "enabled",
@@ -2176,6 +2365,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "''"
+        },
+        "app_publish_reward_points": {
+          "name": "app_publish_reward_points",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "created_at": {
           "name": "created_at",

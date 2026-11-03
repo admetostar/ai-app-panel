@@ -15,6 +15,7 @@ export interface AapConfig {
   dataDir: string;
   databaseUrl: string;
   migrationsDir: string;
+  migrationsSchema: string | undefined;
   /** 生产模式下前端构建产物目录（不存在则不托管静态资源） */
   webDist: string | null;
 
@@ -85,6 +86,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AapConfig {
     migrationsDir: env.MIGRATIONS_DIR
       ? path.resolve(env.MIGRATIONS_DIR)
       : path.join(PKG_ROOT, 'drizzle-pg'),
+    migrationsSchema: env.MIGRATIONS_SCHEMA?.trim() || undefined,
     webDist: env.WEB_DIST ? path.resolve(env.WEB_DIST) : path.join(PKG_ROOT, '../web/dist'),
     gatewayPrefix: env.GATEWAY_PREFIX?.trim().replace(/\/+$/, '') || null,
     socketPath: env.SOCKET_PATH?.trim() || null,

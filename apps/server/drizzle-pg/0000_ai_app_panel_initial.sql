@@ -24,6 +24,20 @@ CREATE TABLE "app_runs" (
 	"logs" text
 );
 --> statement-breakpoint
+CREATE TABLE "app_runtime_events" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"app_id" varchar(191) NOT NULL,
+	"ts" bigint NOT NULL,
+	"level" text NOT NULL,
+	"event" varchar(64) NOT NULL,
+	"user_id" integer,
+	"method" varchar(16),
+	"path" varchar(512),
+	"status_code" integer,
+	"duration_ms" integer,
+	"details" text
+);
+--> statement-breakpoint
 CREATE TABLE "apps" (
 	"id" varchar(512) PRIMARY KEY NOT NULL,
 	"name" varchar(191) NOT NULL,
@@ -33,6 +47,7 @@ CREATE TABLE "apps" (
 	"visibility" text DEFAULT 'login' NOT NULL,
 	"kind" text DEFAULT 'upstream' NOT NULL,
 	"owner_user_id" integer,
+	"publication_reward_points" integer,
 	"manifest_json" text,
 	"runtime_mode" text,
 	"review_status" text DEFAULT 'none' NOT NULL,
@@ -62,10 +77,9 @@ CREATE TABLE "audit_logs" (
 --> statement-breakpoint
 CREATE TABLE "invite_codes" (
 	"code" varchar(191) PRIMARY KEY NOT NULL,
-	"created_by" integer,
-	"note" text,
-	"used_by" integer,
-	"used_at" bigint,
+	"owner_user_id" integer NOT NULL,
+	"enabled" boolean DEFAULT true NOT NULL,
+	"use_count" integer DEFAULT 0 NOT NULL,
 	"created_at" bigint NOT NULL
 );
 --> statement-breakpoint
@@ -154,7 +168,11 @@ CREATE TABLE "membership_plans" (
 	"name" varchar(191) NOT NULL,
 	"group_id" integer NOT NULL,
 	"duration_days" integer NOT NULL,
+	"price_currency" text DEFAULT 'CNY' NOT NULL,
 	"price_fen" integer DEFAULT 0 NOT NULL,
+	"price_cents" integer DEFAULT 0 NOT NULL,
+	"price_points" integer DEFAULT 0 NOT NULL,
+	"redeem_url" text,
 	"token_grant" bigint DEFAULT 0 NOT NULL,
 	"tier" integer DEFAULT 0 NOT NULL,
 	"public_app_limit" integer DEFAULT 10 NOT NULL,
@@ -264,7 +282,9 @@ CREATE TABLE "topup_orders" (
 	"kind" text NOT NULL,
 	"plan_id" integer,
 	"tokens" bigint,
+	"price_currency" text DEFAULT 'CNY' NOT NULL,
 	"price_fen" integer NOT NULL,
+	"price_cents" integer DEFAULT 0 NOT NULL,
 	"channel" varchar(191) DEFAULT 'manual' NOT NULL,
 	"status" text DEFAULT 'pending' NOT NULL,
 	"note" text,
@@ -301,6 +321,7 @@ CREATE TABLE "user_groups" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" varchar(191) NOT NULL,
 	"note" text DEFAULT '' NOT NULL,
+	"app_publish_reward_points" integer DEFAULT 0 NOT NULL,
 	"created_at" bigint NOT NULL,
 	CONSTRAINT "user_groups_name_unique" UNIQUE("name")
 );
@@ -319,6 +340,7 @@ CREATE TABLE "users" (
 	"plan" text DEFAULT 'free' NOT NULL,
 	"membership_plan_id" integer,
 	"membership_expires_at" bigint,
+	"points_balance" integer DEFAULT 0 NOT NULL,
 	"membership_selection_required" boolean DEFAULT false NOT NULL,
 	"mfa_enabled" boolean DEFAULT false NOT NULL,
 	"must_change_password" boolean DEFAULT false NOT NULL,
@@ -342,6 +364,7 @@ CREATE TABLE "verification_codes" (
 --> statement-breakpoint
 ALTER TABLE "app_acl" ADD CONSTRAINT "app_acl_app_id_apps_id_fk" FOREIGN KEY ("app_id") REFERENCES "apps"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "app_env_vars" ADD CONSTRAINT "app_env_vars_app_id_apps_id_fk" FOREIGN KEY ("app_id") REFERENCES "apps"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "invite_codes" ADD CONSTRAINT "invite_codes_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "llm_routes" ADD CONSTRAINT "llm_routes_upstream_id_llm_upstreams_id_fk" FOREIGN KEY ("upstream_id") REFERENCES "llm_upstreams"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "local_credentials" ADD CONSTRAINT "local_credentials_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "membership_plans" ADD CONSTRAINT "membership_plans_group_id_user_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "user_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -353,7 +376,10 @@ ALTER TABLE "totp_secrets" ADD CONSTRAINT "totp_secrets_user_id_users_id_fk" FOR
 ALTER TABLE "user_group_members" ADD CONSTRAINT "user_group_members_group_id_user_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "user_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_group_members" ADD CONSTRAINT "user_group_members_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "app_runs_app_idx" ON "app_runs" USING btree ("app_id","ts");--> statement-breakpoint
+CREATE INDEX "app_runtime_events_ts_idx" ON "app_runtime_events" USING btree ("ts");--> statement-breakpoint
+CREATE INDEX "app_runtime_events_app_ts_idx" ON "app_runtime_events" USING btree ("app_id","ts");--> statement-breakpoint
 CREATE INDEX "audit_logs_ts_idx" ON "audit_logs" USING btree ("ts");--> statement-breakpoint
+CREATE UNIQUE INDEX "invite_codes_owner_user_id_uq" ON "invite_codes" USING btree ("owner_user_id");--> statement-breakpoint
 CREATE INDEX "llm_tokens_app_idx" ON "llm_app_tokens" USING btree ("app_id");--> statement-breakpoint
 CREATE INDEX "llm_ledger_user_idx" ON "llm_ledger" USING btree ("user_id","ts");--> statement-breakpoint
 CREATE INDEX "llm_ledger_app_idx" ON "llm_ledger" USING btree ("app_id","ts");--> statement-breakpoint

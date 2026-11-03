@@ -5,43 +5,15 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1793428603811,
-      "tag": "0000_lonely_titanium_man",
+      "when": 1793692764938,
+      "tag": "0000_ai_app_panel_initial",
       "breakpoints": true
     },
     {
       "idx": 1,
       "version": "7",
-      "when": 1793443117964,
-      "tag": "0001_graceful_black_knight",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1793445783000,
-      "tag": "0002_initial_admin_points",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1793468484331,
-      "tag": "0003_opposite_cardiac",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1793510678628,
-      "tag": "0004_mean_sentinel",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1793635401350,
-      "tag": "0005_talented_valkyrie",
+      "when": 1793703138248,
+      "tag": "0001_happy_thunderbird",
       "breakpoints": true
     }
   ]

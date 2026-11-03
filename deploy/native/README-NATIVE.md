@@ -1,4 +1,4 @@
-﻿# AI超级面板 — 原生运行包（无 Docker）
+# ai-app-panel — 原生运行包（无 Docker）
 
 自包含应用包：自带 glibc 版 Node 22 二进制、服务端/前端和 PostgreSQL 迁移，
 解压即跑，**不需要 Docker、不需要安装 Node**。需要可连接的 PostgreSQL 17
@@ -16,14 +16,14 @@
 ## 快速开始
 
 ```bash
-tar -xzf ai-app-portal-native_<版本>_linux_<arch>.tar.gz
-cd ai-app-portal-native_<版本>_linux_<arch>
-DATABASE_URL='postgresql://aap:strong_random_password@127.0.0.1:5432/ai_app_portal' \
+tar -xzf ai-app-panel-native_<版本>_linux_<arch>.tar.gz
+cd ai-app-panel-native_<版本>_linux_<arch>
+DATABASE_URL='postgresql://ai_app_panel:strong_random_password@127.0.0.1:5432/ai_app_panel' \
   ADMIN_INITIAL_PASSWORD='你的初始密码' ./start.sh  # 前台启动，Ctrl-C 停止
 ```
 
 - 启动前设置 `DATABASE_URL`，例如
-  `postgresql://aap:密码@127.0.0.1:5432/ai_app_portal`；数据库需预先创建，
+  `postgresql://ai_app_panel:密码@127.0.0.1:5432/ai_app_panel`；数据库需预先创建，
   连接用户需拥有创建表/索引的权限，服务启动时会自动应用 `drizzle-pg/` 迁移。
 - 服务地址 `http://<主机>:8080`（`PORT` 可改；HTTPS 口 8443）
 - 数据目录默认在包内 `data/`（`DATA_DIR` 可改到独立数据盘）
@@ -33,46 +33,46 @@ DATABASE_URL='postgresql://aap:strong_random_password@127.0.0.1:5432/ai_app_port
 ## 生产部署（systemd，推荐）
 
 ```bash
-sudo useradd -r -u 10001 -s /usr/sbin/nologin aap || true
-sudo mkdir -p /opt/AI-SuperPanel /var/lib/AI-SuperPanel
-sudo tar -xzf ai-app-portal-native_<版本>_linux_<arch>.tar.gz -C /opt/AI-SuperPanel --strip-components=1
-sudo chown -R aap:aap /opt/AI-SuperPanel /var/lib/AI-SuperPanel
-sudo install -o root -g aap -m 0640 /dev/null /etc/ai-superpanel.env
+sudo useradd -r -u 10001 -s /usr/sbin/nologin ai-app-panel || true
+sudo mkdir -p /opt/ai-app-panel /var/lib/ai-app-panel
+sudo tar -xzf ai-app-panel-native_<版本>_linux_<arch>.tar.gz -C /opt/ai-app-panel --strip-components=1
+sudo chown -R ai-app-panel:ai-app-panel /opt/ai-app-panel /var/lib/ai-app-panel
+sudo install -o root -g ai-app-panel -m 0640 /dev/null /etc/ai-app-panel.env
 ```
 
-编辑 `/etc/ai-superpanel.env`，至少设置 `DATABASE_URL=postgresql://...`；
+编辑 `/etc/ai-app-panel.env`，至少设置 `DATABASE_URL=postgresql://...` 指向全新空数据库；
 该文件应只允许 root 写入，并仅授予服务组读取权限。
 
-`/etc/systemd/system/AI-SuperPanel.service`：
+`/etc/systemd/system/ai-app-panel.service`：
 
 ```ini
 [Unit]
-Description=AI超级面板（AI-SuperPanel）
+Description=ai-app-panel
 After=network.target
 
 [Service]
-User=aap
-Group=aap
-WorkingDirectory=/opt/AI-SuperPanel
-Environment=DATA_DIR=/var/lib/AI-SuperPanel
-EnvironmentFile=/etc/ai-superpanel.env
+User=ai-app-panel
+Group=ai-app-panel
+WorkingDirectory=/opt/ai-app-panel
+Environment=DATA_DIR=/var/lib/ai-app-panel
+EnvironmentFile=/etc/ai-app-panel.env
 Environment=ADMIN_INITIAL_PASSWORD=CHANGE_ME_FIRST_BOOT
-ExecStart=/opt/AI-SuperPanel/start.sh
+ExecStart=/opt/ai-app-panel/start.sh
 Restart=on-failure
 RestartSec=3
 
 # 可选加固（沙箱包代码在宿主进程外运行，按需启用）
 NoNewPrivileges=true
 ProtectSystem=full
-ReadWritePaths=/var/lib/AI-SuperPanel
+ReadWritePaths=/var/lib/ai-app-panel
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl daemon-reload && sudo systemctl enable --now AI-SuperPanel
-journalctl -u AI-SuperPanel -f        # 首次启动日志里有管理员凭据
+sudo systemctl daemon-reload && sudo systemctl enable --now ai-app-panel
+journalctl -u ai-app-panel -f        # 首次启动日志里有管理员凭据
 ```
 
 ## 安全基线（与 Docker 形态同一条红线）

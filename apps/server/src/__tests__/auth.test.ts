@@ -6,7 +6,7 @@ import { setupTestDb, teardownTestDb } from './testkit.js';
 import { closeDb } from '../db/index.js';
 import { seedSettings, setSetting } from '../lib/settings.js';
 import { getDb } from '../db/index.js';
-import { inviteCodes, registrations, topupOrders, users } from '../db/schema.js';
+import { inviteCodes, registrations, topupOrders, users, verificationCodes } from '../db/schema.js';
 import { and, eq, gt, sql } from 'drizzle-orm';
 import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
@@ -14,6 +14,7 @@ import { hasLeadingZeroBits } from '../lib/pow.js';
 import { createGroup } from '../lib/groups.js';
 import { createPlan, deletePlan } from '../lib/billing.js';
 import { sessionCookieFor } from './testkit.js';
+import { hashPassword } from '../lib/passwords.js';
 
 let server: Server;
 let base: string;
@@ -76,14 +77,10 @@ afterAll(async () => {
 });
 
 describe('W3 注册（A2）', () => {
-  it('默认关闭注册 → 403', async () => {
-    const res = await fetch(`${base}/api/auth/register/start`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: 'neo', password: 'password123', email: 'neo@example.com' }),
-    });
-    expect(res.status).toBe(403);
-    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('REGISTRATION_CLOSED');
+  it('公共引导信息始终返回开放注册', async () => {
+    const res = await fetch(`${base}/api/portal/bootstrap`);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { registration: { mode: string } }).registration.mode).toBe('open');
   });
 
   it('开放注册：无 PoW 拒绝；带 PoW 发码；首账号自动 admin', async () => {
@@ -105,7 +102,6 @@ describe('W3 注册（A2）', () => {
       appUploadLimit: 10,
     });
     await setSetting('REGISTRATION_POINTS_GIFT', '731');
-    await setSetting('REGISTRATION_MODE', 'open');
 
     const weakPassword = await fetch(`${base}/api/auth/register/start`, {
       method: 'POST',
@@ -137,6 +133,7 @@ describe('W3 注册（A2）', () => {
         username: 'neo',
         password: 'Password123',
         email: 'neo@example.com',
+        inviteCode: 'NOT-A-REAL-CODE',
         powToken,
       }),
     });
@@ -180,28 +177,8 @@ describe('W3 注册（A2）', () => {
   });
 
   it('无权益包时仍允许开放注册；新账号获得注册积分并以未订阅状态进入个人中心', async () => {
-    await setSetting('REGISTRATION_MODE', 'closed');
     await deletePlan(freePlanId);
     await deletePlan(paidPlanId);
-    const [gateAdmin] = await getDb()
-      .insert(users)
-      .values({
-          kind: 'local',
-          username: 'benefitadmin',
-          role: 'admin',
-          mfaEnabled: true,
-          createdAt: Date.now(),
-        })
-      .returning({ id: users.id });
-    const gateAdminId = gateAdmin!.id;
-    const gateAdminCookie = await sessionCookieFor(gateAdminId);
-
-    const allowedOpen = await fetch(`${base}/api/admin/settings`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json', cookie: gateAdminCookie, origin: base },
-      body: JSON.stringify({ REGISTRATION_MODE: 'open' }),
-    });
-    expect(allowedOpen.status).toBe(200);
 
     await setSetting('REGISTRATION_POINTS_GIFT', '123');
     const registration = await fetch(`${base}/api/auth/register/start`, {
@@ -271,13 +248,6 @@ describe('W3 注册（A2）', () => {
       tier: 0,
       appUploadLimit: 2,
     });
-    const allowedOpenWithPlans = await fetch(`${base}/api/admin/settings`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json', cookie: gateAdminCookie, origin: base },
-      body: JSON.stringify({ REGISTRATION_MODE: 'open' }),
-    });
-    expect(allowedOpenWithPlans.status).toBe(200);
-
     const [freeUserRow] = await getDb()
       .insert(users)
       .values({ kind: 'local', username: 'freechoice', membershipSelectionRequired: true, createdAt: Date.now() })
@@ -431,9 +401,12 @@ describe('W3 注册（A2）', () => {
     const raceUserAfter = (await getDb().select().from(users).where(eq(users.id, raceUserRow!.id)))[0];
     expect(raceUserAfter?.pointsBalance).toBe(0);
 
+    const adminId = (await getDb().select({ id: users.id }).from(users).where(eq(users.role, 'admin')))[0]?.id;
+    if (!adminId) throw new Error('Expected a seeded administrator');
+    const adminCookie = await sessionCookieFor(adminId);
     const disabledLastFreePlan = await fetch(`${base}/api/admin/billing/plans/${freePlanId}`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json', cookie: gateAdminCookie, origin: base },
+      headers: { 'content-type': 'application/json', cookie: adminCookie, origin: base },
       body: JSON.stringify({ enabled: false }),
     });
     expect(disabledLastFreePlan.status).toBe(200);
@@ -666,60 +639,83 @@ describe('W3 找回密码（防枚举）', () => {
 });
 
 describe('W3 邀请码注册', () => {
-  it('invite 模式：无邀请码拒绝，有效邀请码通过且一次性', async () => {
-    await setSetting('REGISTRATION_MODE', 'invite');
-    await getDb()
-      .insert(inviteCodes)
-      .values({ code: 'INVITE-XYZ', createdAt: Date.now() });
+  it('邀请码可重复使用并奖励属主；停用后继续注册但不奖励', async () => {
+    await setSetting('MAX_ACCOUNTS_PER_IP_24H', '100');
+    const [owner] = await getDb()
+      .insert(users)
+      .values({ kind: 'local', username: 'invite-owner', role: 'admin', mfaEnabled: true, createdAt: Date.now() })
+      .returning({ id: users.id });
+    const ownerId = owner!.id;
+    await getDb().insert(inviteCodes).values({
+      code: 'INVITE-XYZ',
+      ownerUserId: ownerId,
+      createdAt: Date.now(),
+    });
 
-    const noInvite = await fetch(`${base}/api/auth/register/start`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({
-        username: 'guest',
-        password: 'Password123',
-        email: 'guest@example.com',
-        powToken: await solvePow(),
-      }),
-    });
-    expect(noInvite.status).toBe(403);
+    async function completeRegistration(username: string, inviteCode: string): Promise<Response> {
+      const email = `${username}@example.com`;
+      const now = Date.now();
+      const code = '654321';
+      const salt = `invite-${username}`;
+      await getDb().insert(registrations).values({
+        id: `registration-${username}`,
+        username,
+        passwordHash: await hashPassword('Password123'),
+        email,
+        inviteCode,
+        ip: '127.0.0.1',
+        createdAt: now,
+        expiresAt: now + 24 * 3600_000,
+      });
+      await getDb().insert(verificationCodes).values({
+        channel: 'email',
+        target: email,
+        purpose: 'register',
+        codeHash: `${salt}:${createHash('sha256').update(`${salt}:${code}`).digest('hex')}`,
+        createdAt: now,
+        expiresAt: now + 5 * 60_000,
+      });
+      return fetch(`${base}/api/auth/register/verify`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: base },
+        body: JSON.stringify({ registrationId: `registration-${username}`, code }),
+      });
+    }
 
-    const withInvite = await fetch(`${base}/api/auth/register/start`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({
-        username: 'guest',
-        password: 'Password123',
-        email: 'guest@example.com',
-        inviteCode: 'INVITE-XYZ',
-        powToken: await solvePow(),
-      }),
+    const first = await completeRegistration('invitee-one', 'INVITE-XYZ');
+    expect(first.status).toBe(200);
+    expect((await getDb().select({ points: users.pointsBalance }).from(users).where(eq(users.id, ownerId)))[0]?.points).toBe(100);
+    expect((await getDb().select({ count: inviteCodes.useCount }).from(inviteCodes).where(eq(inviteCodes.code, 'INVITE-XYZ')))[0]?.count).toBe(1);
+    const ownInviteResponse = await fetch(`${base}/api/user/invite`, {
+      headers: { cookie: cookieOf(first) },
     });
-    expect(withInvite.status).toBe(200);
-    const { registrationId } = (await withInvite.json()) as { registrationId: string };
-    const code = lastCodeFromLog();
-    const done = await fetch(`${base}/api/auth/register/verify`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({ registrationId, code }),
-    });
-    expect(done.status).toBe(200);
-    const { user } = (await done.json()) as { user: { role: string } };
-    expect(user.role).toBe('user'); // 非首账号，不提升
+    expect(ownInviteResponse.status).toBe(200);
+    expect(((await ownInviteResponse.json()) as { code: string; useCount: number }).code).toMatch(/^[A-F0-9]{4}(?:-[A-F0-9]{4}){3}$/);
 
-    // 邀请码已消耗：同一码第二次 start 失败
-    const again = await fetch(`${base}/api/auth/register/start`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({
-        username: 'guest2',
-        password: 'Password123',
-        email: 'guest2@example.com',
-        inviteCode: 'INVITE-XYZ',
-        powToken: await solvePow(),
-      }),
+    const second = await completeRegistration('invitee-two', 'INVITE-XYZ');
+    expect(second.status).toBe(200);
+    expect((await getDb().select({ points: users.pointsBalance }).from(users).where(eq(users.id, ownerId)))[0]?.points).toBe(200);
+    expect((await getDb().select({ count: inviteCodes.useCount }).from(inviteCodes).where(eq(inviteCodes.code, 'INVITE-XYZ')))[0]?.count).toBe(2);
+
+    const adminCookie = await sessionCookieFor(ownerId);
+    const listed = await fetch(`${base}/api/admin/invites`, { headers: { cookie: adminCookie } });
+    expect(listed.status).toBe(200);
+    expect((await listed.json() as { invites: Array<{ code: string; ownerUsername: string; useCount: number }> }).invites)
+      .toContainEqual(expect.objectContaining({ code: 'INVITE-XYZ', ownerUsername: 'invite-owner', useCount: 2 }));
+    const disabled = await fetch(`${base}/api/admin/invites/INVITE-XYZ`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: adminCookie, origin: base },
+      body: JSON.stringify({ enabled: false }),
     });
-    expect(again.status).toBe(403);
+    expect(disabled.status).toBe(200);
+
+    expect((await completeRegistration('invitee-three', 'INVITE-XYZ')).status).toBe(200);
+    expect((await getDb().select({ points: users.pointsBalance }).from(users).where(eq(users.id, ownerId)))[0]?.points).toBe(200);
+    expect((await getDb().select({ count: inviteCodes.useCount }).from(inviteCodes).where(eq(inviteCodes.code, 'INVITE-XYZ')))[0]?.count).toBe(3);
+
+    const invalidCodeRegistration = await completeRegistration('invitee-invalid-code', 'NOT-A-REAL-CODE');
+    expect(invalidCodeRegistration.status).toBe(200);
+    expect((await getDb().select({ points: users.pointsBalance }).from(users).where(eq(users.id, ownerId)))[0]?.points).toBe(200);
   });
 });
 
@@ -763,7 +759,6 @@ describe('终审 P1-1：半登录态改密拒绝', () => {
 
 describe('终审 P1-5：同 IP 24h 注册上限（含已完成）', () => {
   it('完成的注册仍占 24h 名额：触顶后新注册 429', async () => {
-    await setSetting('REGISTRATION_MODE', 'open');
     const ip = '127.0.0.1';
     // 前面用例已完成的注册（neo/guest）行保留 → 计入窗口
     const existing = Number(

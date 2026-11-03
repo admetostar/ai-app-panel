@@ -191,15 +191,16 @@ export const registrations = pgTable(
   (t) => [index('registrations_created_idx').on(t.createdAt)],
 );
 
-/** 邀请码（注册开关第三档；管理员签发，单次使用） */
+/** 每个账号专属的邀请码；可复用，停用后只停止奖励、不阻止注册 */
 export const inviteCodes = pgTable('invite_codes', {
   code: varchar('code', { length: 191 }).primaryKey(),
-  createdBy: integer('created_by'),
-  note: text('note'),
-  usedBy: integer('used_by'),
-  usedAt: bigint('used_at', { mode: 'number' }),
+  ownerUserId: integer('owner_user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  enabled: boolean('enabled').notNull().default(true),
+  useCount: integer('use_count').notNull().default(0),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
-});
+}, (t) => [uniqueIndex('invite_codes_owner_user_id_uq').on(t.ownerUserId)]);
 
 // ---------- B4：应用注册 ----------
 
@@ -209,12 +210,14 @@ export const apps = pgTable('apps', {
   description: text('description').notNull().default(''),
   icon: text('icon'),
   category: text('category').notNull().default('未分类'),
-  /** 'public' 公开 | 'login' 需登录 | 'restricted' 指定分组与账号 | 'private' 仅归属者 */
+  /** 'public' 公开 | 'login' 站内共享（他人可克隆，不可直访） | 'restricted' 指定分组与账号 | 'private' 仅归属者 */
   visibility: text('visibility').notNull().default('login'),
   /** 应用形态：upstream 反代上游 | html 门户托管的静态页（简单 HTML / .awpk html 包） */
   kind: text('kind').notNull().default('upstream'),
   /** 归属者（用户自建应用默认私有可见的依据；管理员创建 = 该管理员 id） */
   ownerUserId: integer('owner_user_id'),
+  /** 站内应用克隆的来源；非空时该应用固定为仅自己可见 */
+  clonedFromAppId: varchar('cloned_from_app_id', { length: 512 }),
   /** 积分奖励已入账时保存当时的奖励值；null 表示尚未因公开发布获得奖励 */
   publicationRewardPoints: integer('publication_reward_points'),
   // ---- G：.awpk 包元数据（kind=package 时生效） ----
@@ -239,7 +242,7 @@ export const apps = pgTable('apps', {
   lastProbeAt: bigint('last_probe_at', { mode: 'number' }),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
-});
+}, (t) => [index('apps_owner_clone_idx').on(t.ownerUserId, t.clonedFromAppId)]);
 
 // ---------- 用户分组（会员等级 / 自定义组；应用可见性的目标集合） ----------
 
@@ -481,6 +484,8 @@ export const membershipPlans = pgTable('membership_plans', {
   tier: integer('tier').notNull().default(0),
   /** 订阅用户可上传的托管应用总数 */
   appUploadLimit: integer('public_app_limit').notNull().default(10),
+  /** 订阅用户可同时持有的站内应用克隆数 */
+  appCloneLimit: integer('app_clone_limit').notNull().default(0),
   enabled: boolean('enabled').notNull().default(true),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
 });

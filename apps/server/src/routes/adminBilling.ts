@@ -65,12 +65,16 @@ adminBillingRouter.post(
       tokenGrant?: number;
       tier?: number;
       appUploadLimit?: number;
+      appCloneLimit?: number;
     };
     if (!body.name?.trim() || !body.groupId || ![30, 90, 365].includes(Number(body.durationDays))) {
       throw new HttpError(400, 'INVALID_INPUT', '名称、分组和有效期必填');
     }
     if (!Number.isInteger(Number(body.appUploadLimit)) || Number(body.appUploadLimit) < 0) {
-      throw new HttpError(400, 'INVALID_INPUT', '可上传应用数量必须是非负整数');
+      throw new HttpError(400, 'INVALID_INPUT', '可创建应用数量必须是非负整数');
+    }
+    if (!Number.isInteger(Number(body.appCloneLimit ?? 0)) || Number(body.appCloneLimit ?? 0) < 0) {
+      throw new HttpError(400, 'INVALID_INPUT', '可克隆应用数量必须是非负整数');
     }
     if (!Number.isInteger(Number(body.tier)) || Number(body.tier) < 0 || Number(body.tier) > 5) {
       throw new HttpError(400, 'INVALID_INPUT', '权益等级必须是 0 到 5 的整数');
@@ -87,6 +91,7 @@ adminBillingRouter.post(
       tokenGrant: Number(body.tokenGrant ?? 0),
       tier: Number(body.tier),
       appUploadLimit: Number(body.appUploadLimit),
+      appCloneLimit: Number(body.appCloneLimit ?? 0),
     });
     await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'billing.plan.create', { id, name: body.name });
     res.json({ ok: true, id });
@@ -106,8 +111,12 @@ adminBillingRouter.put(
       redeemUrl?: unknown;
       tokenGrant?: number;
       appUploadLimit?: number;
+      appCloneLimit?: number;
       enabled?: boolean;
     };
+    if (body.appCloneLimit !== undefined && (!Number.isInteger(Number(body.appCloneLimit)) || Number(body.appCloneLimit) < 0)) {
+      throw new HttpError(400, 'INVALID_INPUT', '可克隆应用数量必须是非负整数');
+    }
     await updatePlan(Number(req.params.id), body);
     await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'billing.plan.update', { id: Number(req.params.id) });
     res.json({ ok: true });

@@ -186,7 +186,7 @@ describe('M2 LLM 网关（C1–C6）', () => {
 
     const dead = await chat({ model: 'dead-model', messages: [{ role: 'user', content: 'x' }], max_tokens: 10 }, { ...AUTH, ...identityHeaders(U1) });
     expect(dead.status).toBe(502);
-    expect(JSON.parse(dead.body).error.type).toBe('ai_app_portal_error');
+    expect(JSON.parse(dead.body).error.type).toBe('ai_app_panel_error');
   });
 
   it('失败路径退款：全候选失败（502）不白扣预估成本（测试内无结算循环，退款须来自即时校正）', async () => {

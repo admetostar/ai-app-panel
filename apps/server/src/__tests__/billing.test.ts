@@ -19,6 +19,7 @@ import {
   createPlan,
   downgradeExpired,
   getAppUploadQuota,
+  getAppCloneQuota,
   listPlans,
   reconcileRecent,
 } from '../lib/billing.js';
@@ -36,7 +37,7 @@ beforeAll(async () => {
 
   const [g] = await getDb().insert(userGroups).values({ name: '会员-高级', createdAt: Date.now() }).returning({ id: userGroups.id });
   groupId = Number(g!.id);
-  planId = await createPlan({ name: '高级会员', groupId, durationDays: 30, priceFen: 3000, tokenGrant: 50_000, tier: 3, appUploadLimit: 2 });
+  planId = await createPlan({ name: '高级会员', groupId, durationDays: 30, priceFen: 3000, tokenGrant: 50_000, tier: 3, appUploadLimit: 2, appCloneLimit: 1 });
 
   const [u] = await getDb()
     .insert(users)
@@ -133,8 +134,20 @@ describe('M3 计费闭环（D1/D2）', () => {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     });
+    await getDb().insert(apps).values({
+      id: 'cloned-upload-quota-test',
+      name: '克隆应用',
+      ownerUserId: userId,
+      clonedFromAppId: 'site-shared-source',
+      visibility: 'private',
+      kind: 'html',
+      upstream: '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
 
     expect(await getAppUploadQuota(userId)).toEqual({ limit: 2, used: 2, remaining: 0 });
+    expect(await getAppCloneQuota(userId)).toEqual({ limit: 1, used: 1, remaining: 0 });
     await expect(assertAppUploadQuota(userId)).rejects.toMatchObject({ code: 'APP_UPLOAD_LIMIT_REACHED' });
   });
 

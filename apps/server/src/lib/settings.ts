@@ -50,7 +50,7 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   // ---- 品牌（A1，数据化品牌，默认纯净） ----
   SITE_NAME: {
     label: '站点名称',
-    group: '站点与品牌', type: 'string', desc: '站点名称', initial: () => 'AI超级面板', defaultsWork: true },
+    group: '站点与品牌', type: 'string', desc: '站点名称', initial: () => 'ai-app-panel', defaultsWork: true },
   SITE_DOMAIN: {
     label: '本站域名（应用子域名根）',
     group: '站点与品牌',
@@ -81,15 +81,6 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     group: '站点与品牌', type: 'string', desc: '公安备案号（自动带公安备案查询链接，留空不显示）', initial: () => '', defaultsWork: true },
 
   // ---- 注册与账号（A2） ----
-  REGISTRATION_MODE: {
-    label: '注册开关',
-    group: '注册与账号',
-    type: 'string',
-    choiceLabels: { closed: '关闭', open: '开放', invite: '邀请注册' },
-    desc: '注册开关：closed 关闭 / open 开放 / invite 开放+邀请码（默认关闭）',
-    initial: () => 'closed',
-    defaultsWork: true,
-  },
   MAX_ACCOUNTS_PER_IP_24H: {
     label: '同 IP 注册上限（24h）', group: '注册与账号', type: 'int', desc: '同一 IP 24 小时内最多注册账号数', initial: () => '5', defaultsWork: true },
   REGISTRATION_POINTS_GIFT: {
@@ -98,6 +89,14 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     type: 'int',
     desc: '每个新注册账号首次创建时获得的积分；已有账号不会追溯赠送',
     initial: () => '0',
+    defaultsWork: true,
+  },
+  INVITE_REWARD_POINTS: {
+    label: '邀请注册奖励积分',
+    group: '注册与账号',
+    type: 'int',
+    desc: '每个有效邀请码成功邀请一名新用户后，奖励邀请码所属账号的积分；停用的邀请码不发奖励',
+    initial: () => '100',
     defaultsWork: true,
   },
   CODE_SEND_DAILY_LIMIT: {
@@ -330,7 +329,7 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     group: '通知通道（验证码发信）', type: 'string', desc: 'SMTP 密码/授权码', initial: () => '', secret: true, defaultsWork: false },
   SMTP_FROM: {
     label: 'SMTP 发件人',
-    group: '通知通道（验证码发信）', type: 'string', desc: '发件人（如 "AI超级面板 <no-reply@example.com>"）', initial: () => '', defaultsWork: false },
+    group: '通知通道（验证码发信）', type: 'string', desc: '发件人（如 "ai-app-panel <no-reply@example.com>"）', initial: () => '', defaultsWork: false },
   MAIL_PROVIDER: {
     label: '发信方式',
     group: '通知通道（验证码发信）', type: 'string', options: ['smtp', 'resend'],
@@ -343,7 +342,7 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   RESEND_FROM: {
     label: 'Resend 发件人',
     group: '通知通道（验证码发信）', type: 'string',
-    desc: 'Resend 发件人（留空：默认用沙箱发件人 onboarding@resend.dev，仅能发给本 Resend 账号注册邮箱；绑定自有域名后填 "AI超级面板 <no-reply@mail.example.com>" 即可发给任意用户）',
+    desc: 'Resend 发件人（留空：默认用沙箱发件人 onboarding@resend.dev，仅能发给本 Resend 账号注册邮箱；绑定自有域名后填 "ai-app-panel <no-reply@mail.example.com>" 即可发给任意用户）',
     initial: () => '', defaultsWork: true },
 };
 
