@@ -71,7 +71,7 @@
 |---|---|---|---|
 | B1 | **路径反向代理** | `/app/<id>/` 前缀路由；HTML 改写 + `<base>` 注入 + fetch/XHR/script.src 猴补丁（参考实现移植）；路径穿越逐段校验；双维度令牌桶限流（每用户 + 每 IP） | M1 |
 | B2 | **WebSocket / SSE 透传** | `upgrade` 事件 → 路径匹配 → 鉴权 → TCP 双向管道；SSE 流式零缓冲 | M1 |
-| B3 | **自动 HTTPS** | acme-client（HTTP-01 起步，DNS-01 预留联动 cf-dns-select 思路）；自动续期；保留手动 PEM 上传热替换兜底 | M1 |
+| B3 | **自动 HTTPS** | acme-client；单域名 HTTP-01 + Cloudflare DNS-01 通配符证书；DNS API Token 加密保存并用于自动续期；保留手动 PEM 上传热替换兜底 | M1 |
 | B4 | **应用注册** | 配置文件 + 管理后台：名称/图标/upstream/可见范围（公开/站内/仅自己）；热更新；urlSecret 凭据不下发浏览器 | M1 |
 
 > 应用侧身份注入（签名头 HMAC-SHA256，含 aud/jti/TTL）随 B1 反代实现，规范见 `app-develop` 技能。
@@ -147,7 +147,7 @@
 |---|---|
 | office-tool（私有） | 路径反代全套、身份头签名、PoW/封禁/审计安全栈、OIDC、证书热替换——代码可移植但剔除一切单位指纹 |
 | fnos-dashboard | 多主题方法论、FPK 打包与商店流程 |
-| cf-dns-select | DNS API 自动化 → DNS-01 通配符证书 |
+| cf-dns-select | DNS API 自动化 → DNS-01 通配符证书（已接入 Cloudflare DNS API） |
 | hybrid-model（论文） | 「有边界地授予行动能力」思想在 LLM 网关凭据/限额中的体现，README 可讲故事 |
 
 ## 7. 里程碑

@@ -6,7 +6,7 @@ import { Router } from 'express';
 import { HttpError, h } from '../lib/httpError.js';
 import { requireAdmin } from '../lib/auth.js';
 import * as tls from '../gateway/tls.js';
-import { setSetting } from '../lib/settings.js';
+import { getSetting, setSetting } from '../lib/settings.js';
 import { audit } from '../lib/audit.js';
 
 export const adminTlsRouter = Router();
@@ -48,24 +48,39 @@ adminTlsRouter.delete(
 adminTlsRouter.post(
   '/admin/tls/acme',
   h(async (req, res) => {
-    const body = (req.body ?? {}) as { domain?: string; email?: string; staging?: boolean };
+    const body = (req.body ?? {}) as { domain?: string; email?: string };
     const domain = String(body.domain ?? '').trim().toLowerCase();
     const email = String(body.email ?? '').trim();
-    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) {
-      throw new HttpError(400, 'INVALID_DOMAIN', '域名格式不正确');
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain) || domain.includes('*')) {
+      throw new HttpError(400, 'INVALID_DOMAIN', '请输入不带通配符的根域名或单域名');
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       throw new HttpError(400, 'INVALID_EMAIL', '邮箱格式不正确');
     }
+    const zoneId = String(getSetting('ACME_CLOUDFLARE_ZONE_ID') ?? '').trim();
+    const apiToken = getSetting('ACME_CLOUDFLARE_API_TOKEN')?.trim();
+    if (!/^[a-f0-9]{32}$/i.test(zoneId) || !apiToken) {
+      throw new HttpError(400, 'DNS_PROVIDER_NOT_CONFIGURED', '请先配置 Cloudflare Zone ID 和 DNS API Token');
+    }
     await setSetting('ACME_DOMAIN', domain);
     await setSetting('ACME_EMAIL', email);
-    if (body.staging !== undefined) await setSetting('ACME_STAGING', body.staging ? 'true' : 'false');
-    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'tls.acme.start', { domain, staging: body.staging });
+    await setSetting('ACME_STAGING', 'false');
+    await setSetting('ACME_WILDCARD', 'true');
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'tls.acme.start', {
+      domain,
+      wildcard: true,
+      staging: false,
+    });
 
     // 异步签发（数十秒）：立即返回，管理端轮询状态
     void tls
       .acmeIssue(domain, email)
-      .catch((err) => console.error('[tls] ACME 后台签发失败:', err instanceof Error ? err.message : err));
+      .catch((err) => {
+        console.error(
+          '[tls] ACME 后台签发失败:',
+          tls.status().acme.lastError ?? (err instanceof Error ? err.message : String(err)),
+        );
+      });
     res.json({ ok: true, started: true });
   }),
 );

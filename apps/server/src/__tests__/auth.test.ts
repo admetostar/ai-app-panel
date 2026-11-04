@@ -836,6 +836,9 @@ describe('终审 P1-6：强制流程门禁', () => {
     const loginBody = (await login.json()) as { mustChangePassword: boolean; mustEnrollMfa: boolean };
     expect(loginBody.mustChangePassword).toBe(true);
     expect(loginBody.mustEnrollMfa).toBe(false); // 普通用户不强制绑 MFA
+    const sessionSetCookie = login.headers.getSetCookie().find((value) => value.startsWith('aap_sid='));
+    expect(sessionSetCookie).toBeDefined();
+    expect(sessionSetCookie).not.toMatch(/;\s*Domain=/i);
     const cookie = cookieOf(login);
 
     const blocked = await fetch(`${base}/api/apps`, { headers: { cookie } });

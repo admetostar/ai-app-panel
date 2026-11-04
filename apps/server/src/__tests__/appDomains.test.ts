@@ -8,8 +8,11 @@ describe('应用子域名路由', () => {
     expect(appIdFromHostname('nested.photo.example.com', 'example.com')).toBe('');
     expect(appIdFromHostname('bad_id.example.com', 'example.com')).toBe('');
     expect(appIdFromHostname('example.com', 'example.com')).toBeNull();
+    expect(appIdFromHostname(undefined, 'example.com')).toBeNull();
+    expect(appIdFromHostname('', 'example.com')).toBeNull();
     expect(isAppHostname('photo.example.com', 'example.com')).toBe(true);
     expect(isAppHostname('portal.other.com', 'example.com')).toBe(false);
+    expect(isAppHostname(undefined, 'example.com')).toBe(false);
   });
 
   it('平台会话 Cookie 不转发，应用 Cookie 限定为当前主机', () => {

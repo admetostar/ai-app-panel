@@ -18,6 +18,7 @@ COPY packages/shared/package.json packages/shared/
 # 运行阶段从 /app/packages/aap-sdk 原样拷贝（PYTHONPATH 指向）
 COPY apps/server/package.json apps/server/
 COPY apps/web/package.json apps/web/
+COPY patches ./patches
 # pnpm store 走 BuildKit 缓存挂载：即使依赖层失效（lockfile 变更），命中部分免重下
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile

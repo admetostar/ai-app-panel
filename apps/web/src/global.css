@@ -23,6 +23,164 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+.aap-tls-page {
+  display: flex;
+  width: 100%;
+}
+
+.aap-tls-status {
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--aap-primary) 20%, var(--aap-border));
+  background:
+    radial-gradient(ellipse at 100% 0, color-mix(in srgb, var(--aap-primary) 9%, transparent), transparent 42%),
+    var(--aap-bg-container);
+}
+
+.aap-tls-status__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.aap-tls-status__heading .ant-typography {
+  margin-bottom: 4px;
+}
+
+.aap-tls-status__alert,
+.aap-tls-form-alert {
+  margin-bottom: 16px;
+}
+
+.aap-tls-details .ant-descriptions-item-label {
+  min-width: 88px;
+}
+
+.aap-tls-last-success {
+  margin: 14px 0 0;
+  font-size: 12px;
+}
+
+.aap-tls-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.aap-tls-card {
+  min-width: 0;
+  height: 100%;
+  border-radius: 12px;
+}
+
+.aap-tls-card > .ant-card-body {
+  padding: 20px;
+}
+
+.aap-tls-progress {
+  display: grid;
+  min-width: 0;
+  overflow: hidden;
+  gap: 12px;
+  margin: 16px 0 22px;
+  padding: 16px;
+  border: 1px solid var(--aap-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--aap-bg-layout) 65%, transparent);
+}
+
+.aap-app-upload-progress {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  width: min(320px, 100%);
+  margin-top: 10px;
+}
+
+.aap-app-upload-progress__track {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--aap-border);
+}
+
+.aap-app-upload-progress__indicator {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 35%;
+  border-radius: inherit;
+  background: var(--ant-color-primary, #1677ff);
+  animation: aap-app-upload-indeterminate 1.4s ease-in-out infinite;
+}
+
+.aap-app-upload-progress__label {
+  font-size: 12px;
+}
+
+@keyframes aap-app-upload-indeterminate {
+  from {
+    transform: translateX(-110%);
+  }
+
+  to {
+    transform: translateX(300%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aap-app-upload-progress__indicator {
+    animation: none;
+    transform: translateX(90%);
+  }
+}
+
+.aap-tls-progress .ant-steps-item-title {
+  font-size: 12px !important;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.aap-tls-progress .ant-steps-item {
+  min-width: 0;
+}
+
+.aap-tls-progress > .ant-typography {
+  font-size: 12px;
+}
+
+.aap-tls-card .ant-form-item-extra {
+  font-size: 12px;
+}
+
+.aap-tls-page > .ant-collapse {
+  border-radius: 10px;
+}
+
+@media (max-width: 900px) {
+  .aap-tls-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .aap-tls-status__heading {
+    flex-direction: column;
+  }
+
+  .aap-tls-card > .ant-card-body {
+    padding: 16px;
+  }
+
+  .aap-tls-progress {
+    padding: 12px;
+  }
+}
+
 .aap-id-card {
   width: calc(100% - 20px);
   min-height: 126px;
@@ -2738,7 +2896,7 @@ body {
 .aap-home-page-shell .aap-footer__inner {
   width: min(100%, 1130px);
   margin: 0 auto;
-  text-align: left;
+  text-align: center;
 }
 
 .aap-footer a {

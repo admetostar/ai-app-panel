@@ -16,6 +16,8 @@ import { getSetting } from './settings.js';
 
 export const PY_DEPS_DIRNAME = '.deps';
 export const PIP_INSTALL_TIMEOUT_MS = 300_000;
+const PIP_PROGRESS_LOG_INTERVAL_MS = 30_000;
+const PIP_OUTPUT_TAIL_LENGTH = 4_000;
 
 export function pyDepsDir(appId: string): string {
   return path.join(appSiteDir(appId), PY_DEPS_DIRNAME);
@@ -50,7 +52,7 @@ export async function installPyDeps(appId: string, requirements: string[]): Prom
   const reqFile = path.join(appSiteDir(appId), '.deps-requirements.txt');
   fs.mkdirSync(appSiteDir(appId), { recursive: true });
   fs.writeFileSync(reqFile, `${requirements.join('\n')}\n`);
-  await runPip([
+  await runPip(appId, requirements, [
     '-m', 'pip', 'install',
     '--only-binary=:all:',
     '--no-compile',
@@ -61,27 +63,72 @@ export async function installPyDeps(appId: string, requirements: string[]): Prom
   fs.rmSync(reqFile, { force: true });
 }
 
-function runPip(args: string[]): Promise<void> {
+function runPip(appId: string, requirements: string[], args: string[]): Promise<void> {
   const pythonBin = process.env.PYTHON_BIN || 'python3';
   return new Promise((resolve, reject) => {
-    const child = spawn(pythonBin, args, { env: pipEnv() });
-    let stderr = '';
+    const startedAt = Date.now();
+    console.info(`[packages] Python 依赖安装开始：${appId}（${requirements.join(', ')}）`);
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(pythonBin, args, { env: pipEnv() });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`[packages] Python 依赖安装无法启动：${appId}（0s）：${detail}`);
+      reject(new HttpError(400, 'PIP_INSTALL_FAILED', `pip 启动失败（PYTHON_BIN=${pythonBin}）：${detail}`));
+      return;
+    }
+    let output = '';
+    let settled = false;
+    let timedOut = false;
+    const appendOutput = (data: Buffer): void => {
+      output = `${output}${data.toString()}`.slice(-PIP_OUTPUT_TAIL_LENGTH);
+    };
+    const sanitizedOutput = (): string => output
+      .trim()
+      .replace(/https?:\/\/\S+/gi, '[URL]')
+      .replace(/(password|token|key)=\S+/gi, '$1=[REDACTED]')
+      .split('\n')
+      .slice(-8)
+      .join('\n');
+    const elapsedSeconds = (): number => Math.floor((Date.now() - startedAt) / 1000);
+    const progressTimer = setInterval(() => {
+      console.info(`[packages] Python 依赖安装仍在进行：${appId}（${elapsedSeconds()}s）`);
+    }, PIP_PROGRESS_LOG_INTERVAL_MS);
     const timer = setTimeout(() => {
+      timedOut = true;
       child.kill('SIGKILL');
-      reject(new HttpError(504, 'PIP_TIMEOUT', `依赖安装超时（>${PIP_INSTALL_TIMEOUT_MS / 1000}s），请检查网络或 PIP_INDEX_URL`));
+      const tail = sanitizedOutput();
+      const message = `依赖安装超时（>${PIP_INSTALL_TIMEOUT_MS / 1000}s），请检查容器到 pip 索引源的网络或 PIP_INDEX_URL${tail ? `：\n${tail}` : ''}`;
+      console.error(`[packages] Python 依赖安装超时：${appId}（${elapsedSeconds()}s）${tail ? `\n${tail}` : ''}`);
+      settled = true;
+      clearInterval(progressTimer);
+      reject(new HttpError(504, 'PIP_TIMEOUT', message));
     }, PIP_INSTALL_TIMEOUT_MS);
-    child.stderr.on('data', (d: Buffer) => {
-      stderr = `${stderr}${d.toString()}`.slice(-4000);
-    });
+    child.stdout?.on('data', appendOutput);
+    child.stderr?.on('data', appendOutput);
     child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      clearInterval(progressTimer);
+      console.error(`[packages] Python 依赖安装无法启动：${appId}（${elapsedSeconds()}s）：${err.message}`);
       reject(new HttpError(400, 'PIP_INSTALL_FAILED', `pip 启动失败（PYTHON_BIN=${pythonBin}）：${err.message}`));
     });
-    child.on('exit', (code) => {
+    child.on('close', (code, signal) => {
+      if (settled || timedOut) return;
+      settled = true;
       clearTimeout(timer);
-      if (code === 0) return resolve();
-      const tail = stderr.trim().split('\n').slice(-8).join('\n');
-      reject(new HttpError(400, 'PIP_INSTALL_FAILED', `依赖安装失败（exit ${code}）：\n${tail}`));
+      clearInterval(progressTimer);
+      const elapsed = elapsedSeconds();
+      if (code === 0) {
+        console.info(`[packages] Python 依赖安装完成：${appId}（${elapsed}s）`);
+        resolve();
+        return;
+      }
+      const tail = sanitizedOutput();
+      const message = `依赖安装失败（exit ${code ?? signal ?? 'unknown'}）：\n${tail}`;
+      console.error(`[packages] Python 依赖安装失败：${appId}（${elapsed}s，exit ${code ?? signal ?? 'unknown'}）${tail ? `\n${tail}` : ''}`);
+      reject(new HttpError(400, 'PIP_INSTALL_FAILED', message));
     });
   });
 }

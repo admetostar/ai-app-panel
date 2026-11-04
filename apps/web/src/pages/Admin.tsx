@@ -6,6 +6,8 @@ import {
   Badge,
   Button,
   Card,
+  Checkbox,
+  Collapse,
   Descriptions,
   Form,
   Input,
@@ -15,6 +17,7 @@ import {
   Progress,
   Select,
   Space,
+  Steps,
   Switch,
   Table,
   Tag,
@@ -541,6 +544,7 @@ function AppsTab(): ReactNode {
   const [pkgFile, setPkgFile] = useState<{ name: string; dataBase64: string } | null>(null);
   const [pkgPreview, setPkgPreview] = useState<PkgPreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  const [packageSubmitting, setPackageSubmitting] = useState(false);
   const [envApp, setEnvApp] = useState<AdminApp | null>(null);
   const [runtimeAppId, setRuntimeAppId] = useState('');
   const [runtimeLevel, setRuntimeLevel] = useState('');
@@ -582,10 +586,12 @@ function AppsTab(): ReactNode {
   }
 
   async function uploadPackage(): Promise<void> {
+    if (packageSubmitting) return;
     if (!pkgFile) {
       message.warning('请先选择 .awpk 包文件');
       return;
     }
+    setPackageSubmitting(true);
     try {
       const values = form.getFieldsValue() as { passUser?: boolean; urlSecret?: string; visibility?: string };
       const r = await api<{ app: Record<string, unknown>; llmProvisioned: boolean }>('/api/admin/apps/package', {
@@ -611,6 +617,8 @@ function AppsTab(): ReactNode {
       void qc.invalidateQueries({ queryKey: ['llm-tokens'] });
     } catch (err) {
       message.error(err instanceof Error ? err.message : '包校验失败');
+    } finally {
+      setPackageSubmitting(false);
     }
   }
 
@@ -821,10 +829,15 @@ function AppsTab(): ReactNode {
       <Modal
         title={editing ? `编辑应用：${editing.name}` : creating === 'html' ? '接入 HTML 页' : creating === 'package' ? '上传 .awpk 包' : '接入上游应用'}
         open={Boolean(creating) || Boolean(editing)}
-        onCancel={() => { setCreating(null); setEditing(null); }}
+        onCancel={() => {
+          if (packageSubmitting) return;
+          setCreating(null);
+          setEditing(null);
+        }}
         footer={null}
         width={580}
         destroyOnClose
+        maskClosable={!packageSubmitting}
       >
         <Form form={form} layout="vertical" onFinish={creating === 'package' ? uploadPackage : editing ? saveEdit : saveApp}>
           {!editing && creating !== 'package' ? (
@@ -851,6 +864,7 @@ function AppsTab(): ReactNode {
               <input
                 type="file"
                 accept=".awpk"
+                disabled={previewing || packageSubmitting}
                 onChange={(e) => {
                   const f = e.target.files?.[0];
                   if (!f) return;
@@ -962,9 +976,28 @@ function AppsTab(): ReactNode {
           ) : null}
 
           {creating === 'package' ? (
-            <Button type="primary" htmlType="submit" block disabled={!pkgFile || previewing}>
-              校验并接入
-            </Button>
+            <>
+              {packageSubmitting ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message="正在校验并接入应用包"
+                  description={
+                    pkgPreview?.requirements?.length
+                      ? `正在安装 Python 依赖：${pkgPreview.requirements.join('、')}。最长约 5 分钟，请勿重复提交；容器日志会显示安装进度。`
+                      : '正在校验并接入应用包，请勿重复提交。'
+                  }
+                />
+              ) : null}
+              <Button type="primary" htmlType="submit" block disabled={!pkgFile || previewing || packageSubmitting} loading={packageSubmitting}>
+                {packageSubmitting
+                  ? pkgPreview?.requirements?.length
+                    ? '正在安装依赖并接入…'
+                    : '正在校验并接入…'
+                  : '校验并接入'}
+              </Button>
+            </>
           ) : (
             <Button type="primary" htmlType="submit" block>{editing ? '保存（即时生效）' : '接入'}</Button>
           )}
@@ -1464,97 +1497,257 @@ function TlsTab(): ReactNode {
         httpsEnabled: boolean;
         mode: string;
         domain: string | null;
+        email: string | null;
+        wildcard: boolean;
+        staging: boolean;
+        dnsConfigured: boolean;
         httpsPort: number;
-        cert: { subject: string; daysRemaining: number } | null;
+        cert: {
+          subject: string;
+          issuer: string;
+          domains: string[];
+          validFrom: string;
+          validTo: string;
+          expired: boolean;
+          daysRemaining: number;
+          fingerprint: string;
+        } | null;
+        error?: string;
+        acme: {
+          inProgress: boolean;
+          phase: 'preparing' | 'account' | 'dns' | 'validating' | 'installing' | null;
+          lastError: string | null;
+          lastSuccessAt: number | null;
+        };
       }>('/api/admin/tls'),
+    refetchInterval: (query) => (query.state.data?.acme.inProgress ? 1500 : false),
   });
   const [pemForm] = Form.useForm();
   const [acmeForm] = Form.useForm();
 
   const st = tlsQ.data;
+  const isStagingCert = st?.cert?.issuer.includes('(STAGING)') ?? false;
+  const phaseItems = [
+    { key: 'preparing', title: '准备签发' },
+    { key: 'account', title: '连接证书服务' },
+    { key: 'dns', title: '创建 DNS 验证记录' },
+    { key: 'validating', title: '等待域名验证' },
+    { key: 'installing', title: '安装并启用证书' },
+  ];
+  const phaseIndex = Math.max(0, phaseItems.findIndex((item) => item.key === st?.acme.phase));
+
+  useEffect(() => {
+    if (st) {
+      acmeForm.setFieldsValue({
+        domain: st.domain ?? undefined,
+        email: st.email ?? undefined,
+      });
+    }
+  }, [st, acmeForm]);
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card size="small" title="证书状态" extra={st?.mode === 'acme' ? <Tag bordered={false} color="green" style={{ fontSize: 11 }}>自动续期已启用</Tag> : null}>
-        <Descriptions column={1} size="small">
-          <Descriptions.Item label="模式">{st?.mode === 'acme' ? '自动签发' : st?.mode === 'manual' ? '手动上传' : '未启用（纯门户模式）'}</Descriptions.Item>
-          <Descriptions.Item label="HTTPS">{st?.httpsEnabled ? <Tag color="green">已启用（端口 {st.httpsPort}）</Tag> : <Tag>未启用</Tag>}</Descriptions.Item>
-          {st?.cert ? <Descriptions.Item label="证书">{st.cert.subject}（剩余 {st.cert.daysRemaining} 天）</Descriptions.Item> : null}
-          {st?.domain ? <Descriptions.Item label="ACME 域名">{st.domain}</Descriptions.Item> : null}
-        </Descriptions>
-        {st?.mode === 'acme' ? (
-          <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0', fontSize: 12 }}>
-            到期前 30 天自动重签并热替换，无需人工操作。
+    <Space direction="vertical" size="middle" className="aap-tls-page">
+      {tlsQ.isError ? <Alert type="error" showIcon message="无法读取证书状态" description={tlsQ.error instanceof Error ? tlsQ.error.message : '请稍后重试'} /> : null}
+      <Card className="aap-tls-status" loading={tlsQ.isLoading}>
+        <div className="aap-tls-status__heading">
+          <div>
+            <Typography.Title level={4}>当前证书</Typography.Title>
+            <Typography.Text type="secondary">
+              {st?.httpsEnabled ? `HTTPS 服务正在使用此证书（端口 ${st.httpsPort}）` : '证书详情及 HTTPS 服务状态'}
+            </Typography.Text>
+          </div>
+          <Space wrap>
+            {st?.httpsEnabled ? <Tag color="green">HTTPS 已启用</Tag> : <Tag>HTTPS 未启用</Tag>}
+            {st?.acme.inProgress ? <Tag color="processing">签发进行中</Tag> : null}
+            {st?.mode === 'acme' && !st.acme.inProgress ? <Tag color="blue">自动续期已启用</Tag> : null}
+          </Space>
+        </div>
+        {st?.cert ? (
+          <>
+            {isStagingCert ? (
+              <Alert
+                type="error"
+                showIcon
+                className="aap-tls-status__alert"
+                message="当前是测试证书，浏览器不会信任"
+                description="此证书由 Let's Encrypt Staging 颁发。请使用下方 Cloudflare DNS-01 流程重新签发正式证书。"
+              />
+            ) : st.cert.expired ? (
+              <Alert type="error" showIcon className="aap-tls-status__alert" message="当前证书已过期" />
+            ) : st.cert.daysRemaining <= 30 ? (
+              <Alert type="warning" showIcon className="aap-tls-status__alert" message={`证书将在 ${st.cert.daysRemaining} 天后到期`} />
+            ) : null}
+            <Descriptions size="small" column={{ xs: 1, sm: 2 }} className="aap-tls-details">
+              <Descriptions.Item label="主题">{st.cert.subject}</Descriptions.Item>
+              <Descriptions.Item label="颁发者">{st.cert.issuer}</Descriptions.Item>
+              <Descriptions.Item label="覆盖域名" span={2}>
+                <Space wrap>
+                  {st.cert.domains.length
+                    ? st.cert.domains.map((domain) => <Tag key={domain}>{domain}</Tag>)
+                    : <Typography.Text type="secondary">证书未声明 DNS SAN</Typography.Text>}
+                </Space>
+              </Descriptions.Item>
+              <Descriptions.Item label="生效时间">{st.cert.validFrom}</Descriptions.Item>
+              <Descriptions.Item label="到期时间">
+                <Space wrap>
+                  <span>{st.cert.validTo}</span>
+                  <Tag color={st.cert.expired ? 'red' : st.cert.daysRemaining <= 30 ? 'orange' : 'green'}>
+                    {st.cert.expired ? '已过期' : `剩余 ${st.cert.daysRemaining} 天`}
+                  </Tag>
+                </Space>
+              </Descriptions.Item>
+              <Descriptions.Item label="SHA-1 指纹" span={2}>
+                <Typography.Text copyable code>{st.cert.fingerprint}</Typography.Text>
+              </Descriptions.Item>
+            </Descriptions>
+          </>
+        ) : (
+          <Alert
+            type={st?.installed ? 'error' : 'info'}
+            showIcon
+            className="aap-tls-status__alert"
+            message={st?.installed ? `证书已安装但无法使用${st.error ? `：${st.error}` : ''}` : '尚未安装证书'}
+            description={st?.httpsEnabled ? 'HTTPS 服务状态异常，请检查证书配置。' : '完成 Cloudflare DNS-01 签发后，证书会自动安装并启用 HTTPS。'}
+          />
+        )}
+        {st?.acme.lastSuccessAt ? (
+          <Typography.Paragraph type="secondary" className="aap-tls-last-success">
+            最近签发成功：{new Date(st.acme.lastSuccessAt).toLocaleString('zh-CN')}
           </Typography.Paragraph>
+        ) : null}
+        {st?.acme.lastError ? (
+          <Alert type="error" showIcon className="aap-tls-status__alert" message="最近一次签发失败" description={st.acme.lastError} />
         ) : null}
       </Card>
 
-      <Card size="small" title="自动签发（ACME / Let's Encrypt）" extra={<Tag bordered={false} color="blue" style={{ fontSize: 11 }}>推荐</Tag>}>
-        <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-          要求：域名已解析到本机，且 80 端口可达（HTTP-01 验证）。内网 NAS 无公网 80 时请使用下方手动上传 PEM。
-        </Typography.Paragraph>
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 16 }}
-          message="用户应用独立子域名需要通配证书"
-          description="配置本站域名后，每个用户应用使用「应用 ID.本站域名」。当前 ACME HTTP-01 仅签发单域名证书；生产环境请上传包含 *.本站域名的通配证书，并将通配 DNS 指向本服务。"
-        />
-        <Form form={acmeForm} layout="vertical" onFinish={async (v) => {
-          try {
-            await api('/api/admin/tls/acme', { method: 'POST', json: v });
-            message.info('签发已启动，通常需要 10-60 秒，请稍后刷新状态');
-            setTimeout(() => void qc.invalidateQueries({ queryKey: ['admin-tls'] }), 15_000);
-          } catch (err) {
-            message.error(err instanceof Error ? err.message : '启动失败');
-          }
-        }}>
-          <Form.Item name="domain" label="域名" rules={[{ required: true, message: '请输入域名' }]}>
-            <Input placeholder="nas.example.com" />
-          </Form.Item>
-          <Form.Item name="email" label="邮箱" rules={[{ required: true, message: '请输入邮箱' }, { type: 'email' }]}>
-            <Input placeholder="you@example.com" />
-          </Form.Item>
-          <Button type="primary" htmlType="submit" block>开始签发</Button>
-        </Form>
-      </Card>
+      <div className="aap-tls-grid">
+        <Card
+          className="aap-tls-card"
+          title="1. 配置 Cloudflare DNS-01"
+          extra={st?.dnsConfigured ? <Tag color="green">已配置</Tag> : <Tag color="orange">待配置</Tag>}
+        >
+          <Typography.Paragraph type="secondary">
+            在 Cloudflare 创建仅对目标 Zone 授予 DNS:Edit 权限的 API Token，并填写 Zone ID。Token 加密保存，不会回显。
+          </Typography.Paragraph>
+          <SettingsForm
+            groups={['证书与 HTTPS']}
+            excludeKeys={['ACME_DOMAIN', 'ACME_EMAIL', 'ACME_STAGING', 'ACME_WILDCARD', 'HTTPS_REDIRECT']}
+          />
+        </Card>
 
-      <Card size="small" title="手动上传证书（PEM）">
-        <Form form={pemForm} layout="vertical" onFinish={async (v) => {
-          try {
-            await api('/api/admin/tls', { method: 'PUT', json: v });
-            message.success('证书已安装并热生效');
-            pemForm.resetFields();
-            void qc.invalidateQueries({ queryKey: ['admin-tls'] });
-          } catch (err) {
-            message.error(err instanceof Error ? err.message : '安装失败');
-          }
-        }}>
-          <Form.Item name="cert" label="证书 PEM" rules={[{ required: true, message: '请粘贴证书' }]}>
-            <Input.TextArea rows={4} placeholder="-----BEGIN CERTIFICATE-----" style={{ fontFamily: 'monospace' }} />
-          </Form.Item>
-          <Form.Item name="key" label="私钥 PEM" rules={[{ required: true, message: '请粘贴私钥' }]}>
-            <Input.TextArea rows={4} placeholder="-----BEGIN PRIVATE KEY-----" style={{ fontFamily: 'monospace' }} />
-          </Form.Item>
-          <Space>
-            <Button type="primary" htmlType="submit">安装并生效</Button>
-            <Popconfirm
-              title="移除证书？"
-              description="HTTPS 将立即停用，回到纯门户模式。"
-              onConfirm={async () => {
-                await api('/api/admin/tls', { method: 'DELETE' });
-                message.success('已移除');
-                void qc.invalidateQueries({ queryKey: ['admin-tls'] });
-              }}
+        <Card className="aap-tls-card" title="2. 签发正式通配符证书" extra={<Tag color="blue">Let’s Encrypt 正式环境</Tag>}>
+          <Typography.Paragraph type="secondary">
+            使用 DNS-01 验证，不依赖公网 80 端口。一次签发同时覆盖根域名和所有一级子域名，并自动续期。
+          </Typography.Paragraph>
+          {st?.acme.inProgress ? (
+            <div className="aap-tls-progress">
+              <Steps
+                size="small"
+                current={phaseIndex}
+                status={st.acme.lastError ? 'error' : 'process'}
+                labelPlacement="vertical"
+                responsive
+                items={phaseItems.map((item) => ({ title: item.title }))}
+              />
+              <Typography.Text type="secondary">
+                {phaseItems[phaseIndex]?.title ?? '正在处理'}，请勿关闭服务；页面会自动更新进度。
+              </Typography.Text>
+            </div>
+          ) : null}
+          {st?.acme.lastError ? (
+            <Alert type="error" showIcon className="aap-tls-form-alert" message="签发失败" description={st.acme.lastError} />
+          ) : null}
+          {!st?.dnsConfigured ? (
+            <Alert type="warning" showIcon className="aap-tls-form-alert" message="请先完成左侧 Cloudflare 配置并保存" />
+          ) : null}
+          <Form form={acmeForm} layout="vertical" onFinish={async (v) => {
+            try {
+              await api('/api/admin/tls/acme', {
+                method: 'POST',
+                json: { domain: v.domain, email: v.email },
+              });
+              message.info('正式证书签发已启动，系统将显示实时阶段进度');
+              void qc.invalidateQueries({ queryKey: ['admin-tls'] });
+            } catch (err) {
+              message.error(err instanceof Error ? err.message : '启动失败');
+            }
+          }}>
+            <Form.Item
+              name="domain"
+              label="根域名"
+              extra="例如 example.com；系统会同时申请 example.com 和 *.example.com。"
+              rules={[{ required: true, message: '请输入根域名' }]}
             >
-              <Button danger>移除证书</Button>
-            </Popconfirm>
-          </Space>
-        </Form>
-      </Card>
+              <Input placeholder="example.com" />
+            </Form.Item>
+            <Form.Item name="email" label="证书通知邮箱" rules={[{ required: true, message: '请输入邮箱' }, { type: 'email' }]}>
+              <Input placeholder="you@example.com" />
+            </Form.Item>
+            <Button
+              type="primary"
+              htmlType="submit"
+              block
+              loading={st?.acme.inProgress}
+              disabled={!st?.dnsConfigured || st?.acme.inProgress}
+            >
+              {st?.cert ? '重新签发并替换当前证书' : '签发并安装正式证书'}
+            </Button>
+          </Form>
+        </Card>
+      </div>
+
+      <Collapse
+        items={[{
+          key: 'manual',
+          label: '高级选项：手动安装 PEM 证书',
+          children: (
+            <Form form={pemForm} layout="vertical" onFinish={async (v) => {
+              try {
+                await api('/api/admin/tls', { method: 'PUT', json: v });
+                message.success('证书已安装并热生效');
+                pemForm.resetFields();
+                void qc.invalidateQueries({ queryKey: ['admin-tls'] });
+              } catch (err) {
+                message.error(err instanceof Error ? err.message : '安装失败');
+              }
+            }}>
+              <Form.Item name="cert" label="证书链 PEM" rules={[{ required: true, message: '请粘贴证书' }]}>
+                <Input.TextArea rows={4} placeholder="-----BEGIN CERTIFICATE-----" style={{ fontFamily: 'monospace' }} />
+              </Form.Item>
+              <Form.Item name="key" label="私钥 PEM" rules={[{ required: true, message: '请粘贴私钥' }]}>
+                <Input.TextArea rows={4} placeholder="-----BEGIN PRIVATE KEY-----" style={{ fontFamily: 'monospace' }} />
+              </Form.Item>
+              <Space wrap>
+                <Button type="primary" htmlType="submit">安装并生效</Button>
+                <Popconfirm
+                  title="移除证书？"
+                  description="HTTPS 将立即停用，回到纯门户模式。"
+                  onConfirm={async () => {
+                    await api('/api/admin/tls', { method: 'DELETE' });
+                    message.success('已移除');
+                    void qc.invalidateQueries({ queryKey: ['admin-tls'] });
+                  }}
+                >
+                  <Button danger>移除证书</Button>
+                </Popconfirm>
+              </Space>
+            </Form>
+          ),
+        }]}
+      />
 
       <Card size="small" title="HTTPS 跳转">
-        <SettingsForm groups={['证书与 HTTPS']} excludeKeys={['ACME_DOMAIN', 'ACME_EMAIL', 'ACME_STAGING']} />
+        <SettingsForm
+          groups={['证书与 HTTPS']}
+          excludeKeys={[
+            'ACME_DOMAIN',
+            'ACME_EMAIL',
+            'ACME_STAGING',
+            'ACME_WILDCARD',
+            'ACME_CLOUDFLARE_ZONE_ID',
+            'ACME_CLOUDFLARE_API_TOKEN',
+          ]}
+        />
       </Card>
     </Space>
   );

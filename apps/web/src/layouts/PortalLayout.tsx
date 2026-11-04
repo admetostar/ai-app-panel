@@ -215,6 +215,7 @@ export function PortalLayout() {
     ...(me?.user.role === 'admin' ? [{ type: 'divider' as const }, { key: 'admin', icon: <SettingOutlined />, label: '管理后台' }] : []),
   ];
   const sidebarMenuItems: MenuProps['items'] = [
+    { key: 'account', icon: <UserOutlined />, label: '个人中心' },
     { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true },
     ...(me?.user.role === 'admin' ? [{ type: 'divider' as const }, { key: 'admin', icon: <SettingOutlined />, label: '管理后台' }] : []),
   ];

@@ -6,3 +6,6 @@ packages:
 allowBuilds:
   better-sqlite3: true
   esbuild: true
+
+patchedDependencies:
+  acme-client@5.4.0: patches/acme-client@5.4.0.patch

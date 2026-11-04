@@ -9,6 +9,7 @@ export function BeianFooter({ branding }: { branding: BrandingInfo }) {
   const icp = branding.icpNumber?.trim();
   const police = branding.policeNumber?.trim();
   const policeDigits = police ? police.replace(/\D/g, '') : '';
+  const copyright = branding.footerCopyright?.trim();
   // 页脚文案已配置 → 首行展示文案 + 备案号；未配置 → 不渲染首行，
   // 仅保留一行「© 年份 站点名」，且未配置时站点名链接到项目主页（默认署名）。
   const configured = Boolean(branding.footerText?.trim());
@@ -39,13 +40,17 @@ export function BeianFooter({ branding }: { branding: BrandingInfo }) {
           </div>
         ) : null}
         <div style={{ marginTop: hasFirstLine ? 4 : 0 }}>
-          © {year}{' '}
-          {configured ? (
-            <span>{branding.siteName}</span>
-          ) : (
-            <a href={PROJECT_URL} target="_blank" rel="noreferrer noopener">
-              {branding.siteName}
-            </a>
+          {copyright || (
+            <>
+              © {year}{' '}
+              {configured ? (
+                <span>{branding.siteName}</span>
+              ) : (
+                <a href={PROJECT_URL} target="_blank" rel="noreferrer noopener">
+                  {branding.siteName}
+                </a>
+              )}
+            </>
           )}
         </div>
       </div>

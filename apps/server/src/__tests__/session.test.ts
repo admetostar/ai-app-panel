@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { setupTestDb, teardownTestDb } from './testkit.js';
 import { getDb } from '../db/index.js';
 import { sessions, users } from '../db/schema.js';
+import { setSetting } from '../lib/settings.js';
 import type { SessionUser } from '../types.js';
 import {
   createSession,
@@ -17,11 +18,14 @@ import {
 let dir: string;
 
 /** 最小 Response stub：捕获 cookie 写入 */
-function stubRes(): { res: Response; cookie: () => { name: string; value: string } | null } {
-  const holder: { cookie: { name: string; value: string } | null } = { cookie: null };
+function stubRes(): {
+  res: Response;
+  cookie: () => { name: string; value: string; options?: Record<string, unknown> } | null;
+} {
+  const holder: { cookie: { name: string; value: string; options?: Record<string, unknown> } | null } = { cookie: null };
   const res = {
-    cookie(name: string, value: string) {
-      holder.cookie = { name, value };
+    cookie(name: string, value: string, options?: Record<string, unknown>) {
+      holder.cookie = { name, value, options };
     },
     clearCookie() {
       holder.cookie = null;
@@ -44,6 +48,19 @@ beforeAll(async () => {
 afterAll(async () => await teardownTestDb(dir));
 
 describe('session（统一 users 表）', () => {
+  it('未配置站点域名时发 host-only Cookie，配置后才设置 Domain', async () => {
+    const uid = await insertUser('cookie-domain');
+    const local = stubRes();
+    await createSession(local.res, { id: uid }, {});
+    expect(local.cookie()?.options).not.toHaveProperty('domain');
+
+    await setSetting('SITE_DOMAIN', 'example.com');
+    const domain = stubRes();
+    await createSession(domain.res, { id: uid }, {});
+    expect(domain.cookie()?.options).toHaveProperty('domain', 'example.com');
+    await setSetting('SITE_DOMAIN', '');
+  });
+
   it('创建→装载→登出 全链路', async () => {
     const uid = await insertUser('alice');
     const { res, cookie } = stubRes();

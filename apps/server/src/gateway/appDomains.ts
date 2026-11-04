@@ -6,7 +6,8 @@ export function appDomainRoot(): string {
 }
 
 /** Returns null for the portal host, an app ID for a valid app host, and '' for an invalid subdomain. */
-export function appIdFromHostname(hostname: string, root = appDomainRoot()): string | null {
+export function appIdFromHostname(hostname: string | null | undefined, root = appDomainRoot()): string | null {
+  if (typeof hostname !== 'string' || hostname.trim() === '') return null;
   const host = hostname.trim().toLowerCase().replace(/\.$/, '');
   const suffix = `.${root}`;
   if (!host.endsWith(suffix)) return null;
@@ -15,6 +16,6 @@ export function appIdFromHostname(hostname: string, root = appDomainRoot()): str
   return label;
 }
 
-export function isAppHostname(hostname: string, root = appDomainRoot()): boolean {
+export function isAppHostname(hostname: string | null | undefined, root = appDomainRoot()): boolean {
   return appIdFromHostname(hostname, root) !== null;
 }

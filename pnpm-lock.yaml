@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  acme-client@5.4.0: 9f75b11ebe62c9055ea26f6074844c21c9ae25d640a97e2d8a480de5be0a4bab
+
 importers:
 
   .:
@@ -31,7 +34,7 @@ importers:
         version: 14.0.1
       acme-client:
         specifier: ^5.4.0
-        version: 5.4.0
+        version: 5.4.0(patch_hash=9f75b11ebe62c9055ea26f6074844c21c9ae25d640a97e2d8a480de5be0a4bab)
       adm-zip:
         specifier: ^0.6.1
         version: 0.6.1
@@ -3929,7 +3932,7 @@ snapshots:
       mime-types: 2.1.35
       negotiator: 0.6.3
 
-  acme-client@5.4.0:
+  acme-client@5.4.0(patch_hash=9f75b11ebe62c9055ea26f6074844c21c9ae25d640a97e2d8a480de5be0a4bab):
     dependencies:
       '@peculiar/x509': 1.14.3
       asn1js: 3.0.10

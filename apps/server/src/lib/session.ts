@@ -38,7 +38,7 @@ interface CookieOpts {
   sameSite: 'lax';
   maxAge: number;
   path: '/';
-  domain: string;
+  domain?: string;
   secure?: true;
 }
 
@@ -48,8 +48,9 @@ function cookieOptions(): CookieOpts {
     sameSite: 'lax',
     maxAge: sessionTtlSec() * 1000,
     path: '/',
-    domain: (getSetting('SITE_DOMAIN') ?? '').trim().toLowerCase().replace(/^\./, '').replace(/\.$/, '') || 'localhost',
   };
+  const domain = (getSetting('SITE_DOMAIN') ?? '').trim().toLowerCase().replace(/^\./, '').replace(/\.$/, '');
+  if (domain) opts.domain = domain;
   if (secureCookieOverride) opts.secure = true;
   return opts;
 }

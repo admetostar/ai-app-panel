@@ -45,10 +45,12 @@ test('首页导航定位与登录注册分栏页面', async ({ page }) => {
   const homeNav = page.locator('.aap-home-nav');
   await expect(homeNav.getByRole('link', { name: '发现应用' })).toBeVisible();
   const homeHeader = page.locator('.aap-home-page-shell .aap-header');
+  const homeFooter = page.locator('.aap-home-page-shell .aap-footer__inner');
   const heroBounds = await page.locator('.aap-home-hero').boundingBox();
   const headerBounds = await page.locator('.aap-header__inner').boundingBox();
-  const footerBounds = await page.locator('.aap-home-page-shell .aap-footer__inner').boundingBox();
+  const footerBounds = await homeFooter.boundingBox();
   if (!heroBounds || !headerBounds || !footerBounds) throw new Error('首页对齐元素未渲染');
+  await expect(homeFooter).toHaveCSS('text-align', 'center');
   expect(Math.abs(heroBounds.x - headerBounds.x)).toBeLessThan(2);
   expect(Math.abs(heroBounds.x - footerBounds.x)).toBeLessThan(2);
   expect(Math.abs(heroBounds.width - headerBounds.width)).toBeLessThan(2);
@@ -651,6 +653,12 @@ test('设置保存：HTTPS 跳转开关开 → 保存 → 刷新仍为开', asyn
   await expect(page.getByText('近 30 天 Token 消耗')).toBeVisible();
   await expect(page.getByText('订阅计划分布')).toBeVisible();
   await expect(page.getByText('首次配置')).toHaveCount(0);
+  await page.locator('.aap-user-sidebar__profile').click();
+  await expect(page.getByRole('menuitem', { name: '个人中心' })).toBeVisible();
+  await page.getByRole('menuitem', { name: '个人中心' }).click();
+  await page.waitForURL(`${PORTAL}/account`);
+  await expect(page.getByRole('heading', { name: '个人中心' })).toBeVisible();
+  await page.goto('/admin?tab=overview');
   await page.getByRole('button', { name: '应用管理' }).click();
   await page.getByRole('button', { name: '接入 HTML 页' }).click();
   await page.locator('.aap-admin-page .ant-select').first().click();
@@ -670,6 +678,9 @@ test('设置保存：HTTPS 跳转开关开 → 保存 → 刷新仍为开', asyn
   await expect(adminInput).toHaveCSS('color', 'rgb(242, 244, 247)');
   await expect(page.locator('.aap-admin-page .ant-form-item-label > label').first()).toHaveCSS('color', 'rgb(230, 232, 236)');
   await page.getByRole('button', { name: '证书' }).click();
+  await expect(page.getByText('当前证书')).toBeVisible();
+  await expect(page.getByText('Cloudflare DNS-01', { exact: false }).first()).toBeVisible();
+  await expect(page.getByText('HTTP-01', { exact: false })).toHaveCount(0);
   const tlsCard = page.locator('.ant-card', { hasText: 'HTTPS 跳转' });
   const switcher = tlsCard.locator('.ant-switch').first();
   await expect(switcher).toBeVisible();

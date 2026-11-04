@@ -1108,6 +1108,7 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>): Promise<void> {
+    if (uploading) return;
     const f = e.target.files?.[0];
     if (!f) return;
     setUploading(true);
@@ -1142,7 +1143,16 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
           disabled={uploading}
           style={{ display: 'none' }}
         />
-        {uploading ? <Typography.Text type="secondary">上传校验中…</Typography.Text> : null}
+        {uploading ? (
+          <div className="aap-app-upload-progress" role="status" aria-live="polite">
+            <div className="aap-app-upload-progress__track" role="progressbar" aria-label="应用包上传与校验进度" aria-valuetext="正在处理中，进度未知">
+              <span className="aap-app-upload-progress__indicator" />
+            </div>
+            <Typography.Text type="secondary" className="aap-app-upload-progress__label">
+              正在校验应用包并安装依赖，请勿重复上传…
+            </Typography.Text>
+          </div>
+        ) : null}
         {lastError ? <Alert type="error" showIcon style={{ marginTop: 10 }} message={lastError} /> : null}
       </Card>
 

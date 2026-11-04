@@ -118,6 +118,7 @@ export interface BrandingInfo {
   /** 自定义强调色（覆盖主题强调色），null 用主题默认 */
   accentColor: string | null;
   footerText: string;
+  footerCopyright: string;
   /** ICP 备案号（组件自动带工信部查询链接） */
   icpNumber: string | null;
   /** 公安备案号（组件自动带公安备案查询链接） */

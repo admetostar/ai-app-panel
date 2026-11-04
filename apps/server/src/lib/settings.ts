@@ -81,6 +81,14 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   FOOTER_TEXT: {
     label: '页脚文案',
     group: '站点与品牌', type: 'string', desc: '页脚文案', initial: () => '', defaultsWork: true },
+  FOOTER_COPYRIGHT: {
+    label: '版权声明',
+    group: '站点与品牌',
+    type: 'string',
+    desc: '页脚最后一行的版权声明；留空时默认显示 © 当前年份和站点名称',
+    initial: () => '',
+    defaultsWork: true,
+  },
   ICP_NUMBER: {
     label: 'ICP 备案号',
     group: '站点与品牌', type: 'string', desc: 'ICP 备案号（自动带工信部查询链接，留空不显示）', initial: () => '', defaultsWork: true },
@@ -299,7 +307,7 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   // ---- HTTPS / 证书（B3；默认纯门户模式 = 不启 HTTPS，反代外置） ----
   ACME_DOMAIN: {
     label: 'ACME 签发域名',
-    group: '证书与 HTTPS', type: 'string', desc: 'ACME 签发域名（填写即启用自动 HTTPS，需 80 端口可达；留空走纯门户模式）', initial: () => '', defaultsWork: true },
+    group: '证书与 HTTPS', type: 'string', desc: 'ACME 签发根域名（使用 Cloudflare DNS-01 签发根域名及通配符证书；留空走纯门户模式）', initial: () => '', defaultsWork: true },
   ACME_EMAIL: {
     label: 'ACME 邮箱',
     group: '证书与 HTTPS', type: 'string', desc: 'ACME 账户邮箱（证书到期通知）', initial: () => '', defaultsWork: false },
@@ -308,9 +316,34 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     group: '证书与 HTTPS',
     type: 'bool',
     desc: '使用 Let\'s Encrypt 测试环境（避免触发正式环境限频，跑通后关闭）',
-    initial: () => 'true',
+    initial: () => 'false',
     defaultsWork: true,
     advanced: true,
+  },
+  ACME_WILDCARD: {
+    label: 'ACME 通配符证书',
+    group: '证书与 HTTPS',
+    type: 'bool',
+    desc: '为本站根域名和 *.根域名签发证书，使用 Cloudflare DNS-01 验证并自动续期',
+    initial: () => 'true',
+    defaultsWork: true,
+  },
+  ACME_CLOUDFLARE_ZONE_ID: {
+    label: 'Cloudflare Zone ID',
+    group: '证书与 HTTPS',
+    type: 'string',
+    desc: 'Cloudflare 域名区域 ID；配合仅限该 Zone 的 DNS:Edit API Token 使用',
+    initial: () => '',
+    defaultsWork: false,
+  },
+  ACME_CLOUDFLARE_API_TOKEN: {
+    label: 'Cloudflare DNS API Token',
+    group: '证书与 HTTPS',
+    type: 'string',
+    desc: '建议创建仅对目标 Zone 有 DNS:Edit 权限的 API Token；加密保存，仅用于创建和删除 ACME TXT 记录',
+    initial: () => '',
+    secret: true,
+    defaultsWork: false,
   },
   HTTPS_REDIRECT: {
     label: 'HTTP 跳转 HTTPS',

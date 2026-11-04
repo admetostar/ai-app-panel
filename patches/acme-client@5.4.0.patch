@@ -1,0 +1,15 @@
+diff --git a/src/axios.js b/src/axios.js
+index b62c92b1563d5c024e1e7a974f7e31e6816db3d8..045d0c4d24e913fe11502a2d5093558cff2bd7c6 100644
+--- a/src/axios.js
++++ b/src/axios.js
+@@ -113,6 +113,10 @@ instance.interceptors.response.use(null, async (error) => {
+     }
+ 
+     /* Validate and return response */
++    if (!response) {
++        return Promise.reject(error);
++    }
++
+     return validateStatus(response);
+ });
+ 

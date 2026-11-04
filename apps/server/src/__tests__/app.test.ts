@@ -43,6 +43,7 @@ describe('W1 冒烟', () => {
     const body = (await res.json()) as PortalBootstrap;
     expect(body.branding.siteName).toBe('ai-app-panel');
     expect(body.branding.browserTitle).toBe('ai-app-panel');
+    expect(body.branding.footerCopyright).toBe('');
     expect(body.registration.mode).toBe('open');
     expect(body.appDomainRoot).toBe('localhost');
     expect(body.appPort).toBe(8080);
@@ -63,6 +64,13 @@ describe('W1 冒烟', () => {
     const fallback = await fetch(`${baseUrl}/api/portal/bootstrap`);
     const fallbackBody = (await fallback.json()) as PortalBootstrap;
     expect(fallbackBody.branding.browserTitle).toBe('品牌站名');
+  });
+
+  it('GET /api/portal/bootstrap 返回管理员配置的版权声明', async () => {
+    await setSetting('FOOTER_COPYRIGHT', '版权所有：示例团队');
+    const res = await fetch(`${baseUrl}/api/portal/bootstrap`);
+    const body = (await res.json()) as PortalBootstrap;
+    expect(body.branding.footerCopyright).toBe('版权所有：示例团队');
   });
 
   it('GET /api/portal/plans 匿名返回管理员启用的权益套餐', async () => {

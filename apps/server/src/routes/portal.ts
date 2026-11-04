@@ -28,6 +28,7 @@ portalRouter.get('/portal/bootstrap', async (_req, res) => {
       themeId: 'graphite',
       accentColor: null,
       footerText: getSetting('FOOTER_TEXT') || '',
+      footerCopyright: getSetting('FOOTER_COPYRIGHT') || '',
       icpNumber: getSetting('ICP_NUMBER') || null,
       policeNumber: getSetting('POLICE_NUMBER') || null,
     },

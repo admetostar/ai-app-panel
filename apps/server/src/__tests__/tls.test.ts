@@ -20,7 +20,14 @@ let dir: string;
 let httpsPort: number | null = null;
 let pair1: { cert: string; key: string };
 let pair2: { cert: string; key: string };
-let opensslAvailable = true;
+const opensslAvailable = (() => {
+  try {
+    execFileSync('openssl', ['version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 function genSelfSigned(cn: string): { cert: string; key: string } {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aap-cert-'));
@@ -29,6 +36,7 @@ function genSelfSigned(cn: string): { cert: string; key: string } {
   execFileSync('openssl', [
     'req', '-x509', '-newkey', 'rsa:2048', '-keyout', key, '-out', cert,
     '-days', '365', '-nodes', '-subj', `/CN=${cn}`,
+    '-addext', `subjectAltName=DNS:${cn},DNS:*.${cn}`,
   ], { stdio: 'pipe' });
   return { cert: fs.readFileSync(cert, 'utf8'), key: fs.readFileSync(key, 'utf8') };
 }
@@ -36,13 +44,9 @@ function genSelfSigned(cn: string): { cert: string; key: string } {
 beforeAll(async () => {
   ({ dir } = await setupTestDb());
   await seedSettings();
-  try {
-    pair1 = genSelfSigned('test1.example.com');
-    pair2 = genSelfSigned('test2.example.com');
-  } catch {
-    opensslAvailable = false;
-    return;
-  }
+  if (!opensslAvailable) return;
+  pair1 = genSelfSigned('test1.example.com');
+  pair2 = genSelfSigned('test2.example.com');
   const cfg = { ...loadConfig({}), webDist: null };
   const app = createApp(cfg);
   tls.init(app, () => {}, 0); // 0 = 临时端口
@@ -59,6 +63,7 @@ describe('W6 证书校验与安装（B3）', () => {
   it.skipIf(!opensslAvailable)('有效配对：返回证书信息；有效期天数合理', () => {
     const info = tls.validate(pair1.cert, pair1.key);
     expect(info.subject).toContain('test1.example.com');
+    expect(info.domains).toEqual(['test1.example.com', '*.test1.example.com']);
     expect(info.expired).toBe(false);
     expect(info.daysRemaining).toBeGreaterThan(300);
   });
@@ -70,21 +75,18 @@ describe('W6 证书校验与安装（B3）', () => {
 
   it.skipIf(!opensslAvailable)('安装 → HTTPS 服务起在临时端口 → 热替换 → 移除', async () => {
     tls.installManual(pair1.cert, pair1.key);
-    // 等待监听
     for (let i = 0; i < 50 && !tls.httpsAddress(); i++) {
       await new Promise((r) => setTimeout(r, 50));
     }
     httpsPort = tls.httpsAddress();
     expect(httpsPort).not.toBeNull();
 
-    // HTTPS 请求可达（自签名忽略校验）
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
     const res1 = await fetch(`https://127.0.0.1:${httpsPort}/api/health`);
     expect(res1.status).toBe(200);
     const cert1 = (await res1.json() as { ok: boolean }).ok;
     expect(cert1).toBe(true);
 
-    // 热替换为第二张证书：服务不中断
     tls.installManual(pair2.cert, pair2.key);
     expect(tls.httpsAddress()).toBe(httpsPort);
     const res2 = await fetch(`https://127.0.0.1:${httpsPort}/api/health`);

@@ -775,8 +775,12 @@ describe('python 包声明制依赖（skill v0.2.6）', () => {
     expect(args).toContain(path.join(appSiteDir('deps-app'), '.deps'));
     expect(args).toContain('.deps-requirements.txt');
 
-    process.env.PYTHON_BIN = writeStub('echo pip boom >&2\nexit 1\n');
-    await expect(await installPyDeps('deps-app', ['flask'])).rejects.toMatchObject({ status: 400, code: 'PIP_INSTALL_FAILED' });
+    process.env.PYTHON_BIN = writeStub('echo pip boom >&2\necho resolver boom\nexit 1\n');
+    await expect(installPyDeps('deps-app', ['flask'])).rejects.toMatchObject({
+      status: 400,
+      code: 'PIP_INSTALL_FAILED',
+      message: expect.stringContaining('resolver boom'),
+    });
 
     fs.mkdirSync(path.join(appSiteDir('deps-app'), '.deps'), { recursive: true });
     const callsBefore = fs.existsSync(stubOut) ? fs.readFileSync(stubOut, 'utf8') : '';

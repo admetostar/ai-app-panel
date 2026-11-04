@@ -26,7 +26,7 @@ pnpm install
 pnpm dev            # server:8080（tsx watch）+ web:5173（Vite，代理 /api 与 /app）
 pnpm skills:sync    # 从 Markdown 更新 .skill/.zip 包并同步三种下载格式到 apps/server/assets
 pnpm build          # 先同步 skill，再构建 shared → server → web（生产产物 apps/web/dist）
-pnpm test           # 服务端测试（vitest，21 个文件 218 个用例）
+pnpm test           # 服务端测试（vitest，23 个文件 224 个用例）
 pnpm test:e2e       # Playwright 端到端（自动拉起真实服务 + mock 上游）
 pnpm typecheck      # 全仓类型检查
 pnpm db:generate    # drizzle-kit 生成迁移（schema 变更后必跑）
@@ -61,12 +61,14 @@ Docker Compose 默认启动 PostgreSQL 17 和门户。复制 `deploy/docker/.env
 
 管理员页面复用个人中心的主题与可折叠左侧导航，站点、应用、用户、安全、通知、证书、LLM 和运营设置均由侧栏进入，不再显示首次配置向导或顶部标签栏。管理页按当前主题单独配置 Ant Design 组件算法；深色模式下表单、选择器及弹出列表、表格、卡片、提示和文字均切换到高对比度深色配色。`GET /api/admin/overview` 为总览提供 CPU/内存水位、网络收发速率、用户与应用累计数、近 30 天 Token 消耗以及按套餐分组的有效订阅数量。CPU 使用进程内采样，首次采样显示采集中；内存使用主机总量/空闲量；网络带宽通过 Linux `/proc/net/dev` 的接口收发字节差计算，并以 10 Mbps 为水位基准，非 Linux 或计数器不可读时明确显示不可用。无固定上限的用户、应用和 Token 累计数使用数量级映射进度条，不代表权益上限。
 
-站点设置的 Logo 可通过输入框后的「上传」按钮选择 PNG/JPEG/GIF/WebP 图片（最大 5 MB）；文件写入 `DATA_DIR/admin/site-logo/`，服务端返回的 `/uploads/sitelogo/<随机文件名>` 路径回填到设置框，保存设置后应用到门户品牌和浏览器标签页图标；站点名称同步作为浏览器页面标题。Docker Compose 将整个 `/data` 挂载到 `ai-app-panel-data` 命名卷，因此该目录会在容器重建后保留。
+站点设置的 Logo 可通过输入框后的「上传」按钮选择 PNG/JPEG/GIF/WebP 图片（最大 5 MB）；文件写入 `DATA_DIR/admin/site-logo/`，服务端返回的 `/uploads/sitelogo/<随机文件名>` 路径回填到设置框，保存设置后应用到门户品牌和浏览器标签页图标；站点名称同步作为浏览器页面标题。页脚文案、版权声明、ICP备案号及公安备案号均可在站点设置中配置；版权声明留空时默认显示当前年份与站点名称，首页页脚内容居中对齐。平台会话 Cookie 默认不设置 `Domain`，按当前访问主机建立 host-only 会话；只有配置「本站域名」时才设置 Cookie 域名。Docker Compose 将整个 `/data` 挂载到 `ai-app-panel-data` 命名卷，因此该目录会在容器重建后保留。
+
+证书管理通过 Cloudflare DNS-01 自动签发根域名及 `*.<根域名>` 通配符证书，并自动清理验证 TXT 记录。签发步骤和当前证书详情显示在管理后台「证书」页；证书详情包括颁发者、覆盖域名、生效/到期时间、剩余天数和指纹，Staging 测试证书会明确标记为浏览器不信任。后台签发固定使用 Let's Encrypt 正式环境；手动 PEM 安装作为高级选项保留。Cloudflare 配置位于管理后台「证书」→「Cloudflare DNS-01 配置」：填写 Zone ID 和仅对此 Zone 授予 DNS:Edit 权限的 API Token；Token 使用 settings secret 加密保存，签发状态与审计记录不包含 Token。DNS-01 配置会用于自动续期。ACME HTTPS 请求优先使用 IPv4，以兼容没有 IPv6 出站路由的服务器；服务器还需能解析并通过 HTTPS 访问 ACME 服务。签发失败会在状态页与容器日志中显示失败阶段及嵌套网络原因（例如连接超时及错误码），便于区分 Cloudflare/ACME 连通性、DNS 和 TLS 故障；API Token 不写入错误信息。
 
 ## 4. 应用网关（/app/\<id\>/）
 
-- **独立应用 origin**：配置「站点设置 → 本站域名」后，应用通过 `<应用 ID>.<本站域名>` 提供服务；留空时卡片和旧 `/app/<id>/...` 入口使用门户同源路径，不把内部服务端口暴露给浏览器。此本地回退仍通过 opaque-origin iframe 隔离用户上传应用；需要验证独立 origin / 浏览器存储时应配置应用域名。配置域名后，公开且需经沙箱的应用从旧 `/app/<id>/...` 入口访问时会跳转至应用子域名。应用子域名上的 `/api`、`/v1` 都只属于该应用，不进入门户接口。代理只移除平台会话 Cookie，应用 Cookie 会去掉 `Domain` 并限制为当前主机，不允许覆盖平台会话 Cookie；HTTP 下将 `SameSite=None` 调整为 `Lax`，避免浏览器拒收缺少 `Secure` 的 Cookie，HTTPS 下保留 `SameSite=None` 并加 `Secure`。请求的 `Origin`/`Referer` 透传给应用，以保留应用自己的 CSRF 校验能力。
-- **部署要求**：生产环境需将 `*.<本站域名>` DNS 指向本服务，并部署包含 `*.<本站域名>` 的通配证书；当前 ACME HTTP-01 只支持单域名签发，通配证书需手动上传。应用可按普通网站使用 `localStorage` 与 host-only Cookie，页面刷新后由浏览器按各自 origin 保持状态。
+- **独立应用 origin**：配置「站点设置 → 本站域名」后，应用通过 `<应用 ID>.<本站域名>` 提供服务；留空时卡片和旧 `/app/<id>/...` 入口使用门户同源路径，不把内部服务端口暴露给浏览器。此本地回退仍通过 opaque-origin iframe 隔离用户上传应用；需要验证独立 origin / 浏览器存储时应配置应用域名。配置域名后，公开且需经沙箱的应用从旧 `/app/<id>/...` 入口访问时会跳转至应用子域名。应用子域名上的 `/api`、`/v1` 都只属于该应用，不进入门户接口；缺失或空 Host 不视为应用子域名并安全回落到门户路由。代理只移除平台会话 Cookie，应用 Cookie 会去掉 `Domain` 并限制为当前主机，不允许覆盖平台会话 Cookie；HTTP 下将 `SameSite=None` 调整为 `Lax`，避免浏览器拒收缺少 `Secure` 的 Cookie，HTTPS 下保留 `SameSite=None` 并加 `Secure`。请求的 `Origin`/`Referer` 透传给应用，以保留应用自己的 CSRF 校验能力。
+- **部署要求**：生产环境需将 `*.<本站域名>` DNS 指向本服务，并部署包含 `*.<本站域名>` 的通配证书；证书管理通过 Cloudflare DNS-01 签发通配符证书。应用可按普通网站使用 `localStorage` 与 host-only Cookie，页面刷新后由浏览器按各自 origin 保持状态。
 - 应用注册在 `apps` 表（管理后台 → 应用管理），三种形态 `kind`：
   - `upstream`：反代到内网上游（HTML 改写 + `<base>` + fetch/XHR/script 猴补丁 + 路径穿越双查 + `duplex:'half'` + SSE 零缓冲）
   - `html`：门户托管静态页（`DATA_DIR/appsites/<id>/`），支持简单 HTML 粘贴接入与 .awpk html 包
@@ -137,7 +139,7 @@ client = OpenAI(base_url="http://<host>:8080/v1", api_key="aapk_…")
 - **用户端入口**：个人中心「我的权益」分区展示当前权益详情及可选择权益包，选择后显示账单摘要；支付创建待确认订单，管理员确认到账后生效。支持使用兑换码；「额度充值」和「我的订单」卡片默认隐藏，可分别通过 `SHOW_TOPUP_PANEL` 与 `SHOW_ORDERS_PANEL` 控制显示。
 - **注册与权益**：新普通用户注册后在存在启用权益包时选择套餐；零价包即时激活并加入权益分组，付费包生成待确认订单，管理员确认后生效。无启用权益包时直接以未订阅状态进入个人中心。开放注册不要求存在零价权益包，也不会因此限制停用或删除最后一个零价包；删除仍受套餐正在被订阅等既有约束限制。
 - **初始管理员积分**：首启创建的初始管理员获得 99,999,999 积分；数据迁移也会为已有实例中积分为 0 的首位管理员补齐一次。
-- **个人应用管理**：`GET /api/apps/mine` 返回归属者的 HTML/Python 托管包；上传后刷新列表；已创建应用列表以紧凑列展示安装日期、AWPK 上传大小、版本和平台支持，平台支持用图标标识数据库、大模型、网络白名单与存储能力，默认每页十项、不产生横向滚动条，也不再通过点击名称展开详情；设置和删除使用带无障碍名称的图标按钮。删除走 `DELETE /api/apps/:id`，要求归属者并通过步升身份验证，删除时清理包目录、持久进程及应用凭据。
+- **个人应用管理**：`GET /api/apps/mine` 返回归属者的 HTML/Python 托管包；选择 AWPK 后，在上传按钮下方左对齐显示不确定进度条，直到校验/依赖安装完成，进行中禁用重复上传；上传成功后刷新列表。已创建应用列表以紧凑列展示安装日期、AWPK 上传大小、版本和平台支持，平台支持用图标标识数据库、大模型、网络白名单与存储能力，默认每页十项、不产生横向滚动条，也不再通过点击名称展开详情；设置和删除使用带无障碍名称的图标按钮。删除走 `DELETE /api/apps/:id`，要求归属者并通过步升身份验证，删除时清理包目录、持久进程及应用凭据。
 - **套餐兑换码链接**：管理员创建套餐时可选填 `redeemUrl`，仅接受有效的 HTTP/HTTPS 外链；个人中心「订阅账单」在对应套餐配置了链接时展示「当前方案支持兑换码?去获取」，新标签页打开并启用 `noopener noreferrer`。
 
 ## 8. 分发（deploy/）
@@ -157,7 +159,7 @@ client = OpenAI(base_url="http://<host>:8080/v1", api_key="aapk_…")
 - **沙箱隔离现状**：`.awpk` Python 进程的受控出网通道是平台 egress 代理（manifest 白名单 + IP 黑名单**逐跳**校验，`routes/aap.ts`）；runner 内置 **Python 层出站守卫**（`connect` 仅放行 `AAP_PLATFORM`，直连其余地址/Unix socket 报错，`AAP_NET_GUARD=0` 关闭）；子进程环境变量走白名单（`lib/sandbox.ts` 的 `SANDBOX_ENV_KEYS`）；invoked 执行有全局并发上限（`SANDBOX_MAX_CONCURRENT_RUNS`，默认 8，超出排队防进程炸弹）；persistent 有全局进程数上限（`SANDBOX_MAX_PERSISTENT`，默认 12，超限回收最久未用进程——任务状态应落 aap.db，重拉无损）；**persistent 空闲回收时长可配**（`SANDBOX_IDLE_RECYCLE_SECONDS`，默认 300s，最小 30s，管理端改完即时生效）；沙箱以预建的 ai-app-panel 用户（10001）**默认降权运行**（compose `SANDBOX_UID`/`SANDBOX_GID` 已默认启用；新部署按当前目录权限初始化，后续新上传包目录由平台自动放宽权限）。**开放注册 + 允许用户上传包的部署必须保持降权**，否则任意注册用户可读全站凭据哈希与 master.key（二轮渗透实测）。门户业务数据位于 PostgreSQL；托管应用的 `app.sqlite` 是应用自己的状态数据。`master.key` 文件权限为 0600。**进程级禁网、CPU/内存限额与 ns/cgroups 硬隔离仍未实装**（Python 层守卫属纵深防御，非硬保证）；第三方包须通过上传阶段的包结构、manifest、当前权益包上传数量与依赖校验，公开发布不限制应用数量。
 - **应用环境变量 / 机密（G6）**：包在 manifest `env` 声明变量（required/secret/pattern/default，保留名黑名单防劫持 `AAP_*`/`PORT`/代理变量等平台注入面，`parseEnvSpec`），归属者/管理员经 `GET/PUT /api/apps/:id/env` 填值（`app_env_vars` 表 AES-256-GCM 加密落盘，secret 只写不读仅回尾 4 位 hint，审计只记名不记值）。除机密外，env 亦是**应用级默认配置**的承载（如 llm-proofread 的 `PROOFREAD_PROMPT`/`COHERENCE_PROMPT`：归属者配置对所有用户生效，用户个人设置可覆盖）；`baseEnv()` 在 invoked/persistent 沙箱启动时注入（未配置非机密变量回退声明 default）；必填缺配在执行（400 ENV_MISSING）/拉起（503 错误页）时明确拦截；persistent 配置变更后自动重启进程。入口：管理后台·应用管理与用户中心·我的应用的「环境变量」弹窗。规范见 `./app-develop.skill-v0.3.md` §1.1。
 - 包上传安全语义：用户提交（`POST /api/apps/submit`）与执行（`/api/apps/:id/run`）均要求登录；正式目录的写入/删除一律在归属校验与同名查重之后（admin 上传 409 不触碰既有站点目录）；临时目录按请求唯一命名；15MB 包体 JSON 在鉴权之后解析（匿名大包 DoS 面收敛）。
-- **python 包第三方依赖（skill v0.2.6 声明制）**：manifest `requirements` 声明（`parseRequirements` 仅收「名称[extras]+版本约束」，拒 URL/本地路径/-r，上限 32 条），**上传/更新时服务端 `pip install --only-binary=:all: --target <appsites>/<id>/.deps`**（`lib/pydeps.ts`，超时 300s；失败=上传被拒并清理正式目录，不带病上线）；沙箱 `baseEnv` 注入 `PYTHONPATH=.deps`（native/FPK `start.sh` 自检补装的预置框架目录经 `AAP_PREINSTALLED_PYTHONPATH` 前置——docker 镜像预装 py3-flask 无此环节）。安装源走「应用网关 → pip 索引源」设置（`PIP_INDEX_URL`，默认官方 PyPI）；新版本不再声明的依赖更新时自动清除；`.deps` 在数据卷应用目录下，容器重建/升级不丢。管理端包预览展示依赖清单。
+- **python 包第三方依赖（skill v0.2.6 声明制）**：manifest `requirements` 声明（`parseRequirements` 仅收「名称[extras]+版本约束」，拒 URL/本地路径/-r，上限 32 条），**上传/更新时服务端 `pip install --only-binary=:all: --target <appsites>/<id>/.deps`**（`lib/pydeps.ts`，超时 300s；容器日志记录开始、每 30 秒仍在安装的状态、完成或失败；失败=上传被拒并清理临时目录，不带病上线）；个人中心和管理后台会提示依赖安装阶段及最长等待时间。沙箱 `baseEnv` 注入 `PYTHONPATH=.deps`（native/FPK `start.sh` 自检补装的预置框架目录经 `AAP_PREINSTALLED_PYTHONPATH` 前置——docker 镜像预装 py3-flask 无此环节）。安装源走「应用网关 → pip 索引源」设置（`PIP_INDEX_URL`，默认官方 PyPI）；新版本不再声明的依赖更新时自动清除；`.deps` 在数据卷应用目录下，容器重建/升级不丢。管理端包预览展示依赖清单。
 - **egress 出站代理（P0-3 修复）**：白名单域名经 `dns.lookup` 解析后对全部 A/AAAA 复核私网/保留段黑名单（环回/RFC1918/169.254 链路本地/CGNAT/ULA 等，防 `*.nip.io` 类 DNS 绕过，线上实锤项）；IP 字面量与 localhost/.local/.internal 仍一律拒绝；出站失败详情只进服务端日志不回传调用者（防内网探测 oracle）。残留风险：解析与请求间存在理论 TOCTOU 窗口，容器形态网络隔离补齐后消除。 **内网部署例外**：管理员可在「应用网关 → 内网出站白名单」（`EGRESS_INTRANET_ALLOWLIST`）配置域名/IP/IPv4 CIDR，命中即完全放行（管理员权威高于包声明，无需包 manifest 重复声明；CIDR 区间无法逐 IP 声明）；169.254 链路本地无条件拒绝。未命中时包 manifest 照常生效、内网目标照常拒绝。**自定义请求头转发**：`aap.http.fetch(url, timeout, headers)` 支持包传自定义头（第三方 API 鉴权场景，密钥经门户环境变量注入）；≤16 个、值 ≤4KB，Host/Connection/Content-Length/Proxy-* 等逐跳与托管头剥除；响应 `{"status": 上游状态码, "body": 文本≤500KB}`。
 - **敏感配置加密**：settings 的 secret 型配置（`AAP_SIGN_SECRET`/`SMTP_PASS`/`RESEND_API_KEY`/`OIDC_CLIENT_SECRET`）落盘前 AES-256-GCM 加密（`enc:` 前缀自描述；存量明文读取兼容，后台再次保存即转密文）。
 - **传输与跳转**：HTTPS 实际启用时全站挂 HSTS（2 年，主域）；HTTP→HTTPS 跳转目标只认 `ACME_DOMAIN`（不反射请求 Host，防直达源 IP 场景的钓鱼/缓存投毒组件）；**loopback Host（127.0.0.1/localhost/::1）豁免跳转**——沙箱 runner 与 FPK 统一网关的平台内部 POST 调用若被 302 到公网域名，跟随重定向会降级为 GET 打断全部沙箱出站（llm-proofread 实测）。

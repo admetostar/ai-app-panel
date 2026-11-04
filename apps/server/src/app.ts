@@ -32,7 +32,6 @@ import { llmGatewayRouter } from './routes/llmGateway.js';
 import { adminLlmRouter } from './routes/adminLlm.js';
 import { adminBillingRouter } from './routes/adminBilling.js';
 import { gatewayRouter } from './gateway/proxy.js';
-import { acmeChallengeResponse } from './gateway/tls.js';
 import { getSettingBool, getSetting } from './lib/settings.js';
 import { HttpError, toBody } from './lib/httpError.js';
 import { appDomainRoot, appIdFromHostname, isAppHostname } from './gateway/appDomains.js';
@@ -57,19 +56,9 @@ export function createApp(cfg: AapConfig = config): Express {
   // 会话装载（cookie → sessions 表 → req.user）
   app.use(sessionMiddleware);
 
-  // ACME HTTP-01 挑战应答（80/HTTP 端口直达本服务或反代转发均可）
-  app.get('/.well-known/acme-challenge/:token', (req, res) => {
-    const ka = acmeChallengeResponse(String(req.params.token));
-    if (ka) {
-      res.type('text/plain').send(ka);
-      return;
-    }
-    res.status(404).end();
-  });
-
-  // HTTP → HTTPS 跳转开关（B3；默认关，ACME 挑战已在上方处理）
+  // HTTP → HTTPS 跳转开关（B3；默认关）
   app.use((req, res, next) => {
-    const exempt = req.path.startsWith('/.well-known/acme-challenge/') || req.path === '/api/health';
+    const exempt = req.path === '/api/health';
     if (getSettingBool('HTTPS_REDIRECT', false) && !exempt) {
       const proto = req.protocol;
       if (proto === 'http') {
