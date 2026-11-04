@@ -1221,7 +1221,6 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
                 render: (_, r) => (
                   <Tag
                     color={r.visibility === 'public' ? 'green' : r.visibility === 'private' ? 'default' : 'blue'}
-                    title={r.visibility === 'restricted' ? '仅满足管理员指定分组或账号条件的登录用户可访问' : undefined}
                   >
                     {r.visibility === 'public' ? '公开' : r.visibility === 'private' ? '仅自己' : '站内'}
                   </Tag>

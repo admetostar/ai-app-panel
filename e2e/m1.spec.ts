@@ -31,11 +31,12 @@ test('首页导航定位与登录注册分栏页面', async ({ page }) => {
   expect(plansResponse.ok()).toBe(true);
   expect((await plansResponse.json()).plans).toBeInstanceOf(Array);
   await expect(page.locator('.aap-home-title')).toBeVisible();
-  await expect(page.locator('.aap-home-title')).toContainText('您好，欢迎来到 ai-app-panel');
-  await expect(page.locator('.aap-home-description')).toContainText('ai-app-panel 是一个应用托管仓库');
-  await expect(page.locator('.aap-home-description')).toContainText('上传到ai-app-panel后');
-  await expect(page.locator('.aap-home-shell .aap-header')).toHaveCSS('backdrop-filter', 'none');
+  await expect(page.locator('.aap-home-title')).toContainText('使用ai-app-panel零代码创作个人软件');
+  await expect(page.locator('.aap-home-description')).toContainText('ai-app-panel 是一个个人AI应用的运行工具');
+  await expect(page.locator('.aap-home-description')).toContainText('上传到ai-app-panel向其他人展示您的创作');
+  await expect(page.locator('.aap-home-shell .aap-header')).toHaveCSS('backdrop-filter', 'blur(18px)');
   await expect(page.locator('.aap-home-kicker')).toHaveText('ai-app-panel');
+  await expect(page.locator('.aap-home-hero .aap-home-search')).toHaveCount(0);
   await expect(page.getByPlaceholder('搜索应用名称或介绍')).toBeVisible();
   await expect(page.locator('.aap-home-search .ant-input')).toHaveCSS('color', 'rgb(16, 24, 40)');
   expect(
@@ -44,12 +45,20 @@ test('首页导航定位与登录注册分栏页面', async ({ page }) => {
   const homeNav = page.locator('.aap-home-nav');
   await expect(homeNav.getByRole('link', { name: '发现应用' })).toBeVisible();
   const homeHeader = page.locator('.aap-home-page-shell .aap-header');
+  const heroBounds = await page.locator('.aap-home-hero').boundingBox();
+  const headerBounds = await page.locator('.aap-header__inner').boundingBox();
+  const footerBounds = await page.locator('.aap-home-page-shell .aap-footer__inner').boundingBox();
+  if (!heroBounds || !headerBounds || !footerBounds) throw new Error('首页对齐元素未渲染');
+  expect(Math.abs(heroBounds.x - headerBounds.x)).toBeLessThan(2);
+  expect(Math.abs(heroBounds.x - footerBounds.x)).toBeLessThan(2);
+  expect(Math.abs(heroBounds.width - headerBounds.width)).toBeLessThan(2);
+  expect(Math.abs(heroBounds.width - footerBounds.width)).toBeLessThan(2);
   const loginButton = homeNav.getByRole('button', { name: /登录/ });
   await expect(homeHeader).toHaveCSS('position', 'fixed');
-  await expect(homeHeader).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
-  await expect(homeNav.getByRole('link', { name: '发现应用' })).toHaveCSS('color', 'rgba(242, 244, 247, 0.9)');
-  await expect(loginButton).toHaveCSS('background-color', 'rgb(255, 255, 255)');
-  await expect(loginButton).toHaveCSS('color', 'rgb(16, 24, 40)');
+  await expect(homeHeader).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.92)');
+  await expect(homeNav.getByRole('link', { name: '发现应用' })).toHaveCSS('color', 'rgb(71, 84, 103)');
+  await expect(loginButton).toHaveCSS('background-color', 'rgb(49, 92, 245)');
+  await expect(loginButton).toHaveCSS('color', 'rgb(255, 255, 255)');
   expect(
     await homeNav.evaluate((nav) => Number.parseFloat(getComputedStyle(nav).columnGap)),
   ).toBeGreaterThanOrEqual(20);
@@ -59,9 +68,9 @@ test('首页导航定位与登录注册分栏页面', async ({ page }) => {
   await expect(page.locator('#home-rights')).toBeInViewport();
   await expect(rightsLink).toHaveCSS('color', 'rgb(23, 92, 211)');
   await expect(homeHeader).toHaveCSS('top', '0px');
-  await expect(homeHeader).toHaveCSS('background-color', 'rgba(248, 250, 252, 0.78)');
+  await expect(homeHeader).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.96)');
   await expect(homeHeader).toHaveCSS('backdrop-filter', 'blur(18px)');
-  await expect(loginButton).toHaveCSS('background-color', 'rgb(16, 24, 40)');
+  await expect(loginButton).toHaveCSS('background-color', 'rgb(49, 92, 245)');
   await expect(loginButton).toHaveCSS('color', 'rgb(255, 255, 255)');
   const faqLink = homeNav.getByRole('link', { name: 'FAQ' });
   await faqLink.click();
@@ -74,6 +83,9 @@ test('首页导航定位与登录注册分栏页面', async ({ page }) => {
   await expect(page.locator('.aap-home-faq .ant-collapse-content-box').first()).toHaveCSS('color', 'rgb(52, 64, 84)');
 
   await page.locator('.aap-home-hero__cta').click();
+  await expect(page).toHaveURL(/\/login$/);
+  await page.goto('/');
+  await page.locator('.aap-home-hero__guide').click();
   await expect(page).toHaveURL(/\/guide$/);
   await expect(page.locator('.aap-guide-progress li')).toHaveCount(5);
   for (const chapter of ['二', '三', '四', '五']) {
@@ -121,19 +133,25 @@ test('首页导航定位与登录注册分栏页面', async ({ page }) => {
   await expect(page.locator('#inviteCode')).toHaveValue('E2E-INVITE-CODE');
 });
 
-test('首页品牌文案跟随站点名称设置', async ({ page }) => {
+test('首页标题与介绍中的站点名称跟随品牌设置', async ({ page }) => {
   await page.route('**/api/portal/bootstrap', async (route) => {
     const response = await route.fetch();
-    const bootstrap = await response.json() as { branding: { siteName: string } };
+    const bootstrap = await response.json() as {
+      branding: { siteName: string; browserTitle: string; logo: string | null };
+    };
     bootstrap.branding.siteName = '运营站点名称';
+    bootstrap.branding.browserTitle = '自定义浏览器标题';
+    bootstrap.branding.logo = '/site-logo-from-branding.png';
     await route.fulfill({ response, json: bootstrap });
   });
 
   await page.goto('/');
+  await expect(page).toHaveTitle('自定义浏览器标题');
+  await expect(page.locator('link[data-aap-site-icon]')).toHaveAttribute('href', '/site-logo-from-branding.png');
   await expect(page.locator('.aap-home-kicker')).toHaveText('运营站点名称');
-  await expect(page.locator('.aap-home-title')).toContainText('您好，欢迎来到 运营站点名称');
-  await expect(page.locator('.aap-home-description')).toContainText('运营站点名称 是一个应用托管仓库');
-  await expect(page.locator('.aap-home-description')).toContainText('上传到运营站点名称后');
+  await expect(page.locator('.aap-home-title')).toContainText('使用运营站点名称零代码创作个人软件');
+  await expect(page.locator('.aap-home-description')).toContainText('运营站点名称 是一个个人AI应用的运行工具');
+  await expect(page.locator('.aap-home-description')).toContainText('上传到运营站点名称向其他人展示您的创作');
 });
 
 test('发现应用与我的应用卡片悬浮展示访问二维码', async ({ page }) => {
@@ -534,7 +552,7 @@ test('操作导航按一至五分章展示且章节标题不重复标注步骤�
     '二、安装开发技能',
     '三、让 Agent 做出你的应用',
     '四、上传到 ai-app-panel',
-    '五、先试用然后发布',
+    '五、选择应用的可见范围',
   ];
 
   await page.goto('/guide');
@@ -554,10 +572,18 @@ test('操作导航文案无裸露 Markdown 且按章节展示应用示例和配�
 
   await expect(guideContent).not.toContainText('**');
   await page.getByRole('button', { name: '下一步' }).click();
+  await expect(guideContent.getByRole('heading', { name: 'WorkBuddy' })).toBeVisible();
+  await expect(guideContent.getByRole('heading', { name: 'Claude' })).toBeVisible();
+  await expect(guideContent).toContainText('使用您习惯的Agent安装awpk-app-develop.skill或awpk-app-develop.zip技能包');
+  await expect(guideContent).toContainText('专家·技能·连接器');
+  await expect(guideContent).toContainText('Customize');
+  await expect(guideContent).toContainText('你知道怎么制作并打包awpk应用吗？');
+  await expect(guideContent).not.toContainText('.awpk');
+  await expect(guideContent).not.toContainText('指定范围');
   await page.getByRole('button', { name: '下一步' }).click();
   await expect(guideContent.getByRole('heading', { name: '告诉 Agent 你要一个什么应用' })).toBeVisible();
   await expect(
-    guideContent.getByText('帮我做一个全球时钟，显示主要城市的当前时间，并打包成 .awpk。'),
+    guideContent.getByText('帮我做一个全球时钟，显示主要城市的当前时间，并打包成 awpk。'),
   ).toBeVisible();
   await expect(guideContent).not.toContainText('环境变量');
   await expect(guideContent).not.toContainText('入参');
@@ -565,6 +591,11 @@ test('操作导航文案无裸露 Markdown 且按章节展示应用示例和配�
   await page.getByRole('button', { name: '下一步' }).click();
   await expect(guideContent).toContainText('环境变量');
   await expect(guideContent).toContainText('填写所需入参');
+  await expect(guideContent).toContainText('「用户中心」的「应用管理」板块');
+  await expect(guideContent).not.toContainText('“应用管理”');
+  await page.getByRole('button', { name: '下一步' }).click();
+  await expect(guideContent).toContainText('「我的应用 → 站内共享」');
+  await expect(guideContent).not.toContainText('“我的应用”');
 });
 
 /** M1 验收主链路③：退出 → 新密码登录 → TOTP 挑战 → 完整会话 */
@@ -614,7 +645,31 @@ test('设置保存：HTTPS 跳转开关开 → 保存 → 刷新仍为开', asyn
 
   await page.getByRole('button', { name: '用户菜单' }).click();
   await page.getByRole('menuitem', { name: '管理后台' }).click();
-  await page.getByRole('tab', { name: '证书' }).click();
+  await expect(page.getByRole('button', { name: '总览' })).toBeVisible();
+  await expect(page.getByText('注册用户总数')).toBeVisible();
+  await expect(page.getByText('创建应用总数')).toBeVisible();
+  await expect(page.getByText('近 30 天 Token 消耗')).toBeVisible();
+  await expect(page.getByText('订阅计划分布')).toBeVisible();
+  await expect(page.getByText('首次配置')).toHaveCount(0);
+  await page.getByRole('button', { name: '应用管理' }).click();
+  await page.getByRole('button', { name: '接入 HTML 页' }).click();
+  await page.locator('.aap-admin-page .ant-select').first().click();
+  const visibilityOptions = page.locator('.ant-select-dropdown:visible .ant-select-item-option');
+  await expect(visibilityOptions).toHaveCount(3);
+  await expect(visibilityOptions).toContainText(['公开（免登录）', '站内（其他用户可克隆，不可直接访问）', '仅自己（私有）']);
+  await page.keyboard.press('Escape');
+  await page.locator('.ant-modal-close').click();
+  await page.evaluate(() => {
+    document.cookie = 'aap_user_page_theme=dark; Path=/';
+  });
+  await page.reload();
+  await page.getByRole('button', { name: '站点设置' }).click();
+  await expect(page.getByText('网站浏览器标题')).toBeVisible();
+  const adminInput = page.locator('.aap-admin-page .ant-input').first();
+  await expect(adminInput).toHaveCSS('background-color', 'rgb(20, 23, 28)');
+  await expect(adminInput).toHaveCSS('color', 'rgb(242, 244, 247)');
+  await expect(page.locator('.aap-admin-page .ant-form-item-label > label').first()).toHaveCSS('color', 'rgb(230, 232, 236)');
+  await page.getByRole('button', { name: '证书' }).click();
   const tlsCard = page.locator('.ant-card', { hasText: 'HTTPS 跳转' });
   const switcher = tlsCard.locator('.ant-switch').first();
   await expect(switcher).toBeVisible();
@@ -636,7 +691,6 @@ test('设置保存：HTTPS 跳转开关开 → 保存 → 刷新仍为开', asyn
   // （回归点：Form 实例曾未挂 <Form>，加载路径显示与 DB 不符）
   runDatabaseQuery("UPDATE settings SET value = 'false' WHERE key = 'HTTPS_REDIRECT'");
   await page.reload();
-  await page.getByRole('tab', { name: '证书' }).click();
   const switcher2 = page.locator('.ant-card', { hasText: 'HTTPS 跳转' }).locator('.ant-switch').first();
   await expect(switcher2).not.toHaveClass(/ant-switch-checked/);
 });

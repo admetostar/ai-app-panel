@@ -15,6 +15,13 @@
       "when": 1793703138248,
       "tag": "0001_happy_thunderbird",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793717488273,
+      "tag": "0002_petite_mac_gargan",
+      "breakpoints": true
     }
   ]
 }

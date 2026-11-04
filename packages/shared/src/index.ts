@@ -111,6 +111,7 @@ export interface UserMembershipData {
 
 export interface BrandingInfo {
   siteName: string;
+  browserTitle: string;
   tagline: string;
   logo: string | null;
   themeId: string;
@@ -145,7 +146,7 @@ export interface PortalBootstrap {
 
 // ---------- 应用（B4 / 门户卡片墙） ----------
 
-export type AppVisibility = 'public' | 'login' | 'restricted' | 'private';
+export type AppVisibility = 'public' | 'login' | 'private';
 export type AppStatus = 'ok' | 'down' | 'unknown';
 
 /** 卡片墙 / 列表用的应用公开视图（不含 upstream/urlSecret 等敏感字段） */

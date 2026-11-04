@@ -1,15 +1,4 @@
-/**
- * 管理后台（E1/E2，P0 硬指标）——目录与功能域一一对应：
- *   总览（仪表卡 + 快捷入口 + 最近动态）
- *   站点设置（品牌/备案）
- *   应用管理（应用列表 + 网关限流）
- *   用户与注册（用户列表 + 注册策略 + 邀请奖励）
- *   安全（防爆破/PoW/会话/签名密钥/Turnstile + 审计日志）
- *   通知通道（邮件 [SMTP/Resend] / 未来短信 + 发信测试）
- *   证书（状态/ACME/PEM/HTTPS 跳转）
- * E2 七条：①同源主题 ②首配向导（左侧竖向） ③一句话说明+默认值标注+高级折叠
- * ④危险操作防呆 ⑤状态仪表卡 ⑥移动端可看状态 ⑦保存即生效+测试按钮
- */
+/** 管理后台页面与设置面板。 */
 import type { ChangeEvent, ReactNode } from 'react';
 import { withBase } from '../lib/base';
 import {
@@ -23,12 +12,11 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
+  Progress,
   Select,
   Space,
-  Steps,
   Switch,
   Table,
-  Tabs,
   Tag,
   Typography,
   message,
@@ -36,6 +24,7 @@ import {
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '@aap/shared';
 import { useEffect, useRef, useState } from 'react';
 import { CopyOutlined } from '@ant-design/icons';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import { useSession } from '../state/session';
@@ -51,7 +40,7 @@ interface AdminApp {
   name: string;
   description: string;
   category: string;
-  visibility: 'public' | 'login' | 'restricted' | 'private';
+  visibility: 'public' | 'login' | 'private';
   passUser: boolean;
   upstream: string;
   kind: 'upstream' | 'html' | 'package';
@@ -86,18 +75,24 @@ interface SettingRow {
   defaultsWork: boolean;
 }
 interface Overview {
-  checklist: {
-    adminPasswordChanged: boolean;
-    adminMfaEnabled: boolean;
-    tls: 'off' | 'manual' | 'acme';
-    httpsEnabled: boolean;
-    certDaysRemaining: number | null;
-    freePlanConfigured: boolean;
-    appCount: number;
+  totals: {
+    users: number;
+    apps: number;
+    tokens30d: number;
   };
-  liveSessions: number;
-  releaseVersion?: string;
-  uptimeSec?: number;
+  resources: {
+    cpuPercent: number | null;
+    memory: { usedBytes: number; totalBytes: number; percent: number };
+    network: {
+      available: boolean;
+      receiveMbps: number;
+      sendMbps: number;
+      percent: number;
+      capacityMbps: number;
+      reason?: string;
+    };
+  };
+  planSubscriptions: Array<{ planId: number; planName: string; subscribers: number }>;
 }
 interface AuditRow {
   id: number;
@@ -352,200 +347,170 @@ function renderControl(s: SettingRow, form?: { setFieldsValue: (v: Record<string
 
 // ---------- 主页面 ----------
 
+const ADMIN_TABS = ['overview', 'site', 'apps', 'users', 'security', 'mail', 'tls', 'llm', 'ops'] as const;
+
 export function AdminPage() {
   const { me } = useSession();
-  const [activeTab, setActiveTab] = useState('overview');
-  const [railCollapsed, setRailCollapsed] = useState(() => localStorage.getItem('aap.admin.railCollapsed') === '1');
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const requestedTab = searchParams.get('tab');
+  const activeTab = ADMIN_TABS.find((tab) => tab === requestedTab) ?? 'overview';
 
-  const overview = useQuery({
-    queryKey: ['admin-overview'],
-    queryFn: () => api<Overview>('/api/admin/overview'),
-    refetchInterval: 30_000,
-  });
-  const c = overview.data?.checklist;
-
-  // 首配向导（左侧竖向）：跳过/完成状态持久化
-  const [skipCert, setSkipCert] = useState(() => localStorage.getItem('aap.wizard.skipCert') === '1');
-  const markSkip = (): void => {
-    localStorage.setItem('aap.wizard.skipCert', '1');
-    setSkipCert(true);
-  };
-  const wizardDone = Boolean(
-    c &&
-    c.adminPasswordChanged &&
-    c.adminMfaEnabled &&
-    (c.httpsEnabled || skipCert) &&
-      c.appCount > 0,
-  );
-  const showRail = !railCollapsed && !wizardDone;
+  useEffect(() => {
+    if (requestedTab && requestedTab !== activeTab) navigate('/admin?tab=overview', { replace: true });
+  }, [activeTab, navigate, requestedTab]);
 
   if (!me || me.user.role !== 'admin') {
     return <Alert type="warning" showIcon message="需要管理员权限" description={<a href={withBase('/login')}>使用管理员账号登录</a>} />;
   }
 
-  const go = (tab: string) => () => setActiveTab(tab);
-
   return (
-    <div style={{ maxWidth: 1160, margin: '0 auto' }}>
-      <Typography.Title level={4}>管理后台</Typography.Title>
-
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start' }}>
-        {/* ② 首配向导：左侧竖向，占位小；完成后自动隐藏 */}
-        {showRail && c ? (
-          <Card
-            size="small"
-            style={{ width: 250, flexShrink: 0, position: 'sticky', top: 76 }}
-            title="首次配置"
-            extra={
-              <Button
-                type="text"
-                size="small"
-                onClick={() => {
-                  localStorage.setItem('aap.admin.railCollapsed', '1');
-                  setRailCollapsed(true);
-                }}
-              >
-                收起
-              </Button>
-            }
-          >
-            <Steps
-              direction="vertical"
-              size="small"
-              current={-1}
-              items={[
-                {
-                  title: '管理员密码',
-                  status: c.adminPasswordChanged ? 'finish' : 'process',
-                  description: <a href={withBase('/account')}>去修改</a>,
-                },
-                {
-                  title: '绑定 MFA',
-                  status: c.adminMfaEnabled ? 'finish' : 'process',
-                  description: <a href={withBase('/mfa-setup')}>去绑定</a>,
-                },
-                {
-                  title: '域名证书',
-                  status: c.httpsEnabled ? 'finish' : skipCert ? 'finish' : 'wait',
-                  description: (
-                    <>
-                      <a onClick={go('tls')}>去配置</a>
-                      {!c.httpsEnabled ? <> · <a onClick={markSkip}>跳过（内网）</a></> : null}
-                    </>
-                  ),
-                },
-                {
-                  title: '可选：配置零价权益包',
-                  status: c.freePlanConfigured ? 'finish' : 'wait',
-                  description: <a onClick={go('ops')}>{c.freePlanConfigured ? '查看权益包' : '去创建'}</a>,
-                },
-                {
-                  title: '接第一个应用',
-                  status: c.appCount > 0 ? 'finish' : 'process',
-                  description: <a onClick={go('apps')}>去接入</a>,
-                },
-              ]}
-            />
-          </Card>
-        ) : null}
-
-        <div style={{ flex: 1, minWidth: 300 }}>
-          <Tabs
-            activeKey={activeTab}
-            onChange={setActiveTab}
-            items={[
-              { key: 'overview', label: '总览', children: <OverviewTab onShowRail={() => { localStorage.removeItem('aap.admin.railCollapsed'); setRailCollapsed(false); }} onGoTab={(t) => setActiveTab(t)} /> },
-              { key: 'site', label: '站点设置', children: <SettingsForm groups={['站点与品牌']} /> },
-              { key: 'apps', label: '应用管理', children: <AppsTab /> },
-              { key: 'users', label: '用户与注册', children: <UsersRegTab /> },
-              { key: 'security', label: '安全', children: <SecurityTab /> },
-              { key: 'mail', label: '通知通道', children: <MailTab /> },
-              { key: 'tls', label: '证书', children: <TlsTab /> },
-              { key: 'llm', label: 'LLM 网关', children: <LlmTab /> },
-              { key: 'ops', label: '运营', children: <OpsTab /> },
-            ]}
-          />
-        </div>
+    <div className="aap-account-page aap-admin-page">
+      <header className="aap-account-heading">
+        <Typography.Text className="aap-account-eyebrow">系统运营</Typography.Text>
+        <Typography.Title level={2}>管理后台</Typography.Title>
+        <Typography.Paragraph type="secondary">管理站点、应用、用户与运行服务。</Typography.Paragraph>
+      </header>
+      <div className="aap-admin-content">
+        {activeTab === 'overview' ? <OverviewTab /> : null}
+        {activeTab === 'site' ? <SettingsForm groups={['站点与品牌']} /> : null}
+        {activeTab === 'apps' ? <AppsTab /> : null}
+        {activeTab === 'users' ? <UsersRegTab /> : null}
+        {activeTab === 'security' ? <SecurityTab /> : null}
+        {activeTab === 'mail' ? <MailTab /> : null}
+        {activeTab === 'tls' ? <TlsTab /> : null}
+        {activeTab === 'llm' ? <LlmTab /> : null}
+        {activeTab === 'ops' ? <OpsTab /> : null}
       </div>
     </div>
   );
 }
 
-// ---------- 总览（仪表卡 + 快捷入口 + 最近动态） ----------
+function formatBytes(bytes: number): string {
+  const gib = bytes / 1024 ** 3;
+  return `${gib >= 10 ? gib.toFixed(1) : gib.toFixed(2)} GiB`;
+}
 
-function OverviewTab({ onShowRail, onGoTab }: { onShowRail: () => void; onGoTab: (tab: string) => void }): ReactNode {
-  const qc = useQueryClient();
-  const overview = useQuery({ queryKey: ['admin-overview'], queryFn: () => api<Overview>('/api/admin/overview'), refetchInterval: 30_000 });
-  const appsQ = useQuery({ queryKey: ['admin-apps'], queryFn: () => api<{ apps: AdminApp[] }>('/api/admin/apps') });
-  const auditQ = useQuery({ queryKey: ['admin-audit-recent'], queryFn: () => api<{ logs: AuditRow[] }>('/api/admin/audit?limit=6') });
+function uncappedProgress(value: number): number {
+  return value > 0 ? Math.min(96, Math.log10(value + 1) * 10) : 0;
+}
 
-  const c = overview.data?.checklist;
-  const apps = appsQ.data?.apps ?? [];
-  const okApps = apps.filter((a) => a.healthState === 'ok').length;
-  const downApps = apps.filter((a) => a.healthState === 'down').length;
+function WaterLevelCard({
+  title,
+  percent,
+  value,
+  detail,
+}: {
+  title: string;
+  percent: number | null;
+  value: string;
+  detail: string;
+}): ReactNode {
+  const safePercent = percent == null ? 0 : Math.max(0, Math.min(100, percent));
+  return (
+    <Card className="aap-admin-resource-card">
+      <Typography.Text type="secondary">{title}</Typography.Text>
+      <div className="aap-admin-water-level">
+        <div className="aap-admin-water-level__tank" role="progressbar" aria-label={title} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent == null ? undefined : Math.round(safePercent)}>
+          <div className="aap-admin-water-level__fill" style={{ height: `${safePercent}%` }} />
+          <span>{percent == null ? '采集中' : `${safePercent.toFixed(1)}%`}</span>
+        </div>
+        <div className="aap-admin-water-level__value">
+          <Typography.Title level={3}>{value}</Typography.Title>
+          <Typography.Text type="secondary">{detail}</Typography.Text>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function SubscriptionPie({ plans }: { plans: Overview['planSubscriptions'] }): ReactNode {
+  const total = plans.reduce((sum, plan) => sum + plan.subscribers, 0);
+  const colors = ['#1677ff', '#13c2c2', '#722ed1', '#fa8c16', '#eb2f96', '#52c41a', '#2f54eb'];
+  let current = 0;
+  const segments = plans.map((plan, index) => {
+    const start = current;
+    current += total > 0 ? (plan.subscribers / total) * 100 : 0;
+    return `${colors[index % colors.length]} ${start}% ${current}%`;
+  });
+  const background = total > 0 ? `conic-gradient(${segments.join(', ')})` : '#d9d9d9';
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      {/* ⑤ 状态仪表卡 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
-        <Card size="small">
-          <Descriptions column={1} size="small" title="HTTPS 证书">
-            <Descriptions.Item label="状态">{dot(c?.httpsEnabled ? 'ok' : 'unknown')}</Descriptions.Item>
-            <Descriptions.Item label="模式">{c?.tls === 'acme' ? '自动签发' : c?.tls === 'manual' ? '手动上传' : '未启用'}</Descriptions.Item>
-            {c?.certDaysRemaining != null ? <Descriptions.Item label="剩余">{c.certDaysRemaining} 天</Descriptions.Item> : null}
-          </Descriptions>
-        </Card>
-        <Card size="small">
-          <Descriptions column={1} size="small" title="应用网关">
-            <Descriptions.Item label="已接入">{apps.length} 个</Descriptions.Item>
-            <Descriptions.Item label="健康">{okApps} 正常{downApps > 0 ? ` / ${downApps} 异常` : ''}</Descriptions.Item>
-          </Descriptions>
-        </Card>
-        <Card size="small">
-          <Descriptions column={1} size="small" title="会话与账号">
-            <Descriptions.Item label="在线会话">{overview.data?.liveSessions ?? 0}</Descriptions.Item>
-            <Descriptions.Item label="管理员 MFA">{dot(c?.adminMfaEnabled ? 'ok' : 'unknown')}</Descriptions.Item>
-          </Descriptions>
-        </Card>
-        <Card size="small">
-          <Descriptions column={1} size="small" title="服务">
-            <Descriptions.Item label="版本">{overview.data?.releaseVersion ?? '—'}</Descriptions.Item>
-            <Descriptions.Item label="运行时长">
-              {overview.data?.uptimeSec != null ? `${Math.floor(overview.data.uptimeSec / 3600)}h ${Math.floor((overview.data.uptimeSec % 3600) / 60)}m` : '—'}
-            </Descriptions.Item>
-          </Descriptions>
-        </Card>
-      </div>
-
-      {/* 快捷入口 */}
-      <Card size="small" title="快捷操作">
-        <Space wrap>
-          <Button onClick={() => onGoTab('apps')}>接第一个应用</Button>
-          <Button onClick={() => onGoTab('tls')}>配置证书</Button>
-          <Button onClick={() => onGoTab('users')}>注册与邀请奖励</Button>
-          <Button type="text" onClick={onShowRail}>显示首配向导</Button>
-        </Space>
-      </Card>
-
-      {/* 最近动态 */}
-      <Card size="small" title="最近动态">
-        {auditQ.data?.logs.length ? (
-          auditQ.data.logs.map((r) => (
-            <div key={r.id} style={{ display: 'flex', gap: 10, fontSize: 12.5, padding: '3px 0' }}>
-              <span style={{ color: 'var(--aap-text-secondary)', minWidth: 130 }}>{new Date(r.ts).toLocaleString()}</span>
-              <Typography.Text code style={{ fontSize: 12 }}>{r.action}</Typography.Text>
-              <span style={{ color: 'var(--aap-text-secondary)' }}>{r.actor}</span>
-            </div>
-          ))
-        ) : (
-          <Typography.Text type="secondary">暂无事件</Typography.Text>
-        )}
-        <div style={{ marginTop: 8 }}>
-          <Button size="small" type="text" onClick={() => void qc.invalidateQueries({ queryKey: ['admin-audit-recent'] })}>
-            刷新
-          </Button>
+    <Card title="订阅计划分布">
+      <div className="aap-admin-subscriptions">
+        <div className="aap-admin-subscriptions__chart" role="img" aria-label={`有效订阅用户总数 ${total}，按计划分布`} style={{ background }}>
+          <div className="aap-admin-subscriptions__total">
+            <strong>{total.toLocaleString()}</strong>
+            <span>有效订阅</span>
+          </div>
         </div>
-      </Card>
+        <div className="aap-admin-subscriptions__legend">
+          {plans.length ? plans.map((plan, index) => (
+            <div className="aap-admin-subscriptions__legend-row" key={plan.planId}>
+              <span className="aap-admin-subscriptions__swatch" style={{ background: colors[index % colors.length] }} />
+              <span className="aap-admin-subscriptions__name">{plan.planName}</span>
+              <strong>{plan.subscribers.toLocaleString()}</strong>
+            </div>
+          )) : <Typography.Text type="secondary">暂无订阅计划</Typography.Text>}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function OverviewTab(): ReactNode {
+  const overview = useQuery({
+    queryKey: ['admin-overview'],
+    queryFn: () => api<Overview>('/api/admin/overview'),
+    refetchInterval: 5_000,
+  });
+  const data = overview.data;
+  const network = data?.resources.network;
+
+  if (overview.isPending) return <Card loading />;
+  if (overview.isError || !data) {
+    return <Alert type="error" showIcon message="无法加载系统总览" description={overview.error instanceof Error ? overview.error.message : '请稍后重试。'} />;
+  }
+
+  return (
+    <Space direction="vertical" size="large" style={{ width: '100%' }}>
+      <section>
+        <Typography.Title level={4}>系统资源</Typography.Title>
+        <div className="aap-admin-resource-grid">
+          <WaterLevelCard title="CPU 使用率" percent={data.resources.cpuPercent} value={data.resources.cpuPercent == null ? '采集中' : `${data.resources.cpuPercent.toFixed(1)}%`} detail="主机当前负载" />
+          <WaterLevelCard title="内存使用率" percent={data.resources.memory.percent} value={`${data.resources.memory.percent.toFixed(1)}%`} detail={`${formatBytes(data.resources.memory.usedBytes)} / ${formatBytes(data.resources.memory.totalBytes)}`} />
+          <WaterLevelCard
+            title="网络带宽"
+            percent={network?.available ? network.percent : null}
+            value={network?.available ? `${(network.receiveMbps + network.sendMbps).toFixed(2)} Mbps` : '暂不可用'}
+            detail={network?.available
+              ? `下行 ${network.receiveMbps.toFixed(2)} / 上行 ${network.sendMbps.toFixed(2)} Mbps · 上限 ${network.capacityMbps} Mbps`
+              : network?.reason ?? '当前系统未提供带宽计数器'}
+          />
+        </div>
+      </section>
+
+      <section>
+        <Typography.Title level={4}>平台累计</Typography.Title>
+        <Typography.Paragraph className="aap-admin-metric-hint" type="secondary">
+          数值无固定上限；进度条按数量级映射，仅用于快速观察趋势。
+        </Typography.Paragraph>
+        <div className="aap-admin-total-grid">
+          {[
+            { label: '注册用户总数', value: data.totals.users },
+            { label: '创建应用总数', value: data.totals.apps },
+            { label: '近 30 天 Token 消耗', value: data.totals.tokens30d },
+          ].map((metric) => (
+            <Card className="aap-admin-total-card" key={metric.label}>
+              <Typography.Text type="secondary">{metric.label}</Typography.Text>
+              <Typography.Title level={2}>{metric.value.toLocaleString()}</Typography.Title>
+              <Progress percent={uncappedProgress(metric.value)} showInfo={false} />
+            </Card>
+          ))}
+        </div>
+      </section>
+
+      <SubscriptionPie plans={data.planSubscriptions} />
     </Space>
   );
 }
@@ -580,8 +545,6 @@ function AppsTab(): ReactNode {
   const [runtimeAppId, setRuntimeAppId] = useState('');
   const [runtimeLevel, setRuntimeLevel] = useState('');
 
-  const groupsQ = useQuery({ queryKey: ['admin-groups'], queryFn: () => api<{ groups: GroupRow[] }>('/api/admin/groups') });
-  const usersQ = useQuery({ queryKey: ['admin-users'], queryFn: () => api<{ users: PublicUser[] }>('/api/admin/users') });
   const appsQ = useQuery({ queryKey: ['admin-apps'], queryFn: () => api<{ apps: AdminApp[]; signSecret?: string }>('/api/admin/apps') });
   const runtimeEventsQ = useQuery({
     queryKey: ['admin-app-runtime-events', runtimeAppId, runtimeLevel],
@@ -594,29 +557,11 @@ function AppsTab(): ReactNode {
   const passUserOn = Form.useWatch('passUser', form);
   const signSecret = appsQ.data?.signSecret ?? '';
 
-  const groupOptions = (groupsQ.data?.groups ?? []).map((g) => ({ value: g.id, label: g.name }));
-  const userOptions = (usersQ.data?.users ?? []).map((u) => ({ value: u.id, label: `${u.name}（${u.username ?? u.id}）` }));
-
   const VIS_OPTIONS = [
     { value: 'public', label: '公开（免登录）' },
     { value: 'login', label: '站内（其他用户可克隆，不可直接访问）' },
-    { value: 'restricted', label: '指定分组与账号' },
     { value: 'private', label: '仅自己（私有）' },
   ];
-
-  function visExtra(): ReactNode {
-    if (visMode !== 'restricted') return null;
-    return (
-      <>
-        <Form.Item name="allowedGroupIds" label="可见分组" extra="命中任一分组的用户可见（分组即订阅等级）">
-          <Select mode="multiple" placeholder="选择分组（可留空）" options={groupOptions} />
-        </Form.Item>
-        <Form.Item name="allowedUserIds" label="可见账号" extra="与分组任一命中即可见">
-          <Select mode="multiple" placeholder="选择账号（可留空）" options={userOptions} />
-        </Form.Item>
-      </>
-    );
-  }
 
   async function saveApp(values: Record<string, unknown>): Promise<void> {
     try {
@@ -642,17 +587,15 @@ function AppsTab(): ReactNode {
       return;
     }
     try {
-      const acl = form.getFieldsValue() as { allowedGroupIds?: number[]; allowedUserIds?: number[]; passUser?: boolean; urlSecret?: string; visibility?: string };
+      const values = form.getFieldsValue() as { passUser?: boolean; urlSecret?: string; visibility?: string };
       const r = await api<{ app: Record<string, unknown>; llmProvisioned: boolean }>('/api/admin/apps/package', {
         method: 'POST',
         json: {
           filename: pkgFile.name,
           dataBase64: pkgFile.dataBase64,
-          visibility: acl.visibility ?? 'private',
-          allowedGroupIds: acl.allowedGroupIds ?? [],
-          allowedUserIds: acl.allowedUserIds ?? [],
-          passUser: acl.passUser ?? false,
-          urlSecret: acl.urlSecret || undefined,
+          visibility: values.visibility ?? 'private',
+          passUser: values.passUser ?? false,
+          urlSecret: values.urlSecret || undefined,
         },
       });
       setPkgPreview(null);
@@ -697,8 +640,6 @@ function AppsTab(): ReactNode {
           name: values.name,
           description: values.description,
           visibility: values.visibility,
-          allowedGroupIds: values.allowedGroupIds ?? [],
-          allowedUserIds: values.allowedUserIds ?? [],
           passUser: values.passUser,
           ...(values.urlSecret ? { urlSecret: values.urlSecret } : {}),
           ...(editing.kind === 'upstream' ? { upstream: values.upstream } : {}),
@@ -723,7 +664,7 @@ function AppsTab(): ReactNode {
         extra={
           <Space size="small">
             <Button type="primary" onClick={() => { form.resetFields(); setVisMode('login'); setPkgFile(null); setPkgPreview(null); setEditing(null); setCreating('upstream'); }}>接入上游应用</Button>
-            <Button onClick={() => { form.resetFields(); setVisMode('restricted'); setEditing(null); setCreating('html'); }}>接入 HTML 页</Button>
+            <Button onClick={() => { form.resetFields(); setVisMode('login'); setEditing(null); setCreating('html'); }}>接入 HTML 页</Button>
             <Button onClick={() => { form.resetFields(); setVisMode('private'); setPkgFile(null); setPkgPreview(null); setEditing(null); setCreating('package'); }}>上传 .awpk</Button>
           </Space>
         }
@@ -744,15 +685,12 @@ function AppsTab(): ReactNode {
               render: (_, r) => (
                 <Tag
                   color={r.visibility === 'public' ? 'green' : r.visibility === 'private' ? 'default' : 'blue'}
-                  title={r.visibility === 'restricted' ? '仅满足指定分组或账号条件的登录用户可访问' : undefined}
                 >
                   {r.visibility === 'public'
                     ? '公开'
                     : r.visibility === 'private'
                       ? '仅自己'
-                      : r.visibility === 'restricted'
-                        ? '站内（指定范围）'
-                        : '站内'}
+                      : '站内'}
                 </Tag>
               ),
             },
@@ -989,10 +927,9 @@ function AppsTab(): ReactNode {
 
           {creating !== 'package' || pkgFile ? (
             <>
-              <Form.Item name="visibility" label="可见性" initialValue={visMode} extra="指定分组与账号：命中任一即可见；分组可当订阅等级用">
+              <Form.Item name="visibility" label="可见性" initialValue={visMode}>
                 <Select options={VIS_OPTIONS} onChange={(v) => setVisMode(String(v))} />
               </Form.Item>
-              {visExtra()}
               <Form.Item name="passUser" label="注入用户身份" valuePropName="checked" extra="向应用转发 X-AAP-Identity 签名头（自研应用识别登录用户）">
                 <Switch />
               </Form.Item>
@@ -1917,7 +1854,7 @@ function GroupsCard(): ReactNode {
   return (
     <Card
       size="small"
-      title="用户分组（订阅等级 / 自定义组；应用可见性与额度按分组配置）"
+      title="用户分组（订阅等级 / 自定义组）"
       extra={
         <Button
           size="small"
@@ -1969,7 +1906,7 @@ function GroupsCard(): ReactNode {
                 >
                   设置
                 </Button>
-                <Popconfirm title="删除分组？应用可见性配置将失去该组。" onConfirm={async () => {
+                <Popconfirm title="删除分组？该组成员将不再归属此分组。" onConfirm={async () => {
                   await api(`/api/admin/groups/${r.id}`, { method: 'DELETE' });
                   void reload();
                 }}>

@@ -7,45 +7,9 @@ import { eq } from 'drizzle-orm';
 import { getDb } from '../db/index.js';
 import { apps } from '../db/schema.js';
 import { decryptSecret } from '../lib/cryptoSecrets.js';
-import { appAcl } from '../db/schema.js';
-import { userGroupIds } from '../lib/groups.js';
 import { config } from '../config/index.js';
 
 export type AppRow = typeof apps.$inferSelect;
-
-export interface AppAcl {
-  allowGroupIds: number[];
-  allowUserIds: number[];
-}
-
-async function aclOf(appId: string): Promise<AppAcl> {
-  const row = (await getDb().select().from(appAcl).where(eq(appAcl.appId, appId)))[0];
-  const parse = (v: string): number[] => {
-    try {
-      const arr = JSON.parse(v) as unknown;
-      return Array.isArray(arr) ? arr.map(Number) : [];
-    } catch {
-      return [];
-    }
-  };
-  return row
-    ? { allowGroupIds: parse(row.allowGroupIds), allowUserIds: parse(row.allowUserIds) }
-    : { allowGroupIds: [], allowUserIds: [] };
-}
-
-export async function getAcl(appId: string): Promise<AppAcl> {
-  return await aclOf(appId);
-}
-
-export async function setAcl(appId: string, acl: AppAcl): Promise<void> {
-  await getDb()
-    .insert(appAcl)
-    .values({ appId, allowGroupIds: JSON.stringify(acl.allowGroupIds), allowUserIds: JSON.stringify(acl.allowUserIds) })
-    .onConflictDoUpdate({
-      target: appAcl.appId,
-      set: { allowGroupIds: JSON.stringify(acl.allowGroupIds), allowUserIds: JSON.stringify(acl.allowUserIds) },
-    });
-}
 
 export const PATH_SECRET_KEY = '__path__';
 
@@ -104,7 +68,6 @@ function isAdminUser(user: { role: string } | null | undefined): boolean {
  * 可见性模型（P）：
  *  - public：全员（含匿名）
  *  - login：站内共享，仅归属者与管理员可直接访问；其他用户从「站内共享」克隆
- *  - restricted：登录 + 指定分组/指定账号任一命中；ACL 为空 = 全部登录用户；归属者与管理员始终可见
  *  - private：仅归属者（用户自建应用默认）
  */
 export async function canAccess(
@@ -119,15 +82,6 @@ export async function canAccess(
       return Boolean(user && user.authState === 'full' && app.ownerUserId === user.id);
     case 'private':
       return Boolean(user && user.authState === 'full' && app.ownerUserId === user.id);
-    case 'restricted': {
-      if (!user || user.authState !== 'full') return false;
-      if (app.ownerUserId === user.id) return true;
-      const acl = await aclOf(app.id);
-      if (acl.allowGroupIds.length === 0 && acl.allowUserIds.length === 0) return true;
-      if (acl.allowUserIds.includes(user.id)) return true;
-      const groupIds = await userGroupIds(user.id);
-      return acl.allowGroupIds.some((g) => groupIds.has(g));
-    }
     default:
       return false;
   }

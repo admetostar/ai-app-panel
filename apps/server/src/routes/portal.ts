@@ -22,6 +22,7 @@ portalRouter.get('/portal/bootstrap', async (_req, res) => {
     appPort: appDomainRoot() === 'localhost' ? config.port : null,
     branding: {
       siteName: getSetting('SITE_NAME') || 'ai-app-panel',
+      browserTitle: getSetting('BROWSER_TITLE')?.trim() || getSetting('SITE_NAME') || 'ai-app-panel',
       tagline: getSetting('SITE_TAGLINE') || '',
       logo: getSetting('LOGO') || null,
       themeId: 'graphite',

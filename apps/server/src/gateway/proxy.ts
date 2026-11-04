@@ -268,7 +268,7 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
     if (user.authState !== 'full') {
       return htmlError(res, 403, '需要完成验证', '请先完成多因子认证');
     }
-    return htmlError(res, 403, '无权访问', '应用「%%」未对你所在的分组或账号开放', app.name);
+    return htmlError(res, 403, '无权访问', '当前应用不可供该账号访问');
   }
 
   // 双维度限流

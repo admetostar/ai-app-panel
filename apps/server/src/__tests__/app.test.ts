@@ -6,6 +6,7 @@ import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
 import { createGroup } from '../lib/groups.js';
 import { createPlan, updatePlan } from '../lib/billing.js';
+import { setSetting } from '../lib/settings.js';
 import { setupTestDb, teardownTestDb } from './testkit.js';
 
 let server: Server;
@@ -41,10 +42,27 @@ describe('W1 冒烟', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as PortalBootstrap;
     expect(body.branding.siteName).toBe('ai-app-panel');
+    expect(body.branding.browserTitle).toBe('ai-app-panel');
     expect(body.registration.mode).toBe('open');
     expect(body.appDomainRoot).toBe('localhost');
     expect(body.appPort).toBe(8080);
     expect(body.needsInit).toBe(true);
+  });
+
+  it('GET /api/portal/bootstrap 返回独立浏览器标题，留空时沿用站点名称', async () => {
+    await setSetting('SITE_NAME', '品牌站名');
+    await setSetting('BROWSER_TITLE', '自定义浏览器标题');
+    const customized = await fetch(`${baseUrl}/api/portal/bootstrap`);
+    const customizedBody = (await customized.json()) as PortalBootstrap;
+    expect(customizedBody.branding).toMatchObject({
+      siteName: '品牌站名',
+      browserTitle: '自定义浏览器标题',
+    });
+
+    await setSetting('BROWSER_TITLE', '');
+    const fallback = await fetch(`${baseUrl}/api/portal/bootstrap`);
+    const fallbackBody = (await fallback.json()) as PortalBootstrap;
+    expect(fallbackBody.branding.browserTitle).toBe('品牌站名');
   });
 
   it('GET /api/portal/plans 匿名返回管理员启用的权益套餐', async () => {

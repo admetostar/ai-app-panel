@@ -14,7 +14,6 @@ import { useEffect, useState } from 'react';
 const VISIBILITY_LABEL: Record<AppCard['visibility'], string> = {
   public: '公开',
   login: '站内',
-  restricted: '指定可见',
   private: '仅自己',
 };
 
@@ -73,7 +72,7 @@ export function PortalAppCard({
             <Tag bordered={false} style={{ fontSize: 11 }}>{VISIBILITY_LABEL[app.visibility]}</Tag>
             {!app.accessible ? (
               <span className="aap-app-card__unavailable">
-                {app.visibility === 'login' ? '仅可克隆' : app.visibility === 'restricted' ? '登录后可用' : '暂不可用'}
+                {app.visibility === 'login' ? '仅可克隆' : '暂不可用'}
               </span>
             ) : null}
             {footerAction}

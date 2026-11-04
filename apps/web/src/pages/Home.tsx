@@ -68,15 +68,48 @@ export function HomePage() {
         <div className="aap-home-hero__content">
           <span className="aap-home-kicker">{siteName}</span>
           <Typography.Title className="aap-home-title" level={1}>
-            您好，欢迎来到 {siteName}
+            使用<strong>{siteName}</strong>零代码创作个人软件
           </Typography.Title>
+          {boot.data?.needsInit ? (
+            <Alert
+              className="aap-home-init-warning"
+              type="warning"
+              showIcon
+              message="站点尚未初始化"
+              description="请使用容器日志中的初始凭据登录并完成引导。"
+            />
+          ) : null}
           <Typography.Paragraph className="aap-home-description">
-            {boot.data?.needsInit
-              ? '⚠ 站点尚未初始化：请首次启动时按容器日志中的初始凭据登录完成引导。'
-              : <>
-                  <strong>{siteName}</strong> 是一个应用托管仓库。您让自己的 AI 助手（Agent）写好一个小工具，自动打包成 <strong>.awpk</strong> 文件上传到{siteName}后，即可向其他人展示您的创作。
-                </>}
+            <strong>{siteName}</strong> 是一个个人AI应用的运行工具，通过 AI 助手（Agent）自动化生成您自己的awpk应用，即可上传到
+            <strong>{siteName}</strong>向其他人展示您的创作。
           </Typography.Paragraph>
+          <div className="aap-home-hero__actions">
+            <Button
+              className="aap-home-hero__cta"
+              size="large"
+              type="primary"
+              icon={<ArrowRightOutlined />}
+              onClick={() => navigate(me ? '/account' : '/login')}
+            >
+              现在开始
+            </Button>
+            <Button
+              className="aap-home-hero__guide"
+              size="large"
+              onClick={() => navigate('/guide')}
+            >
+              操作指南
+            </Button>
+          </div>
+        </div>
+        <a className="aap-home-scroll" href="#home-applications">向下探索 <span aria-hidden="true">↓</span></a>
+      </section>
+
+      <section id="home-applications" className="aap-home-section aap-home-applications">
+        <div className="aap-home-section__inner">
+          <span className="aap-home-section__eyebrow">APPLICATIONS</span>
+          <Typography.Title level={2}>发现应用</Typography.Title>
+          <Typography.Paragraph className="aap-home-section__lead">浏览社区创作，找到适合你的 AI 应用。</Typography.Paragraph>
           <Input
             allowClear
             size="large"
@@ -87,24 +120,6 @@ export function HomePage() {
             onChange={(e) => setKeyword(e.target.value)}
             onPressEnter={() => document.getElementById('home-applications')?.scrollIntoView({ behavior: 'smooth' })}
           />
-          <Button
-            className="aap-home-hero__cta"
-            size="large"
-            type="primary"
-            icon={<ArrowRightOutlined />}
-            onClick={() => navigate(me ? '/my-apps' : '/guide')}
-          >
-            现在开始
-          </Button>
-        </div>
-        <a className="aap-home-scroll" href="#home-applications">向下探索 <span aria-hidden="true">↓</span></a>
-      </section>
-
-      <section id="home-applications" className="aap-home-section aap-home-applications">
-        <div className="aap-home-section__inner">
-          <span className="aap-home-section__eyebrow">APPLICATIONS</span>
-          <Typography.Title level={2}>发现应用</Typography.Title>
-          <Typography.Paragraph className="aap-home-section__lead">浏览社区创作，找到适合你的 AI 应用。</Typography.Paragraph>
           {appsQuery.isLoading ? (
             <div className="aap-home-loading"><Spin /></div>
           ) : appsQuery.isError ? (

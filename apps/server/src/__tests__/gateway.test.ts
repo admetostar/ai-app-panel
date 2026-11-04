@@ -19,7 +19,6 @@ import { handleUpgrade, upgradeClientIp } from '../gateway/wsproxy.js';
 import { users } from '../db/schema.js';
 import { writeLocalCredentials } from '../lib/bootstrap.js';
 import { verifyIdentity } from '../gateway/identity.js';
-import { getAcl } from '../gateway/registry.js';
 
 let gw: Server; // 网关（含 upgrade）
 let gwPort = 0;
@@ -126,7 +125,6 @@ beforeAll(async () => {
   // 注册应用：公开(passUser) / 站内共享 / 会员 / path 型凭据
   await createAppViaAdmin({ id: 'pub', name: '公开应用', upstream: `http://127.0.0.1:${upPort}`, visibility: 'public', passUser: true });
   await createAppViaAdmin({ id: 'priv', name: '登录应用', upstream: `http://127.0.0.1:${upPort}`, visibility: 'login' });
-  await createAppViaAdmin({ id: 'vip', name: '受限应用', upstream: `http://127.0.0.1:${upPort}`, visibility: 'restricted', allowedGroupIds: [999999] });
   await createAppViaAdmin({
     id: 'pathsecret',
     name: '路径凭据',
@@ -245,17 +243,18 @@ describe('W5 访问策略（B4 三态）', () => {
     expect(await priv.text()).toContain('需要登录');
   });
 
-  it('restricted 应用：非 ACL 用户 403', async () => {
+  it('登录用户不能直接打开其他账号的站内应用', async () => {
     const base = `http://127.0.0.1:${gwPort}`;
+    await createAppViaAdmin({ id: 'site-shared', name: '站内应用', upstream: `http://127.0.0.1:${upPort}`, visibility: 'login' });
     const login = await fetch(`${base}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base },
       body: JSON.stringify({ username: 'freeuser', password: 'free-password' }),
     });
     const cookie = cookieOf(login);
-    const res = await fetch(`${base}/app/vip/`, { headers: { cookie } });
+    const res = await fetch(`${base}/app/site-shared/`, { headers: { cookie } });
     expect(res.status).toBe(403);
-    expect(await res.text()).toContain('未对你');
+    expect(await res.text()).toContain('站内');
   });
 
   it('卡片墙：accessible 标记按会话计算', async () => {
@@ -264,42 +263,6 @@ describe('W5 访问策略（B4 三态）', () => {
     const pubCard = anonBody.apps.find((a) => a.id === 'pub');
     expect(pubCard?.accessible).toBe(true);
     expect(anonBody.apps.some((a) => a.id === 'priv')).toBe(false);
-  });
-});
-
-describe('PUT 应用受众 ACL（回归：PUT 曾不写 ACL，restricted 收窄受众「保存成功」实际无效）', () => {
-  it('PUT allowedGroupIds 后 ACL 实际收窄；单侧提交时另一侧保留现有值', async () => {
-    const base = `http://127.0.0.1:${gwPort}`;
-    const login = await fetch(`${base}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({ username: 'freeuser', password: 'free-password' }),
-    });
-    const cookie = cookieOf(login);
-    const freeId = await (await getDb().select().from(users).where(eq(users.username, 'freeuser')))[0]!.id;
-
-    // 初始：restricted + 空 ACL = 全体登录用户可见
-    await createAppViaAdmin({ id: 'aclput', name: 'ACL-PUT', upstream: `http://127.0.0.1:${upPort}`, visibility: 'restricted' });
-    expect((await fetch(`${base}/app/aclput/`, { headers: { cookie } })).status).toBe(200);
-
-    const putAcl = (json: Record<string, unknown>): Promise<Response> =>
-      fetch(`${base}/api/admin/apps/aclput`, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
-        body: JSON.stringify(json),
-      });
-
-    // PUT 收窄：仅放行 freeuser 不在的分组 → ACL 落库且访问判定立即收窄
-    expect((await putAcl({ allowedGroupIds: [999999] })).status).toBe(200);
-    expect((await getAcl('aclput')).allowGroupIds).toEqual([999999]);
-    expect((await getAcl('aclput')).allowUserIds).toEqual([]); // 未提交的一侧保留（创建时为空）
-    expect((await fetch(`${base}/app/aclput/`, { headers: { cookie } })).status).toBe(403);
-
-    // 再 PUT 仅提交 allowedUserIds：分组一侧保留，freeuser 命中账号白名单恢复可见
-    expect((await putAcl({ allowedUserIds: [freeId] })).status).toBe(200);
-    expect((await getAcl('aclput')).allowGroupIds).toEqual([999999]);
-    expect((await getAcl('aclput')).allowUserIds).toEqual([freeId]);
-    expect((await fetch(`${base}/app/aclput/`, { headers: { cookie } })).status).toBe(200);
   });
 });
 
@@ -331,67 +294,7 @@ describe('W5 WebSocket（B2）', () => {
   });
 });
 
-describe('P 可见性新模型（restricted/private/分组）', () => {
-  it('restricted + ACL：指定账号可见、其它登录用户不可见；private 仅归属者', async () => {
-    const base = `http://127.0.0.1:${gwPort}`;
-    // 直插分组/成员/ACL（走 DB，管理 API 已在别处覆盖）
-    const { getDb } = await import('../db/index.js');
-    const { userGroups, userGroupMembers, appAcl, apps } = await import('../db/schema.js');
-    const now = Date.now();
-    const [g] = await getDb().insert(userGroups).values({ name: 'vip-test', createdAt: now }).returning({ id: userGroups.id });
-    const gid = g!.id;
-    const [u1] = await getDb().insert(users).values({ kind: 'local', username: 'aclvip', role: 'user', createdAt: now }).returning({ id: users.id });
-    const u1id = u1!.id;
-    const [u2] = await getDb().insert(users).values({ kind: 'local', username: 'aclnone', role: 'user', createdAt: now }).returning({ id: users.id });
-    const u2id = u2!.id;
-    await getDb().insert(userGroupMembers).values({ groupId: gid, userId: u1id, createdAt: now });
-    await getDb().insert(apps).values({
-      id: 'acl-app', name: 'ACL', visibility: 'restricted', upstream: `http://127.0.0.1:${upPort}`,
-      ownerUserId: 1, kind: 'upstream', createdAt: now, updatedAt: now,
-    });
-    await getDb().insert(appAcl).values({ appId: 'acl-app', allowGroupIds: JSON.stringify([gid]), allowUserIds: '[]' });
-    // private 应用：归属 u1
-    await getDb().insert(apps).values({
-      id: 'priv-app', name: 'PRIV', visibility: 'private', upstream: `http://127.0.0.1:${upPort}`,
-      ownerUserId: u1id, kind: 'upstream', createdAt: now, updatedAt: now,
-    });
-
-    const login = async (username: string): Promise<string> => {
-      const r = await fetch(`${base}/api/auth/login`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', origin: base },
-        body: JSON.stringify({ username, password: 'x' }),
-      });
-      void r;
-      return '';
-    };
-    void login;
-
-    // aclvip 登录 → restricted 可访问；priv（归属他人）403
-    const pw = 'acl-password';
-    const { writeLocalCredentials } = await import('../lib/bootstrap.js');
-    await writeLocalCredentials(u1id, pw);
-    await writeLocalCredentials(u2id, pw);
-    const l1 = await fetch(`${base}/api/auth/login`, {
-      method: 'POST', headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({ username: 'aclvip', password: pw }),
-    });
-    const c1 = cookieOf(l1);
-    expect((await fetch(`${base}/app/acl-app/`, { headers: { cookie: c1 } })).status).toBe(200);
-    // aclvip 是 priv-app 归属者 → 自己可见
-    expect((await fetch(`${base}/app/priv-app/`, { headers: { cookie: c1 } })).status).toBe(200);
-
-    const l2 = await fetch(`${base}/api/auth/login`, {
-      method: 'POST', headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({ username: 'aclnone', password: pw }),
-    });
-    const c2 = cookieOf(l2);
-    expect((await fetch(`${base}/app/acl-app/`, { headers: { cookie: c2 } })).status).toBe(403);
-    // 非归属者 → private 403
-    expect((await fetch(`${base}/app/priv-app/`, { headers: { cookie: c2 } })).status).toBe(403);
-    void u2id;
-  });
-
+describe('HTML 托管应用', () => {
   it('HTML 托管应用 + 统一页面元素注入', async () => {
     const base = `http://127.0.0.1:${gwPort}`;
     const { writeHtmlApp } = await import('../gateway/staticApp.js');

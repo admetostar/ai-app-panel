@@ -1,4 +1,4 @@
-import { Avatar, Button, Dropdown, message, Segmented, Space, theme as antdTheme, Tooltip, type MenuProps } from 'antd';
+import { Avatar, Button, ConfigProvider, Dropdown, message, Segmented, Space, theme as antdTheme, Tooltip, type MenuProps } from 'antd';
 import { useEffect, useState, type MouseEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
@@ -6,11 +6,16 @@ import {
   AppstoreOutlined,
   CrownOutlined,
   ArrowRightOutlined,
+  BarChartOutlined,
+  SafetyOutlined,
   LogoutOutlined,
+  MailOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  RobotOutlined,
   SafetyCertificateOutlined,
   SettingOutlined,
+  TeamOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import type { PortalBootstrap, UserMembershipData } from '@aap/shared';
@@ -74,8 +79,7 @@ export function PortalLayout() {
 
   const branding = data?.branding;
   useEffect(() => {
-    const siteName = branding?.siteName?.trim() || 'ai-app-panel';
-    document.title = siteName;
+    document.title = branding?.browserTitle?.trim() || branding?.siteName?.trim() || 'ai-app-panel';
 
     const existingIcon = document.head.querySelector<HTMLLinkElement>('link[data-aap-site-icon]');
     if (branding?.logo) {
@@ -87,7 +91,7 @@ export function PortalLayout() {
     } else {
       existingIcon?.remove();
     }
-  }, [branding?.logo, branding?.siteName]);
+  }, [branding?.browserTitle, branding?.logo, branding?.siteName]);
 
   const isHome = location.pathname === '/';
   const isMembershipSelectionPage = location.pathname === '/membership-selection';
@@ -95,8 +99,9 @@ export function PortalLayout() {
   const isGuidePage = location.pathname === '/guide';
   const isAccountPage = location.pathname === '/account';
   const isMyApplicationsPage = location.pathname === '/my-apps';
+  const isAdminPage = location.pathname === '/admin';
   const isLegalPage = ['/terms', '/acceptable-use'].includes(location.pathname);
-  const isUserPage = isAccountPage || isMyApplicationsPage;
+  const isUserPage = isAccountPage || isMyApplicationsPage || isAdminPage;
   useEffect(() => {
     if (!isHome) return;
     let frame = 0;
@@ -118,12 +123,30 @@ export function PortalLayout() {
   }, [isHome]);
   const accountSections = ['myapps', 'profile', 'security', 'benefits', 'plans'] as const;
   const requestedSection = new URLSearchParams(location.search).get('tab');
-  const activeSection = isMyApplicationsPage
-    ? 'my-apps'
-    : requestedSection === 'billing'
-      ? 'benefits'
-      : accountSections.find((section) => section === requestedSection) ?? 'myapps';
-  const userNavGroups = [
+  const activeSection = isAdminPage
+    ? `admin:${requestedSection ?? 'overview'}`
+    : isMyApplicationsPage
+      ? 'my-apps'
+      : requestedSection === 'billing'
+        ? 'benefits'
+        : accountSections.find((section) => section === requestedSection) ?? 'myapps';
+  const userNavGroups = isAdminPage ? [
+    {
+      key: 'admin',
+      label: '管理后台',
+      items: [
+        { key: 'admin:overview', label: '总览', path: '/admin?tab=overview', icon: <BarChartOutlined /> },
+        { key: 'admin:site', label: '站点设置', path: '/admin?tab=site', icon: <SettingOutlined /> },
+        { key: 'admin:apps', label: '应用管理', path: '/admin?tab=apps', icon: <AppstoreOutlined /> },
+        { key: 'admin:users', label: '用户与注册', path: '/admin?tab=users', icon: <TeamOutlined /> },
+        { key: 'admin:security', label: '安全', path: '/admin?tab=security', icon: <SafetyOutlined /> },
+        { key: 'admin:mail', label: '通知通道', path: '/admin?tab=mail', icon: <MailOutlined /> },
+        { key: 'admin:tls', label: '证书', path: '/admin?tab=tls', icon: <SafetyCertificateOutlined /> },
+        { key: 'admin:llm', label: 'LLM 网关', path: '/admin?tab=llm', icon: <RobotOutlined /> },
+        { key: 'admin:ops', label: '运营', path: '/admin?tab=ops', icon: <CrownOutlined /> },
+      ],
+    },
+  ] : [
     {
       key: 'apps',
       label: '应用',
@@ -202,7 +225,7 @@ export function PortalLayout() {
       data-user-theme={isUserPage ? activeUserPageTheme : undefined}
     >
       {isUserPage ? (
-        <aside className={`aap-user-sidebar${sidebarCollapsed ? ' aap-user-sidebar--collapsed' : ''}`} aria-label="个人中心导航">
+        <aside className={`aap-user-sidebar${sidebarCollapsed ? ' aap-user-sidebar--collapsed' : ''}`} aria-label={isAdminPage ? '管理后台导航' : '个人中心导航'}>
           <div className="aap-user-sidebar__top">
             <Link to="/" className="aap-user-sidebar__brand" aria-label={branding?.siteName ?? 'ai-app-panel'}>
               {branding?.logo ? (
@@ -329,6 +352,7 @@ export function PortalLayout() {
         </aside>
       ) : null}
       {!isAuthPage && !isUserPage ? <header className={`aap-header${isHome ? ` aap-home-header ${homeHeaderOnHero ? 'aap-home-header--hero' : 'aap-home-header--content'}` : ''}`}>
+        <div className={`aap-header__contents${isHome ? ' aap-header__inner' : ''}`}>
         <Link to="/" style={{ textDecoration: 'none' }}>
           <div className="aap-brand">
             {branding?.logo ? (
@@ -471,6 +495,7 @@ export function PortalLayout() {
             ) : null
           )}
         </Space>
+        </div>
       </header> : null}
       <main className={`aap-main${isAuthPage ? ' aap-auth-main' : ''}${isUserPage ? ' aap-user-main' : ''}`}>
         {isUserPage && sidebarCollapsed ? (
@@ -483,7 +508,31 @@ export function PortalLayout() {
             onClick={() => setSidebarCollapsed(false)}
           />
         ) : null}
-        <Outlet context={{ activeUserPageTheme }} />
+        {isAdminPage ? (
+          <ConfigProvider
+            theme={{
+              algorithm: activeUserPageTheme === 'dark' ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+              token: activeUserPageTheme === 'dark'
+                ? {
+                    colorPrimary: '#4c8dff',
+                    colorInfo: '#4c8dff',
+                    colorBgBase: '#14171c',
+                    colorBgContainer: '#1d2129',
+                    colorBgElevated: '#23272f',
+                    colorTextBase: '#e6e8ec',
+                    colorText: '#e6e8ec',
+                    colorTextSecondary: '#aeb6c4',
+                    colorBorder: '#414754',
+                    colorBorderSecondary: '#2e333d',
+                  }
+                : undefined,
+            }}
+          >
+            <Outlet context={{ activeUserPageTheme }} />
+          </ConfigProvider>
+        ) : (
+          <Outlet context={{ activeUserPageTheme }} />
+        )}
       </main>
       {branding ? <BeianFooter branding={branding} /> : null}
     </div>

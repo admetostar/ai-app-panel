@@ -26,13 +26,15 @@ pnpm install
 pnpm dev            # server:8080（tsx watch）+ web:5173（Vite，代理 /api 与 /app）
 pnpm skills:sync    # 从 Markdown 更新 .skill/.zip 包并同步三种下载格式到 apps/server/assets
 pnpm build          # 先同步 skill，再构建 shared → server → web（生产产物 apps/web/dist）
-pnpm test           # 服务端测试（vitest，21 个文件 220 个用例）
+pnpm test           # 服务端测试（vitest，21 个文件 218 个用例）
 pnpm test:e2e       # Playwright 端到端（自动拉起真实服务 + mock 上游）
 pnpm typecheck      # 全仓类型检查
 pnpm db:generate    # drizzle-kit 生成迁移（schema 变更后必跑）
 ```
 
 要求 Node ≥ 22。开发服务器、服务端测试与 E2E 均使用 PostgreSQL。设置 `DATABASE_URL` 后运行 `pnpm dev`；服务端测试可单独设置 `TEST_DATABASE_URL`，E2E 可单独设置 `E2E_DATABASE_URL`，均需使用有创建 schema 权限的数据库账号。`setupTestDb()` 为每个服务端测试文件创建独立 schema、应用 `apps/server/drizzle-pg` 初始迁移，并在结束后删除 schema；Playwright E2E 同样创建专用 schema，运行结束后删除，不再直接读取或修改 SQLite 文件。当前迁移目录仅维护 PostgreSQL 基线；旧数据库、旧迁移历史和旧业务数据不兼容、不导入。请始终为新部署提供空数据库 `ai_app_panel`。Docker Compose 自带 PostgreSQL 17；原生与 FPK 部署需自行创建空数据库并设置连接串。托管应用自行创建的 `app.sqlite` 是应用级状态库，不是门户业务数据库。
+
+门户首页首屏背景图源文件位于 `apps/server/assets/home-background.png`，由 Vite 从 `apps/web/src/global.css` 打包；首页背景卡片、页眉、内容区与页脚共用约 1130px 的内容宽度。首屏主按钮未登录进入 `/login`、已登录进入 `/account`，操作指南按钮进入 `/guide`；应用搜索框位于应用列表区域。
 
 AWPK Agent skill 的权威 Markdown 为 `docs/app-develop.skill-v0.3.md`。更新该文件后运行 `pnpm skills:sync`（`pnpm build`、Docker、原生包和 FPK 构建也会自动同步）：它生成 `.skill` 与 `.zip` 两种 ZIP 格式和 `awpk-app-develop.md`，并将三种下载文件复制到 `apps/server/assets`，供「操作导航」下载。压缩包内 `SKILL.md` 必须位于 ZIP 根目录，不能再包一层 `awpk-app-develop/` 目录。
 
@@ -57,6 +59,8 @@ Docker Compose 默认启动 PostgreSQL 17 和门户。复制 `deploy/docker/.env
 - 展示降噪：短标签 + 悬浮详情（完整描述与配置键）；仅 `defaultsWork=false` 的项显示「需配置」橙标
 - 「通知通道」「计费」「证书(HTTPS 跳转)」等有专用面板，经 `excludeKeys` 排除由专用表单写入的键
 
+管理员页面复用个人中心的主题与可折叠左侧导航，站点、应用、用户、安全、通知、证书、LLM 和运营设置均由侧栏进入，不再显示首次配置向导或顶部标签栏。管理页按当前主题单独配置 Ant Design 组件算法；深色模式下表单、选择器及弹出列表、表格、卡片、提示和文字均切换到高对比度深色配色。`GET /api/admin/overview` 为总览提供 CPU/内存水位、网络收发速率、用户与应用累计数、近 30 天 Token 消耗以及按套餐分组的有效订阅数量。CPU 使用进程内采样，首次采样显示采集中；内存使用主机总量/空闲量；网络带宽通过 Linux `/proc/net/dev` 的接口收发字节差计算，并以 10 Mbps 为水位基准，非 Linux 或计数器不可读时明确显示不可用。无固定上限的用户、应用和 Token 累计数使用数量级映射进度条，不代表权益上限。
+
 站点设置的 Logo 可通过输入框后的「上传」按钮选择 PNG/JPEG/GIF/WebP 图片（最大 5 MB）；文件写入 `DATA_DIR/admin/site-logo/`，服务端返回的 `/uploads/sitelogo/<随机文件名>` 路径回填到设置框，保存设置后应用到门户品牌和浏览器标签页图标；站点名称同步作为浏览器页面标题。Docker Compose 将整个 `/data` 挂载到 `ai-app-panel-data` 命名卷，因此该目录会在容器重建后保留。
 
 ## 4. 应用网关（/app/\<id\>/）
@@ -67,7 +71,7 @@ Docker Compose 默认启动 PostgreSQL 17 和门户。复制 `deploy/docker/.env
   - `upstream`：反代到内网上游（HTML 改写 + `<base>` + fetch/XHR/script 猴补丁 + 路径穿越双查 + `duplex:'half'` + SSE 零缓冲）
   - `html`：门户托管静态页（`DATA_DIR/appsites/<id>/`），支持简单 HTML 粘贴接入与 .awpk html 包
   - `package`：.awpk Python 包。`invoked` 经「统一执行入口」`POST /api/apps/:id/run` 拉起一次性进程运行；`persistent` 首次访问应用域名或 `/app/<id>/` 时由平台拉起长驻进程并反代（HTTP 与 WebSocket 同通道，同一套门禁/限流；空闲回收 `SANDBOX_IDLE_RECYCLE_SECONDS` 默认 300s 可调、崩溃自动重启上限 3 次、并发执行上限 `SANDBOX_MAX_CONCURRENT_RUNS`、全局进程数上限 `SANDBOX_MAX_PERSISTENT`（默认 12，超限回收最久未用进程腾位））。兼容路径反代转发前剥 `/app/<id>` 前缀（包路由挂根），前缀经 `x-forwarded-prefix` 下发、站内相对 `Location` 镜像回写；`/open/<id>` 保留为兼容重定向页。
-- 管理后台「应用管理」通过 `GET /api/admin/apps` 获取完整应用字段与 ACL；门户应用列表通过 `GET /api/apps` 获取当前用户可见应用。个人中心「应用管理」仅在该分区激活时请求 `GET /api/apps/mine`，并展示加载状态、错误详情与重试入口；已创建应用列表以独立列展示安装日期、上传包大小、版本和平台支持，平台支持用图标标识数据库、大模型、网络白名单与存储能力；设置/删除使用图标按钮，环境变量弹窗沿用个人中心主题。
+- 管理后台「应用管理」通过 `GET /api/admin/apps` 获取完整应用字段；门户应用列表通过 `GET /api/apps` 获取当前用户可见应用。个人中心「应用管理」仅在该分区激活时请求 `GET /api/apps/mine`，并展示加载状态、错误详情与重试入口；已创建应用列表以独立列展示安装日期、上传包大小、版本和平台支持，平台支持用图标标识数据库、大模型、网络白名单与存储能力；设置/删除使用图标按钮，环境变量弹窗沿用个人中心主题。
 - 管理后台「应用管理」还可查最近 200 条应用运行事件（按应用/级别筛选，30 秒刷新）；记录 persistent 进程启动/就绪/退出/重启/回收、HTTP 错误与超时，以及耗时 ≥1 秒的请求。代理请求等待上限为 `min(PROXY_TIMEOUT, 25s)`，超时返回 504。事件仅包含路径（剥除 query）、方法、状态、耗时、用户 ID 与受限诊断详情，不保存请求/响应正文、Cookie 或认证凭据；按“审计保留（天）”设置清理。
 - **iframe 沙箱兼容**：配置应用域名时，用户应用从独立 origin 进入，不依赖 opaque-origin iframe；未配置时通过同源门户路径和 opaque-origin iframe 沙箱运行。`/app/<id>/raw/...` 仅在已配置应用域名时跳转至新域名下去掉 `/raw` 标记后的等价路径。
 - **AWPK 包格式与开发边界**：应用开发 Agent 应遵循 [`app-develop.skill-v0.3.md`](./app-develop.skill-v0.3.md) 的清单与资源表。AWPK 是含 `manifest.json` 的 ZIP 容器，只接受 `.awpk` 扩展名，不兼容 `.asp-app` 或 `.zip` 上传。当前仅 `llm` 声明由服务端强制门控，`db`/`storage` 尚无逐项运行时闸；storage 默认 10 MiB/应用，SQLite 无硬容量配额；CPU/内存无 per-app 硬限额。出站仅可经 `aap.http.fetch`（HTTP(S) GET、manifest 白名单、逐跳 DNS/IP 检查），Python 网络守卫不是硬隔离。
@@ -79,7 +83,7 @@ Docker Compose 默认启动 PostgreSQL 17 和门户。复制 `deploy/docker/.env
 - 可见性 `visibility`（后端与 shared API 契约沿用 `login` 值，界面名称显示“站内”）：
   - `public` 全员（含匿名）
   - `login`（前端名称“站内”）站内共享：归属者与管理员可直接访问；其他用户不能直接打开，只能从“我的应用 → 站内共享”克隆到自己的账号
-  - `restricted` 登录 + 命中 `app_acl`（分组或账号）任一；ACL 为空 = 全部登录用户；归属者与管理员恒可见；**PUT 更新应用会实际落 ACL**（未提交的一侧保留现值，变更记 `app.acl.update` 审计——2026-09-19 审计前 PUT 静默丢弃 ACL）
+  - 已有数据库中的旧受限应用迁移为站内可见；未来仅使用公开、站内、仅自己三种范围
   - `private` 仅归属者（用户自建应用默认；门户对非归属者隐藏卡片）
 - passUser 身份注入：`X-AAP-Identity`（base64url JSON：uid/kind/subject/aud/jti/iat/exp）+ `X-AAP-Identity-Sig`（HMAC-SHA256，密钥 `AAP_SIGN_SECRET`）。应用侧验签参考 `gateway/identity.ts` 的 `verifyIdentity`（aud 与 (kind,uid) 契约必查）。验签密钥自动下发：passUser 的 .aap 包沙箱 env 注入 `AAP_SIGN_SECRET`，上游应用在应用表单勾选时显示复制（详见 §3 密钥查看）。客户端自带的身份头在代理入口一律剥除（HTTP/WS/沙箱反代同一张剥离表），仅网关签名注入的可信。
 - 统一页面元素：HTML 响应自动注入 `/portal-chrome.js`（在应用页面右下角显示后台配置的站点名称作为门户入口）；幂等、失败静默。覆盖三条通道：HTML 托管直出、persistent 反代直连（HTML 缓冲注入，2MB 上限）、沙箱外壳层（包代码不可触碰，raw 通道不重复注入）。

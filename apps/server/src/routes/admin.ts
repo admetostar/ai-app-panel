@@ -1,16 +1,16 @@
 /**
- * 管理后台 API（E1）：用户管理、运行时安全策略（settings）、审计查询、
- * 首配向导总览（E2-②）、邀请码签发。
+ * 管理后台 API：用户管理、运行时安全策略（settings）、审计查询与系统总览。
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import express, { Router } from 'express';
-import { and, eq, gt, sql } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, sql } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import { isIP } from 'node:net';
 import { AAP_VERSION, isPasswordValid, PASSWORD_POLICY_MESSAGE } from '@aap/shared';
 import { getDb } from '../db/index.js';
-import { apps, auditLogs, inviteCodes, sessions, users } from '../db/schema.js';
+import { apps, auditLogs, inviteCodes, llmLedger, membershipPlans, sessions, users } from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
 import { requireAdmin } from '../lib/auth.js';
 import { publicUserOf } from './shared.js';
@@ -29,13 +29,84 @@ import {
   setGroupMembers,
   updateGroup,
 } from '../lib/groups.js';
-import { status as tlsStatus } from '../gateway/tls.js';
 import { defaultAvatarForUser } from '../lib/userAvatar.js';
-import { isFreePlan, listPlans } from '../lib/billing.js';
 import { config } from '../config/index.js';
 import { ensureInviteCode } from '../lib/invites.js';
 
 export const adminRouter = Router();
+
+const NETWORK_BANDWIDTH_LIMIT_MBPS = 10;
+let previousCpuSample: { total: number; idle: number } | null = null;
+let previousNetworkSample: { received: number; sent: number; sampledAt: number } | null = null;
+let networkReadWarningLogged = false;
+
+function readCpuUsagePercent(): number | null {
+  const cpus = os.cpus();
+  const total = cpus.reduce((sum, cpu) => sum + Object.values(cpu.times).reduce((a, value) => a + value, 0), 0);
+  const idle = cpus.reduce((sum, cpu) => sum + cpu.times.idle, 0);
+  const previous = previousCpuSample;
+  previousCpuSample = { total, idle };
+  if (!previous || total <= previous.total) return null;
+  return Math.max(0, Math.min(100, (1 - (idle - previous.idle) / (total - previous.total)) * 100));
+}
+
+async function readNetworkUsage(): Promise<{
+  available: boolean;
+  receiveMbps: number;
+  sendMbps: number;
+  percent: number;
+  capacityMbps: number;
+  reason?: string;
+}> {
+  const capacityMbps = NETWORK_BANDWIDTH_LIMIT_MBPS;
+  if (os.platform() !== 'linux') {
+    return {
+      available: false,
+      receiveMbps: 0,
+      sendMbps: 0,
+      percent: 0,
+      capacityMbps,
+      reason: '网络带宽计数器当前仅支持 Linux',
+    };
+  }
+  try {
+    const text = await fs.promises.readFile('/proc/net/dev', 'utf8');
+    let received = 0;
+    let sent = 0;
+    for (const line of text.split('\n').slice(2)) {
+      const separator = line.indexOf(':');
+      if (separator < 0 || line.slice(0, separator).trim() === 'lo') continue;
+      const values = line.slice(separator + 1).trim().split(/\s+/).map(Number);
+      if (values.length < 9 || values.some((value) => !Number.isFinite(value))) continue;
+      received += values[0] ?? 0;
+      sent += values[8] ?? 0;
+    }
+    const sampledAt = Date.now();
+    const previous = previousNetworkSample;
+    previousNetworkSample = { received, sent, sampledAt };
+    if (!previous || sampledAt <= previous.sampledAt) {
+      return { available: false, receiveMbps: 0, sendMbps: 0, percent: 0, capacityMbps, reason: '正在采集带宽基准' };
+    }
+    const elapsedSeconds = (sampledAt - previous.sampledAt) / 1000;
+    const receiveMbps = Math.max(0, ((received - previous.received) * 8) / elapsedSeconds / 1_000_000);
+    const sendMbps = Math.max(0, ((sent - previous.sent) * 8) / elapsedSeconds / 1_000_000);
+    const percent = Math.max(0, Math.min(100, ((receiveMbps + sendMbps) / capacityMbps) * 100));
+    return { available: true, receiveMbps, sendMbps, percent, capacityMbps };
+  } catch (error) {
+    if (!networkReadWarningLogged) {
+      console.warn('[admin overview] network counters unavailable:', error);
+      networkReadWarningLogged = true;
+    }
+    return {
+      available: false,
+      receiveMbps: 0,
+      sendMbps: 0,
+      percent: 0,
+      capacityMbps,
+      reason: error instanceof Error ? error.message : '系统网络接口计数器不可用',
+    };
+  }
+}
 
 function normalizeSiteDomain(value: string): string {
   const domain = value.trim().toLowerCase().replace(/\.$/, '');
@@ -448,29 +519,46 @@ adminRouter.patch(
 adminRouter.get(
   '/admin/overview',
   h(async (req, res) => {
-    const uid = req.user!.id;
-    const me = (await getDb().select().from(users).where(eq(users.id, uid)))[0];
-    const admins = await getDb().select().from(users).where(and(eq(users.role, 'admin'), eq(users.mustChangePassword, false)));
     const appCount = Number((await getDb().select({ n: sql<number>`count(*)` }).from(apps))[0]?.n ?? 0);
-    const liveSessions = Number((await getDb()
-      .select({ n: sql<number>`count(*)` })
-      .from(sessions)
-      .where(gt(sessions.expiresAt, Date.now())))[0]?.n ?? 0);
+    const userCount = Number((await getDb().select({ n: sql<number>`count(*)` }).from(users))[0]?.n ?? 0);
+    const tokenUsage30d = Number((await getDb()
+      .select({ n: sql<number>`coalesce(sum(prompt_tokens + completion_tokens), 0)` })
+      .from(llmLedger)
+      .where(and(eq(llmLedger.kind, 'usage'), gt(llmLedger.ts, Date.now() - 30 * 86_400_000))))[0]?.n ?? 0);
+    const now = Date.now();
+    const subscribedRows = await getDb()
+      .select({
+        planId: users.membershipPlanId,
+        count: sql<number>`count(*)`,
+      })
+      .from(users)
+      .where(and(isNotNull(users.membershipPlanId), gt(users.membershipExpiresAt, now)))
+      .groupBy(users.membershipPlanId);
+    const subscriptionCounts = new Map(subscribedRows.map((row) => [row.planId, Number(row.count)]));
+    const plans = await getDb().select({ id: membershipPlans.id, name: membershipPlans.name }).from(membershipPlans);
+    const memoryTotal = os.totalmem();
+    const memoryUsed = Math.max(0, memoryTotal - os.freemem());
+    const network = await readNetworkUsage();
     res.json({
       version: 'ok',
       // 服务版本与运行时长仅管理员可见（匿名 /api/health 已收敛为仅 ok）
       releaseVersion: AAP_VERSION,
       uptimeSec: Math.round(process.uptime()),
-      checklist: {
-        adminPasswordChanged: admins.length > 0,
-        adminMfaEnabled: Boolean(me?.mfaEnabled),
-        tls: tlsStatus().mode,
-        httpsEnabled: tlsStatus().httpsEnabled,
-        certDaysRemaining: tlsStatus().cert?.daysRemaining ?? null,
-        freePlanConfigured: await (await listPlans(true)).some(isFreePlan),
-        appCount,
+      totals: { users: userCount, apps: appCount, tokens30d: tokenUsage30d },
+      resources: {
+        cpuPercent: readCpuUsagePercent(),
+        memory: {
+          usedBytes: memoryUsed,
+          totalBytes: memoryTotal,
+          percent: memoryTotal > 0 ? (memoryUsed / memoryTotal) * 100 : 0,
+        },
+        network,
       },
-      liveSessions,
+      planSubscriptions: plans.map((plan) => ({
+        planId: plan.id,
+        planName: plan.name,
+        subscribers: subscriptionCounts.get(plan.id) ?? 0,
+      })),
     });
   }),
 );

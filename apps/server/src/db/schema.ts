@@ -210,7 +210,7 @@ export const apps = pgTable('apps', {
   description: text('description').notNull().default(''),
   icon: text('icon'),
   category: text('category').notNull().default('未分类'),
-  /** 'public' 公开 | 'login' 站内共享（他人可克隆，不可直访） | 'restricted' 指定分组与账号 | 'private' 仅归属者 */
+  /** 'public' 公开 | 'login' 站内共享（他人可克隆，不可直访） | 'private' 仅归属者 */
   visibility: text('visibility').notNull().default('login'),
   /** 应用形态：upstream 反代上游 | html 门户托管的静态页（简单 HTML / .awpk html 包） */
   kind: text('kind').notNull().default('upstream'),
@@ -244,7 +244,7 @@ export const apps = pgTable('apps', {
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
 }, (t) => [index('apps_owner_clone_idx').on(t.ownerUserId, t.clonedFromAppId)]);
 
-// ---------- 用户分组（会员等级 / 自定义组；应用可见性的目标集合） ----------
+// ---------- 用户分组（会员等级 / 自定义组） ----------
 
 export const userGroups = pgTable('user_groups', {
   id: serial('id').primaryKey(),
@@ -268,15 +268,6 @@ export const userGroupMembers = pgTable(
   },
   (t) => [primaryKey({ columns: [t.groupId, t.userId] })],
 );
-
-/** 应用可见性 ACL（visibility=restricted 时生效：任一命中即可见；两者皆空 = 全部登录用户） */
-export const appAcl = pgTable('app_acl', {
-  appId: varchar('app_id', { length: 512 })
-    .primaryKey()
-    .references(() => apps.id, { onDelete: 'cascade' }),
-  allowGroupIds: text('allow_group_ids').notNull().default('[]'), // JSON number[]
-  allowUserIds: text('allow_user_ids').notNull().default('[]'), // JSON number[]
-});
 
 // ---------- 应用环境变量 / 机密（G6：manifest.env 声明，AES-256-GCM 加密落盘，沙箱启动注入） ----------
 

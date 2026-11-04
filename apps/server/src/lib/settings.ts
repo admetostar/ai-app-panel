@@ -51,6 +51,14 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   SITE_NAME: {
     label: '站点名称',
     group: '站点与品牌', type: 'string', desc: '站点名称', initial: () => 'ai-app-panel', defaultsWork: true },
+  BROWSER_TITLE: {
+    label: '网站浏览器标题',
+    group: '站点与品牌',
+    type: 'string',
+    desc: '浏览器标签页显示的标题；留空时使用站点名称',
+    initial: () => '',
+    defaultsWork: true,
+  },
   SITE_DOMAIN: {
     label: '本站域名（应用子域名根）',
     group: '站点与品牌',

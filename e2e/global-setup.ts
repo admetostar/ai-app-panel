@@ -11,7 +11,7 @@ import { generate as totpGenerate } from 'otplib';
  *  - 门户服务（9910：tsx 起真实 server，临时数据目录，生产 web 构建产物）
  *  - 预置：初始管理员（已知密码）→ 登录 → 创建 demo 应用 → 开放注册
  *    （P1-6 强制流程门禁后，管理端点须先走完 改密+绑 MFA 的强制流程；
- *     配置完成后直写 DB 把 admin 还原为初始态，F3 仍验收首启向导 UI）
+ *     配置完成后直写 DB 把 admin 还原为初始态，供浏览器测试独立验收强制流程）
  */
 
 export const PORTAL = 'http://127.0.0.1:9910';
@@ -126,7 +126,7 @@ export async function setup(): Promise<void> {
   if (!login.ok) throw new Error(`初始管理员登录失败: ${login.status}`);
   const cookie = (login.headers.getSetCookie().find((c) => c.startsWith('aap_sid=')) ?? '').split(';')[0];
 
-  // 记录初始 admin 行（用于配置后还原初始态，F3 继续验收首启向导）。
+  // 记录初始 admin 行（用于配置后还原初始态，避免测试之间共享安全设置状态）。
   const [pristine] = runDatabaseQuery(
     'SELECT users.*, local_credentials.password_hash AS "__password_hash" ' +
       'FROM users JOIN local_credentials ON local_credentials.user_id = users.id WHERE users.username = $1',

@@ -12,7 +12,7 @@ import { getDb } from '../db/index.js';
 import { appRuntimeEvents, apps, llmAppTokens } from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
 import { requireAdmin } from '../lib/auth.js';
-import { isSlug, idConflictsWithGatewayPrefix, listApps, findApp, getAcl, setAcl } from '../gateway/registry.js';
+import { isSlug, idConflictsWithGatewayPrefix, listApps, findApp } from '../gateway/registry.js';
 import { writeHtmlApp, storePackageFiles, validateManifest, appSiteDir, isAwpkFilename } from '../gateway/staticApp.js';
 import { ensureAutoProvisionedToken } from '../lib/llm.js';
 import { encryptSecret } from '../lib/cryptoSecrets.js';
@@ -70,11 +70,9 @@ interface AppPayload {
   kind?: string;
   /** kind=html 编辑页面内容（PUT 时生效） */
   html?: string;
-  allowedGroupIds?: number[];
-  allowedUserIds?: number[];
 }
 
-const VISIBILITIES = new Set(['public', 'login', 'restricted', 'private']);
+const VISIBILITIES = new Set(['public', 'login', 'private']);
 
 /** 内网/本机地址校验（字面量；DNS 主机名可用高级设置放开） */
 export function isInternalUpstream(hostname: string): boolean {
@@ -117,9 +115,7 @@ adminAppsRouter.get(
       // passUser 身份链验签密钥（同「安全 → 高级项」AAP_SIGN_SECRET）：前端在应用
       // 表单勾选 passUser 时展示，供上游应用复制配置；沙箱侧由 baseEnv 自动注入
       signSecret: getSetting('AAP_SIGN_SECRET') ?? '',
-      apps: await Promise.all((await listApps()).map(async (a) => {
-        const acl = await getAcl(a.id);
-        return {
+      apps: (await listApps()).map((a) => ({
           id: a.id,
           name: a.name,
           description: a.description,
@@ -135,10 +131,7 @@ adminAppsRouter.get(
           sort: a.sort,
           healthState: a.healthState,
           lastProbeAt: a.lastProbeAt,
-          allowGroupIds: acl.allowGroupIds,
-          allowUserIds: acl.allowUserIds,
-        };
-      })),
+        })),
     });
   }),
 );
@@ -159,7 +152,7 @@ adminAppsRouter.post(
       parseUpstream(body.upstream);
     }
     if (body.visibility && !VISIBILITIES.has(body.visibility)) {
-      throw new HttpError(400, 'INVALID_VISIBILITY', '访问策略必须是 public/login（站内）/restricted/private');
+      throw new HttpError(400, 'INVALID_VISIBILITY', '可见范围必须是公开、站内或仅自己');
     }
 
     const now = Date.now();
@@ -182,7 +175,6 @@ adminAppsRouter.post(
         createdAt: now,
         updatedAt: now,
       });
-    await setAcl(id, { allowGroupIds: body.allowedGroupIds ?? [], allowUserIds: body.allowedUserIds ?? [] });
     await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'app.create', { id });
     void probeAll();
     res.json({ ok: true, id });
@@ -225,7 +217,7 @@ adminAppsRouter.put(
     if (body.icon !== undefined) patch.icon = body.icon;
     if (body.category !== undefined) patch.category = body.category;
     if (body.visibility !== undefined) {
-      if (!VISIBILITIES.has(body.visibility)) throw new HttpError(400, 'INVALID_VISIBILITY', '访问策略必须是 public/login（站内）/restricted/private');
+      if (!VISIBILITIES.has(body.visibility)) throw new HttpError(400, 'INVALID_VISIBILITY', '可见范围必须是公开、站内或仅自己');
       patch.visibility = body.visibility;
     }
     if (body.passUser !== undefined) {
@@ -246,17 +238,6 @@ adminAppsRouter.put(
     if (body.sort !== undefined) patch.sort = body.sort;
 
     await getDb().update(apps).set(patch).where(eq(apps.id, id));
-    // ACL 受众更新：任一侧提交即生效，未提交的一侧保留现有值
-    //（回归：PUT 曾从不写 ACL，restricted 收窄受众「保存成功」实际无效）
-    if (body.allowedGroupIds !== undefined || body.allowedUserIds !== undefined) {
-      const current = await getAcl(id);
-      const next = {
-        allowGroupIds: body.allowedGroupIds ?? current.allowGroupIds,
-        allowUserIds: body.allowedUserIds ?? current.allowUserIds,
-      };
-      await setAcl(id, next);
-      await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'app.acl.update', { id, ...next });
-    }
     await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'app.update', { id });
     void probeAll();
     res.json({ ok: true });
@@ -325,8 +306,8 @@ adminAppsRouter.post(
     const html = String(body.html ?? '');
     if (!html.trim()) throw new HttpError(400, 'INVALID_HTML', '页面内容不能为空');
     if (html.length > 2 * 1024 * 1024) throw new HttpError(400, 'HTML_TOO_LARGE', '页面过大（≤2MB）');
-    const visibility = body.visibility ?? 'restricted';
-    if (!VISIBILITIES.has(visibility)) throw new HttpError(400, 'INVALID_VISIBILITY', '访问策略非法');
+    const visibility = body.visibility ?? 'login';
+    if (!VISIBILITIES.has(visibility)) throw new HttpError(400, 'INVALID_VISIBILITY', '可见范围非法');
 
     writeHtmlApp(id, html);
     const now = Date.now();
@@ -345,7 +326,6 @@ adminAppsRouter.post(
         createdAt: now,
         updatedAt: now,
       });
-    await setAcl(id, { allowGroupIds: [], allowUserIds: [] });
     await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'app.html.create', { id });
     res.json({ ok: true, id });
   }),
@@ -407,7 +387,7 @@ adminAppsRouter.post(
   '/admin/apps/package',
   express.json({ limit: '15mb' }),
   h(async (req: express.Request, res: express.Response) => {
-    const body = (req.body ?? {}) as { filename?: string; dataBase64?: string; visibility?: string; allowedGroupIds?: number[]; allowedUserIds?: number[]; passUser?: boolean; urlSecret?: string };
+    const body = (req.body ?? {}) as { filename?: string; dataBase64?: string; visibility?: string; passUser?: boolean; urlSecret?: string };
     if (!isAwpkFilename(body.filename)) {
       throw new HttpError(400, 'INVALID_PACKAGE_EXT', '应用包文件必须使用 .awpk 扩展名');
     }
@@ -442,7 +422,7 @@ adminAppsRouter.post(
       throw new HttpError(400, 'PACKAGE_INVALID', err instanceof Error ? err.message : '包校验失败');
     }
     const visibility = body.visibility ?? 'private';
-    if (!VISIBILITIES.has(visibility)) throw new HttpError(400, 'INVALID_VISIBILITY', '访问策略非法');
+    if (!VISIBILITIES.has(visibility)) throw new HttpError(400, 'INVALID_VISIBILITY', '可见范围非法');
 
     const now = Date.now();
     const isHtml = manifest.type === 'html';
@@ -467,10 +447,6 @@ adminAppsRouter.post(
         createdAt: now,
         updatedAt: now,
       });
-    await setAcl(manifest.name, {
-      allowGroupIds: body.allowedGroupIds ?? [],
-      allowUserIds: body.allowedUserIds ?? [],
-    });
     // 运行时凭据统一自动签发（幂等）：AAP_TOKEN 同时是 egress 出站凭据，非 llm 包也需要；
     // LLM 花费面由 appLlmAllowed 在 /v1 网关与 /api/aap/llm/chat 双侧按 manifest.capabilities 闸（审计 F1）
     await ensureAutoProvisionedToken(manifest.name);

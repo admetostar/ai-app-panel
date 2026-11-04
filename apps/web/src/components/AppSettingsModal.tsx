@@ -30,7 +30,7 @@ export function AppSettingsModal({ app, open, onClose, onSaved, theme }: {
     form.setFieldsValue({
       name: app.name,
       description: app.description,
-      visibility: app.visibility === 'restricted' ? 'login' : app.visibility,
+      visibility: app.visibility,
     });
     setIcon(app.icon);
     setActiveTab('basic');
@@ -190,14 +190,6 @@ export function AppSettingsModal({ app, open, onClose, onSaved, theme }: {
                     >
                       <Input.TextArea rows={3} maxLength={4000} showCount placeholder="介绍这个应用能做什么" />
                     </Form.Item>
-                    {app.visibility === 'restricted' ? (
-                      <Alert
-                        type="info"
-                        showIcon
-                        style={{ marginBottom: 16 }}
-                        message="当前应用由管理员设置为指定范围可见；保存后会按下方选择的范围生效。"
-                      />
-                    ) : null}
                     {app.isClone ? (
                       <Alert
                         type="info"

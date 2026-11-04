@@ -529,7 +529,7 @@ describe('公开可见性与发布', () => {
     const invalidVisibility = await fetch(`${base}/api/apps/rev-app/publish`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: ownerCookie },
-      body: JSON.stringify({ visibility: 'restricted' }),
+      body: JSON.stringify({ visibility: 'unsupported' }),
     });
     expect(invalidVisibility.status).toBe(400);
     const restorePublic = await fetch(`${base}/api/apps/rev-app/publish`, {
@@ -684,7 +684,7 @@ describe('passUser 沙箱 env 注入 AAP_SIGN_SECRET', () => {
     await getDb().insert(apps).values({
       id: 'admin-list-shape',
       name: '管理列表回归应用',
-      description: '确保异步 ACL 查询后的列表字段完整',
+      description: '确保管理列表字段完整',
       visibility: 'login',
       kind: 'upstream',
       upstream: 'http://127.0.0.1:8080',
@@ -697,16 +697,14 @@ describe('passUser 沙箱 env 注入 AAP_SIGN_SECRET', () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
         signSecret?: string;
-        apps: Array<{ id: string; name: string; description: string; upstream: string; allowGroupIds: number[]; allowUserIds: number[] }>;
+        apps: Array<{ id: string; name: string; description: string; upstream: string }>;
       };
       expect(body.signSecret).toBe(getSetting('AAP_SIGN_SECRET'));
       expect(body.apps.find((app) => app.id === 'admin-list-shape')).toMatchObject({
         id: 'admin-list-shape',
         name: '管理列表回归应用',
-        description: '确保异步 ACL 查询后的列表字段完整',
+        description: '确保管理列表字段完整',
         upstream: 'http://127.0.0.1:8080',
-        allowGroupIds: [],
-        allowUserIds: [],
       });
     } finally {
       await getDb().delete(apps).where(eq(apps.id, 'admin-list-shape'));
@@ -1160,9 +1158,29 @@ describe('登录 401 信息泄露收敛（P2-12）', () => {
     expect(body.uptimeSec).toBeUndefined();
 
     const ov = await fetch(`${base}/api/admin/overview`, { headers: { cookie: adminCookie } });
-    const ovBody = (await ov.json()) as { releaseVersion?: string; uptimeSec?: number };
+    const ovBody = (await ov.json()) as {
+      releaseVersion?: string;
+      uptimeSec?: number;
+      totals?: { users?: number; apps?: number; tokens30d?: number };
+      resources?: {
+        cpuPercent?: number | null;
+        memory?: { usedBytes?: number; totalBytes?: number; percent?: number };
+        network?: { available?: boolean; capacityMbps?: number };
+      };
+      planSubscriptions?: Array<{ planId: number; subscribers: number }>;
+    };
     expect(ovBody.releaseVersion).toBeTruthy();
     expect(typeof ovBody.uptimeSec).toBe('number');
+    expect(typeof ovBody.totals?.users).toBe('number');
+    expect(typeof ovBody.totals?.apps).toBe('number');
+    expect(typeof ovBody.totals?.tokens30d).toBe('number');
+    expect(ovBody.resources?.cpuPercent === null || typeof ovBody.resources?.cpuPercent === 'number').toBe(true);
+    expect(typeof ovBody.resources?.memory?.usedBytes).toBe('number');
+    expect(typeof ovBody.resources?.memory?.totalBytes).toBe('number');
+    expect(typeof ovBody.resources?.memory?.percent).toBe('number');
+    expect(typeof ovBody.resources?.network?.available).toBe('boolean');
+    expect(ovBody.resources?.network?.capacityMbps).toBe(10);
+    expect(Array.isArray(ovBody.planSubscriptions)).toBe(true);
   });
 
   it('/api/dev/guide 匿名 401、登录可见', async () => {

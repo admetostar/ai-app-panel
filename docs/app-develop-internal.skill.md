@@ -35,7 +35,7 @@ version: 2.6.1
 | 2 | **WebSocket 透传在 P0**（AI 聊天应用依赖；`upgrade` 事件 → 路径匹配 → 鉴权 → TCP 双向管道） |
 | 3 | **语言 Node.js/TypeScript**（复用参考实现已验证逻辑；ACME 用 acme-client） |
 | 4 | **单组织**，不做多租户/白标 |
-| 5 | **计费三种价值**：会员订阅（×应用可见性）支持人民币/美元人工确认与独立积分兑换；LLM Token 充值仅服务模型用量，不与积分混用；不做任意 SQL 级按量账单 |
+| 5 | **计费三种价值**：会员订阅提供应用创建、克隆等权益并支持人民币/美元人工确认与独立积分兑换；LLM Token 充值仅服务模型用量，不与积分混用；不做任意 SQL 级按量账单 |
 | 6 | **品牌全数据化**：logo/站名/主题/页脚/ICP+公安备案号组件；内置 ≥6 套主题（复用 fnos-dashboard 主题方法论） |
 | 7 | **分发两手抓（2026-09 定稿）**：飞牛 FPK = **原生形态**（载荷 `deploy/native` 自包含包 + `install_dep_apps=python312`，SQLite 内置，不用飞牛 database）+ Docker（非飞牛用户，DATABASE_URL/SQLite 均可）；**两形态都是端口主入口**（FPK 端口向导化 wizard_port），路径行为完全一致 |
 | 8 | **飞牛桌面图标 = 纯快捷方式（2026-09 定稿）**：type=url 端口入口新标签页打开面板，**不经统一网关**（跨源 iframe 会被门户 frame-ancestors 拦截，不放行）；面板与全部业务都走门户自有端口与账号体系（不消费 X-Trim-* 身份头、不做 NAS 管理员免密建会话——原 F3 免密通道废弃；网关 socket/前缀能力服务端保留休眠） |
@@ -178,7 +178,7 @@ M1–M4 核心已交付；测试数与实装明细以 `docs/DEVELOPMENT.md` 为�
 - **已实装**：路径反代全套（§二）、WS 双通道、passUser 自动签发/注入、自动 HTTPS（PEM 热替换 + ACME HTTP-01 + 续期）、本地账号+注册（验证码 SMTP/Resend/日志兜底 + 邀请码 + Turnstile 接口）、MFA（TOTP/Passkey/恢复码/步升/状态机）、用户中心四区、管理后台（总览/站点设置/应用管理/用户与注册/安全/通知通道/证书/LLM 网关/运营 九个功能域选项卡 + 左侧竖向首配向导）、Docker/FPK/CI(ghcr 多架构+FPK Release)、OIDC SSO（PKCE）
 - **M2 LLM 网关**：`/v1/chat/completions`（流式透传+末帧 usage 捕获）、`/v1/models` 聚合；凭据 `aapk_*`（SHA-256 存储、可吊销、按凭据限流）；路由 priority+加权 failover；`llm_ledger` append-only 账本 + `llm_balance_cache` 预检（402）+ 事后校正；结算循环每分钟对账；凭据对全部包上传即自动签发（AAP_TOKEN 同时是 egress 出站凭据；tokenEnc 加密保管，`getAppLlmProvision` 供 M4 运行时注入），LLM 花费面由 `appLlmAllowed` 按 manifest.capabilities 在 `/v1` 直连与 `/api/aap/llm/chat` 双侧闸（审计 F1：签发广度与能力闸解耦，勿改回「未声明不签发」——会断非 llm 包出站）；应用删除连带吊销全部网关凭据
 - **M3 计费**：功能订阅套餐（人民币/美元人工确认；积分独立于 Token，事务扣分后立即开通；开通入分组/续费顺延/到期自动降级出组）；注册赠送积分；额度充值与**卡券码**（AAP-XXXX-XXXX-XXXX，原子兑换防双花，可作废/设有效期）；运营面板（套餐 CRUD/订单确认/余额消耗排行/应用热度/成本毛利）；manual 支付渠道首发（adapter 接口可扩）
-- **可见性模型（P）**：public / login / restricted（ACL：分组或账号任一命中，空=全部登录用户）/ private（仅归属者，用户自建默认，门户对他人隐藏）；用户分组 = 订阅等级载体
+- **可见性模型（P）**：public / login（站内共享）/ private（仅归属者，用户自建默认，门户对他人隐藏）；旧受限应用迁移为 login。用户分组用于订阅等级与权益管理，与应用可见范围分开管理。
 - **通知通道**：MAIL_PROVIDER = smtp | resend（Resend 仅需 API Key，from 留空用沙箱发件人）；日志兜底（内网离线）；`SHOW_TOPUP_PANEL` / `SHOW_ORDERS_PANEL` 分别控制用户中心额度充值与订单卡片，默认隐藏
 - **门户页面元素**：兼容路径/门户外壳可显示 portal chrome；新的独立应用 origin 不注入门户脚本或统一悬浮条，应用不得依赖平台导航注入
 - **管理后台体验（P）**：九个功能域选项卡（总览/站点设置/应用管理/用户与注册/安全/通知通道/证书/LLM 网关/运营）+ 左侧竖向首配向导（可收起，完成自动隐藏）；设置项控件化（choiceLabels 下拉/bool 开关/int 数字框/取色器/密码+审计查看）与 `exclusiveOf` 互斥渲染（SMTP vs Resend）；展示降噪（短标签+tooltip 收纳描述与配置键，仅 defaultsWork=false 显示「需配置」）；密钥查看端点 `GET /api/admin/secrets/:key`（记审计）

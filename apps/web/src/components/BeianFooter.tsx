@@ -15,37 +15,39 @@ export function BeianFooter({ branding }: { branding: BrandingInfo }) {
   const hasFirstLine = configured || Boolean(icp) || Boolean(police);
   return (
     <footer className="aap-footer">
-      {hasFirstLine ? (
-        <div>
-          {configured ? <span>{branding.footerText}</span> : null}
-          {configured && (icp || police) ? <span> · </span> : null}
-          {icp ? (
-            <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer noopener">
-              {icp}
+      <div className="aap-footer__inner">
+        {hasFirstLine ? (
+          <div>
+            {configured ? <span>{branding.footerText}</span> : null}
+            {configured && (icp || police) ? <span> · </span> : null}
+            {icp ? (
+              <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer noopener">
+                {icp}
+              </a>
+            ) : null}
+            {icp && police ? <span> · </span> : null}
+            {police && policeDigits ? (
+              <a
+                href={`https://beian.mps.gov.cn/#/query/webSearch?code=${encodeURIComponent(policeDigits)}`}
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                <span style={{ marginRight: 4 }}>🛡</span>
+                {police}
+              </a>
+            ) : null}
+          </div>
+        ) : null}
+        <div style={{ marginTop: hasFirstLine ? 4 : 0 }}>
+          © {year}{' '}
+          {configured ? (
+            <span>{branding.siteName}</span>
+          ) : (
+            <a href={PROJECT_URL} target="_blank" rel="noreferrer noopener">
+              {branding.siteName}
             </a>
-          ) : null}
-          {icp && police ? <span> · </span> : null}
-          {police && policeDigits ? (
-            <a
-              href={`https://beian.mps.gov.cn/#/query/webSearch?code=${encodeURIComponent(policeDigits)}`}
-              target="_blank"
-              rel="noreferrer noopener"
-            >
-              <span style={{ marginRight: 4 }}>🛡</span>
-              {police}
-            </a>
-          ) : null}
+          )}
         </div>
-      ) : null}
-      <div style={{ marginTop: hasFirstLine ? 4 : 0 }}>
-        © {year}{' '}
-        {configured ? (
-          <span>{branding.siteName}</span>
-        ) : (
-          <a href={PROJECT_URL} target="_blank" rel="noreferrer noopener">
-            {branding.siteName}
-          </a>
-        )}
       </div>
     </footer>
   );
