@@ -22,6 +22,7 @@ import {
   getAppCloneQuota,
   listPlans,
   reconcileRecent,
+  updatePlan,
 } from '../lib/billing.js';
 import { appendLedger, cachedBalance, precheck, recomputeBalance } from '../lib/llm.js';
 import { HttpError } from '../lib/httpError.js';
@@ -54,6 +55,45 @@ afterAll(async () => {
 describe('M3 计费闭环（D1/D2）', () => {
   it('套餐列表保留权益等级', async () => {
     expect(await (await listPlans()).find((plan) => plan.id === planId)?.tier).toBe(3);
+  });
+
+  it('编辑套餐后即时更新订阅者的应用名额；Token、价格和时长只作用于后续开通或续订', async () => {
+    const editablePlanId = await createPlan({
+      name: '可调整权益',
+      groupId,
+      durationDays: 30,
+      priceFen: 1000,
+      tokenGrant: 1000,
+      appUploadLimit: 1,
+      appCloneLimit: 0,
+    });
+    const [subscriber] = await getDb()
+      .insert(users)
+      .values({ kind: 'local', username: 'editable-plan-user', name: '套餐编辑用户', createdAt: Date.now() })
+      .returning({ id: users.id });
+    const subscriberId = subscriber!.id;
+    await activateMembership(subscriberId, editablePlanId);
+    const originalExpiry = (await getDb().select().from(users).where(eq(users.id, subscriberId)))[0]!.membershipExpiresAt;
+
+    await updatePlan(editablePlanId, {
+      name: '可调整权益（新）',
+      durationDays: 90,
+      priceFen: 2500,
+      tokenGrant: 9000,
+      tier: 2,
+      appUploadLimit: 3,
+      appCloneLimit: 2,
+    });
+
+    expect(await getAppUploadQuota(subscriberId)).toMatchObject({ limit: 3, used: 0, remaining: 3 });
+    expect(await getAppCloneQuota(subscriberId)).toMatchObject({ limit: 2, used: 0, remaining: 2 });
+    expect((await getDb().select().from(users).where(eq(users.id, subscriberId)))[0]!.membershipExpiresAt).toBe(originalExpiry);
+    expect(await cachedBalance(subscriberId)).toBe(1000);
+
+    await activateMembership(subscriberId, editablePlanId);
+    expect(await cachedBalance(subscriberId)).toBe(10_000);
+    expect((await getDb().select().from(users).where(eq(users.id, subscriberId)))[0]!.membershipExpiresAt)
+      .toBe(originalExpiry! + 90 * 86_400_000);
   });
 
   it('套餐保存可选兑换码链接，并拒绝非 HTTP(S) 链接', async () => {

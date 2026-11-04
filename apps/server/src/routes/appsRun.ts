@@ -28,7 +28,7 @@ import { requireAuth, requireStepUp } from '../lib/auth.js';
 import { canAccess, isVisibleInPortal } from '../gateway/registry.js';
 import { appSiteDir, isAwpkFilename } from '../gateway/staticApp.js';
 import { loopbackPlatformPort, runInvoked } from '../lib/sandbox.js';
-import { ensureAutoProvisionedToken } from '../lib/llm.js';
+import { ensureAutoProvisionedToken, modelCatalog } from '../lib/llm.js';
 import { config } from '../config/index.js';
 import { storePackageFiles, validateManifest, parseEnvSpec, type ManifestEnvVar } from '../gateway/staticApp.js';
 import { audit } from '../lib/audit.js';
@@ -412,6 +412,7 @@ appsRunRouter.get(
     if (app.kind !== 'package') throw new HttpError(400, 'NOT_PACKAGE', '环境变量仅对 .awpk 包生效');
 
     const spec = await envSpecOfStored(app.id);
+    const hasModelVariable = Object.keys(spec).some((name) => /(?:^|_)MODEL(?:_NAME)?$/i.test(name));
     const rows = await getDb()
       .select({ name: appEnvVars.name, valueEnc: appEnvVars.valueEnc, isSecret: appEnvVars.isSecret })
       .from(appEnvVars)
@@ -451,7 +452,7 @@ appsRunRouter.get(
     });
     // 存储里还有、当前 manifest 已不声明的（版本更新删了声明）：列出便于清理
     const undeclared = rows.filter((r) => !(r.name in spec)).map((r) => r.name);
-    res.json({ declared, undeclared });
+    res.json({ declared, undeclared, ...(hasModelVariable ? { models: await modelCatalog() } : {}) });
   }),
 );
 

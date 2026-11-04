@@ -236,6 +236,7 @@ def llm_json(system: str, user_content: str, identity) -> dict:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user_content},
             ],
+            model=os.environ["MODEL"],
             identity=identity,
         )
     except Exception as err:  # noqa: BLE001

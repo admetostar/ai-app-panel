@@ -110,15 +110,43 @@ adminBillingRouter.put(
       pricePoints?: number;
       redeemUrl?: unknown;
       tokenGrant?: number;
+      tier?: number;
       appUploadLimit?: number;
       appCloneLimit?: number;
       enabled?: boolean;
     };
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, 'INVALID_PLAN_ID', '套餐编号无效');
+    if (body.name !== undefined && (typeof body.name !== 'string' || !body.name.trim())) {
+      throw new HttpError(400, 'INVALID_INPUT', '计划名称不能为空');
+    }
+    if (body.durationDays !== undefined && ![30, 90, 365].includes(Number(body.durationDays))) {
+      throw new HttpError(400, 'INVALID_INPUT', '套餐有效期必须是 30、90 或 365 天');
+    }
+    if (body.tokenGrant !== undefined && (!Number.isSafeInteger(Number(body.tokenGrant)) || Number(body.tokenGrant) < 0)) {
+      throw new HttpError(400, 'INVALID_INPUT', 'Token 额度必须是非负安全整数');
+    }
+    if (body.tier !== undefined && (!Number.isInteger(Number(body.tier)) || Number(body.tier) < 0 || Number(body.tier) > 5)) {
+      throw new HttpError(400, 'INVALID_INPUT', '权益等级必须是 0 到 5 的整数');
+    }
+    if (body.appUploadLimit !== undefined && (!Number.isInteger(Number(body.appUploadLimit)) || Number(body.appUploadLimit) < 0)) {
+      throw new HttpError(400, 'INVALID_INPUT', '可创建应用数量必须是非负整数');
+    }
     if (body.appCloneLimit !== undefined && (!Number.isInteger(Number(body.appCloneLimit)) || Number(body.appCloneLimit) < 0)) {
       throw new HttpError(400, 'INVALID_INPUT', '可克隆应用数量必须是非负整数');
     }
-    await updatePlan(Number(req.params.id), body);
-    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'billing.plan.update', { id: Number(req.params.id) });
+    if (body.enabled !== undefined && typeof body.enabled !== 'boolean') {
+      throw new HttpError(400, 'INVALID_INPUT', '套餐状态无效');
+    }
+    await updatePlan(id, {
+      ...body,
+      durationDays: body.durationDays === undefined ? undefined : Number(body.durationDays),
+      tokenGrant: body.tokenGrant === undefined ? undefined : Number(body.tokenGrant),
+      tier: body.tier === undefined ? undefined : Number(body.tier),
+      appUploadLimit: body.appUploadLimit === undefined ? undefined : Number(body.appUploadLimit),
+      appCloneLimit: body.appCloneLimit === undefined ? undefined : Number(body.appCloneLimit),
+    });
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'billing.plan.update', { id });
     res.json({ ok: true });
   }),
 );

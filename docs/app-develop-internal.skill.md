@@ -1,11 +1,15 @@
 ﻿---
 name: app-develop-internal
 description: "涉及网关 / LLM 网关 / 沙箱 / 计费 / 账号安全的架构设计或 ADR 复核，或 .awpk 接口面（manifest / aap.*）契约变更时用。常规 bug 修复、UI/文案/测试改动不需要。"
-version: 2.6.1
+version: 2.6.3
 ---
 
 # ai-app-panel 开发指南
 
+> v2.6.3 变更：应用开发规范 v0.3.3 要求更新同一 AWPK 应用时递增 `manifest.version`，未知当前版本先询问，不得重置或猜测。
+>
+> v2.6.2 变更：应用开发规范 v0.3.2 统一规定 LLM 应用使用必填 `env.MODEL`，模型从门户目录配置并显式传入 SDK。
+>
 > v2.6.0 变更：应用包契约切换为 AWPK（ZIP 容器，必须使用 `.awpk` 扩展名）；上传、预览与安装拒绝旧 `.asp-app`/`.zip` 扩展名；用户上传 Python 应用的 requirements 也在正式安装前执行依赖安装。
 >
 > v2.6.1 变更：未配置 `SITE_DOMAIN` 时，应用卡片使用同源 `/app/<id>/` 路径和 iframe 沙箱，不再生成 `<id>.localhost:<内部服务端口>`；配置域名后仍使用独立应用 origin。
@@ -111,6 +115,8 @@ PoW 登录 proof-of-work、登录失败计数、IP 封禁（累犯时长倍增�
 
 用户上传 **AWPK**（ZIP 容器，文件扩展名必须为 `.awpk`；内容为 `manifest.json` + 静态 HTML 或 Python `mod.py`），遵循本技能出入参规范。服务端校验扩展名、ZIP 结构和 manifest，不要求包签名或发布者公钥登记；`.asp-app` 与通用 `.zip` 不作兼容。用户首次上传时按有效订阅的“可创建应用”额度检查托管应用总数（私有与公开均计入），更新已有应用不增加名额；通过校验后应用立即安装为**私有**，用户可自行试运行并发布为公开，公开发布不限制数量，无管理员审核队列。
 
+- **更新版本号**：Agent 重新生成同一应用的更新包时必须提高 `manifest.version`，至少递增 PATCH；先查当前包/历史交付，无法确认时询问用户。服务端不负责自动递增或拒绝重复版本号，交付说明须列出旧版到新版。
+
 - manifest 能力声明：`capabilities`（llm/db/storage）+ `network`（**出站域名白名单**）+ `runtime`（**invoked 按调用 | persistent 持久服务**）+ `env`（环境变量/机密声明，§9.5）。LLM 按 `llm` 声明强制门控；db/storage 当前不做逐项运行时门控；上传无需签名
 - HTML 包：门户托管静态内容，通过应用独立 origin 访问；可使用本 origin 浏览器存储，不得访问门户会话或 DOM
 - Python 包：沙箱子进程。invoked = 每次调用新进程执行后销毁；persistent = 长驻进程提供网页/HTTP API，经应用独立 origin 反代。默认 invoked 超时 30 秒、全局并发 8/队列 64；persistent 默认最多 12 个进程、空闲 300 秒回收、最多重启 3 次。当前无 per-app CPU/内存硬限额，网络守卫是 Python 层纵深防御而非硬隔离
@@ -167,6 +173,7 @@ office-tool 后台丑且交互差是已知痛点；新面板七条要求：① �
 - **存储与保密**：值一律 AES-256-GCM 加密落盘（`app_env_vars` 表），secret 只写不读（仅回尾 4 位 hint）；审计只记变量名不记值。
 - **注入与拦截**：`baseEnv()` 在 invoked/persistent 沙箱启动时统一注入（persistent 须在 mod.py 执行前挂 `builtins.aap`——顶层阻塞在 `app.run()` 后注入永不生效）；必填缺配 invoked 执行 400 ENV_MISSING / persistent 拉起 503。
 - **配套 egress**：`aap.http.fetch(url, timeout, headers)` 支持自定义请求头（逐跳与托管头剥除、上游状态码透传），与规范 §3.4 接口面同步。
+- **LLM 模型配置约定**：声明 `llm` 的新包必须声明必填 `env.MODEL`，由应用作者在门户可用模型目录中选择；新包统一使用 `MODEL`，门户兼容既有 `OCR_MODEL` / `MODEL_NAME` 等变量名。
 
 表结构 / 配置 API / 管理入口 / egress 实现细节见 `docs/DEVELOPMENT.md` §9（单一来源，勿在此重复维护）。
 

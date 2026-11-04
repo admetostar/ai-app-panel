@@ -25,6 +25,6 @@ export const GUIDE_FAQ_ITEMS = [
   },
   {
     question: '能同时有多个版本吗？',
-    answer: '更新时让 Agent 升级版本号并重新打包，再到「用户中心 → 我的应用」更新应用并重新试运行。',
+    answer: '平台不会自动保留多个可切换版本。更新时先确认当前版本，让 Agent 至少递增 manifest.version 的 PATCH 位后重新打包，再到「用户中心 → 我的应用」更新应用并重新试运行。',
   },
 ] as const;

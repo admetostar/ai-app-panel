@@ -1642,6 +1642,7 @@ function TlsTab(): ReactNode {
           {st?.acme.inProgress ? (
             <div className="aap-tls-progress">
               <Steps
+                className="aap-tls-progress__steps"
                 size="small"
                 current={phaseIndex}
                 status={st.acme.lastError ? 'error' : 'process'}
@@ -1859,19 +1860,20 @@ function LlmTab(): ReactNode {
         }
       >
         <Table<LlmUpstream>
+          className="aap-llm-upstreams-table"
           rowKey="id"
           size="small"
           pagination={false}
           dataSource={upstreamsQ.data?.upstreams ?? []}
           columns={[
-            { title: '名称', dataIndex: 'name', width: 140 },
+            { title: '名称', dataIndex: 'name', width: 175 },
             { title: 'Base URL', dataIndex: 'baseUrl', ellipsis: true },
-            { title: 'Key', width: 80, render: (_, r) => (r.hasKey ? <Tag color="green">已配置</Tag> : <Tag>无</Tag>) },
+            { title: 'Key', width: 90, render: (_, r) => (r.hasKey ? <Tag color="green">已配置</Tag> : <Tag>无</Tag>) },
             {
               title: '操作',
-              width: 150,
+              width: 220,
               render: (_, r) => (
-                <Space size="small">
+                <Space size="small" wrap>
                   <Button size="small" onClick={() => void testUpstream(r.id)} loading={upTest[r.id]?.loading}>
                     测试
                   </Button>
@@ -1902,7 +1904,7 @@ function LlmTab(): ReactNode {
         ))}
         <Form form={upForm} layout="inline" style={{ marginTop: 10, rowGap: 8 }}>
           <Form.Item name="name" rules={[{ required: true, message: '必填' }]}>
-            <Input placeholder="名称（如 智谱）" style={{ width: 140 }} />
+            <Input placeholder="名称（如 智谱）" style={{ width: 175 }} />
           </Form.Item>
           <Form.Item name="baseUrl" rules={[{ required: true, message: '必填' }]}>
             <Input placeholder="https://.../compatible-mode/v1" style={{ width: 300 }} />
@@ -2224,6 +2226,12 @@ function planDurationLabel(days: number): string {
   return days >= 100_000 ? '长期' : `${days} 天`;
 }
 
+function planDurationUnit(days: number): string {
+  if (days === 90) return 'quarter';
+  if (days === 365) return 'year';
+  return 'month';
+}
+
 function OpsTab(): ReactNode {
   const qc = useQueryClient();
   const usersQ = useQuery({ queryKey: ['admin-users'], queryFn: () => api<{ users: PublicUser[] }>('/api/admin/users') });
@@ -2236,9 +2244,46 @@ function OpsTab(): ReactNode {
   const priceCurrency = Form.useWatch('priceCurrency', planForm) as PlanRowUI['priceCurrency'] | undefined;
   const [planModalOpen, setPlanModalOpen] = useState(false);
   const [planSaving, setPlanSaving] = useState(false);
+  const [editingPlan, setEditingPlan] = useState<PlanRowUI | null>(null);
 
   const ops = opsQ.data;
   const grossMargin = ops ? ops.revenue30d - ops.cost30d : 0;
+  const openCreatePlan = () => {
+    setEditingPlan(null);
+    planForm.resetFields();
+    planForm.setFieldsValue({
+      durationUnit: 'month',
+      tier: 0,
+      appUploadLimit: 10,
+      appCloneLimit: 0,
+      tokenGrant: 0,
+      priceCurrency: 'CNY',
+      priceAmount: 0,
+    });
+    setPlanModalOpen(true);
+  };
+  const openEditPlan = (plan: PlanRowUI) => {
+    setEditingPlan(plan);
+    planForm.resetFields();
+    planForm.setFieldsValue({
+      name: plan.name,
+      groupId: plan.groupId,
+      tier: plan.tier,
+      durationUnit: planDurationUnit(plan.durationDays),
+      appUploadLimit: plan.appUploadLimit,
+      appCloneLimit: plan.appCloneLimit,
+      tokenGrant: plan.tokenGrant,
+      priceCurrency: plan.priceCurrency,
+      priceAmount:
+        plan.priceCurrency === 'CNY'
+          ? plan.priceFen / 100
+          : plan.priceCurrency === 'USD'
+            ? plan.priceCents / 100
+            : plan.pricePoints,
+      redeemUrl: plan.redeemUrl ?? '',
+    });
+    setPlanModalOpen(true);
+  };
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
@@ -2259,12 +2304,12 @@ function OpsTab(): ReactNode {
         </Card>
       </div>
 
-      <Card size="small" title="功能订阅套餐" extra={<Button type="primary" onClick={() => setPlanModalOpen(true)}>创建套餐</Button>}>
+      <Card size="small" title="功能订阅套餐" extra={<Button type="primary" onClick={openCreatePlan}>创建套餐</Button>}>
         <Table<PlanRowUI>
           rowKey="id"
           size="small"
           pagination={false}
-          scroll={{ x: 1000 }}
+          scroll={{ x: 1080 }}
           dataSource={plansQ.data?.plans ?? []}
           columns={[
             { title: '计划名称', dataIndex: 'name', width: 150 },
@@ -2278,9 +2323,10 @@ function OpsTab(): ReactNode {
             { title: '状态', width: 80, render: (_, r) => (r.enabled ? <Tag color="green">在售</Tag> : <Tag>停售</Tag>) },
             {
               title: '操作',
-              width: 160,
+              width: 240,
               render: (_, r) => (
-                <Space size="small">
+                <Space size="small" wrap>
+                  <Button size="small" onClick={() => openEditPlan(r)}>编辑</Button>
                   <Button size="small" onClick={async () => {
                     await api(`/api/admin/billing/plans/${r.id}`, { method: 'PUT', json: { enabled: !r.enabled } });
                     void qc.invalidateQueries({ queryKey: ['billing-plans'] });
@@ -2303,18 +2349,29 @@ function OpsTab(): ReactNode {
       </Card>
 
       <Modal
-        title="创建功能订阅套餐"
+        title={editingPlan ? `编辑功能订阅套餐：${editingPlan.name}` : '创建功能订阅套餐'}
         open={planModalOpen}
         confirmLoading={planSaving}
-        okText="创建套餐"
+        okText={editingPlan ? '保存修改' : '创建套餐'}
         cancelText="取消"
         onCancel={() => {
           setPlanModalOpen(false);
+          setEditingPlan(null);
           planForm.resetFields();
         }}
         onOk={() => planForm.submit()}
         destroyOnClose
+        width={600}
       >
+        {editingPlan ? (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="修改范围与生效方式"
+            description="可创建/克隆应用数量修改后会立即影响该计划的所有有效订阅者；已创建的应用不会被删除，但额度低于已用数量时将不能继续创建。Token 赠额、价格和有效期仅用于之后开通或续订，不会改变现有余额或当前到期时间。权益分组暂不支持修改。"
+          />
+        ) : null}
         <Form
           form={planForm}
           layout="vertical"
@@ -2322,29 +2379,36 @@ function OpsTab(): ReactNode {
           onFinish={async (values) => {
             setPlanSaving(true);
             try {
-              await api('/api/admin/billing/plans', {
-                method: 'POST',
-                json: {
-                  name: values.name,
-                  groupId: Number(values.groupId),
-                  durationDays: PLAN_DURATION_DAYS[String(values.durationUnit)],
-                  tier: Number(values.tier),
-                  appUploadLimit: Number(values.appUploadLimit),
-                  appCloneLimit: Number(values.appCloneLimit ?? 0),
-                  tokenGrant: Number(values.tokenGrant ?? 0),
-                  priceCurrency: values.priceCurrency,
-                  priceFen: values.priceCurrency === 'CNY' ? Math.round(Number(values.priceAmount ?? 0) * 100) : 0,
-                  priceCents: values.priceCurrency === 'USD' ? Math.round(Number(values.priceAmount ?? 0) * 100) : 0,
-                  pricePoints: values.priceCurrency === 'POINTS' ? Number(values.priceAmount ?? 0) : 0,
-                  redeemUrl: values.redeemUrl?.trim() || null,
+              const payload = {
+                name: values.name,
+                durationDays: PLAN_DURATION_DAYS[String(values.durationUnit)],
+                tier: Number(values.tier),
+                appUploadLimit: Number(values.appUploadLimit),
+                appCloneLimit: Number(values.appCloneLimit ?? 0),
+                tokenGrant: Number(values.tokenGrant ?? 0),
+                priceCurrency: values.priceCurrency,
+                priceFen: values.priceCurrency === 'CNY' ? Math.round(Number(values.priceAmount ?? 0) * 100) : 0,
+                priceCents: values.priceCurrency === 'USD' ? Math.round(Number(values.priceAmount ?? 0) * 100) : 0,
+                pricePoints: values.priceCurrency === 'POINTS' ? Number(values.priceAmount ?? 0) : 0,
+                redeemUrl: values.redeemUrl?.trim() || null,
+              };
+              await api(
+                editingPlan ? `/api/admin/billing/plans/${editingPlan.id}` : '/api/admin/billing/plans',
+                {
+                  method: editingPlan ? 'PUT' : 'POST',
+                  json: {
+                    ...payload,
+                    ...(editingPlan ? {} : { groupId: Number(values.groupId) }),
+                  },
                 },
-              });
-              message.success('套餐已创建');
+              );
+              message.success(editingPlan ? '套餐已更新' : '套餐已创建');
               setPlanModalOpen(false);
+              setEditingPlan(null);
               planForm.resetFields();
               void qc.invalidateQueries({ queryKey: ['billing-plans'] });
             } catch (err) {
-              message.error(err instanceof Error ? err.message : '创建失败');
+              message.error(err instanceof Error ? err.message : editingPlan ? '更新失败' : '创建失败');
             } finally {
               setPlanSaving(false);
             }
@@ -2353,8 +2417,17 @@ function OpsTab(): ReactNode {
           <Form.Item name="name" label="计划名称" rules={[{ required: true, message: '请填写计划名称' }]}>
             <Input maxLength={64} placeholder="例如：专业版" />
           </Form.Item>
-          <Form.Item name="groupId" label="分组" rules={[{ required: true, message: '请选择分组' }]}>
-            <Select placeholder="选择订阅权益分组" options={groupsQ.data?.groups.map((group) => ({ value: group.id, label: group.name }))} />
+          <Form.Item
+            name="groupId"
+            label="分组"
+            rules={editingPlan ? undefined : [{ required: true, message: '请选择分组' }]}
+            extra={editingPlan ? '套餐关联分组决定应用访问权限，编辑时不可更换。' : undefined}
+          >
+            <Select
+              disabled={editingPlan !== null}
+              placeholder="选择订阅权益分组"
+              options={groupsQ.data?.groups.map((group) => ({ value: group.id, label: group.name }))}
+            />
           </Form.Item>
           <Form.Item name="tier" label="权益等级" rules={[{ required: true, message: '请选择权益等级' }]}>
             <Select

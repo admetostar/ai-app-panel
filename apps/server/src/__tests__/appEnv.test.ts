@@ -16,7 +16,7 @@ import { loadConfig } from '../config/index.js';
 import { validateManifest } from '../gateway/staticApp.js';
 import { stopAllPersistent, baseEnv } from '../lib/sandbox.js';
 import { encryptSecret } from '../lib/cryptoSecrets.js';
-import { appEnvVars, apps } from '../db/schema.js';
+import { appEnvVars, apps, llmRoutes, llmUpstreams } from '../db/schema.js';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -25,6 +25,7 @@ let base: string;
 let dir: string;
 let adminCookie = '';
 let userCookie = '';
+let adminId = 0;
 let pythonOk = (() => {
   try {
     const output = execFileSync(process.env.PYTHON_BIN || 'python3', ['-c', 'print(1)'], { stdio: 'pipe' }).toString().trim();
@@ -85,7 +86,7 @@ beforeAll(async () => {
   await getDb()
     .insert(users)
     .values({ kind: 'local', username: 'admin', name: '管理员', role: 'admin', mfaEnabled: true, createdAt: Date.now() });
-  const adminId = await (await getDb().select().from(users))[0]!.id;
+  adminId = (await getDb().select().from(users))[0]!.id;
   // 直建 full 会话（mfaEnabled=true 时 HTTP 登录只给半登录态，过不了 requireAuth）
   adminCookie = await sessionCookieFor(adminId);
   await getDb()
@@ -107,6 +108,59 @@ afterAll(async () => {
   gw.close();
   await closeDb();
   await teardownTestDb(dir);
+});
+
+describe('MODEL 环境变量模型目录', () => {
+  it('仅返回管理后台已启用的模型路由', async () => {
+    const now = Date.now();
+    await getDb().insert(apps).values({
+      id: 'modelcatalogtool',
+      name: '模型目录测试包',
+      kind: 'package',
+      ownerUserId: adminId,
+      manifestJson: JSON.stringify({
+        env: {
+          MODEL: { required: true },
+          OCR_MODEL: { required: false, default: 'test-model', description: '旧模型变量兼容' },
+        },
+      }),
+      upstream: '',
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const [upstream] = await getDb()
+      .insert(llmUpstreams)
+      .values({
+        name: '环境变量测试上游',
+        baseUrl: 'https://example.test/v1',
+        apiKeyEnc: encryptSecret('test-key'),
+        createdAt: now,
+      })
+      .returning({ id: llmUpstreams.id });
+    await getDb().insert(llmRoutes).values([
+      {
+        model: 'test-model',
+        upstreamId: upstream!.id,
+        upstreamModel: 'upstream-test-model',
+        createdAt: now,
+      },
+      {
+        model: 'disabled-model',
+        upstreamId: upstream!.id,
+        upstreamModel: 'upstream-disabled-model',
+        enabled: false,
+        createdAt: now,
+      },
+    ]);
+
+    const response = await fetch(`${base}/api/apps/modelcatalogtool/env`, { headers: { cookie: adminCookie } });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      models: ['test-model'],
+      declared: [{ name: 'MODEL', required: true }, { name: 'OCR_MODEL', default: 'test-model' }],
+    });
+  });
 });
 
 // ---------- manifest.env 声明校验（纯单元，不需要 python） ----------

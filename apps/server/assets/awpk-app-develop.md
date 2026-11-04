@@ -6,7 +6,13 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
 # app-develop.skill.md
 
 > ai-app-panel 应用开发规范 · 供开发 Agent 使用
-> 版本 v0.3.1（2026-11）· 配套平台 PRD v0.3+
+> 版本 v0.3.3（2026-11）· 配套平台 PRD v0.3+
+>
+> **v0.3.3 变更**：明确 AWPK 更新的 `manifest.version` 递增规则；每次生成用于替换既有应用的新包必须递增版本，并在交付前核对旧版本。
+>
+> **v0.3.2 变更**：声明 `llm` 能力的应用统一使用必填 `env.MODEL`，从门户模型目录选择并显式传给 `aap.llm.chat`；历史模型变量名继续兼容。
+>
+> **v0.3.2 变更**：声明 `llm` 能力的应用统一使用必填 `env.MODEL`，从门户模型目录选择并显式传给 `aap.llm.chat`；历史模型变量名继续兼容。
 >
 > **v0.3.1 变更**：补充未配置 `SITE_DOMAIN` 时的本地路径沙箱回退；需验证应用独立 origin 与浏览器存储时，应配置应用域名。
 >
@@ -68,6 +74,12 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
 }
 ```
 
+**应用版本号（强制）**：
+- `manifest.version` 使用 `MAJOR.MINOR.PATCH` 三段数字格式（例如 `1.2.3`）；新应用可从 `1.0.0` 开始。
+- 每次重新生成并交付用于更新同一应用的 `.awpk`，都必须比当前已安装/上次交付版本更高；即使只是修复、小改动或重打包，也至少递增 PATCH（`1.2.3` → `1.2.4`）。新增且向后兼容的功能递增 MINOR；不兼容变更递增 MAJOR，并将较低位归零。
+- 开始修改前先检查用户提供的现有 `manifest.json`、已有包或对话/项目记录，确定该应用当前版本；不能因为新一轮任务或上下文变化重置为 `1.0.0`，也不能重复使用已发布版本。若无法确认当前版本，先向用户询问，不能猜测。
+- 每次打包后再次核对新旧版本，并在交付说明中写明版本变化（例如 `1.2.3 → 1.2.4`）。版本号是作者侧更新契约；不要假设平台会自动递增或拒绝重复版本。
+
 **铁律**：
 1. `capabilities` 和 `network` 是应用的能力申请与出网边界声明；只声明应用实际需要的能力。上传不要求签名，修改后重新上传/更新。
 2. Agent 必须按本规范的接受清单和限制清单实现；不得自行增加平台 API、系统权限、网络出口或依赖安装途径。
@@ -124,7 +136,7 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
 
 ### 1.1 env——环境变量 / 机密声明（v0.2.2）
 
-需要外部配置（第三方 API key、模型名、阈值……）时，**在 manifest `env` 里声明，不要写死在代码里，更不要自己要求用户把 key 交给你**：
+需要外部配置（第三方 API key、阈值……）时，**在 manifest `env` 里声明，不要写死在代码里，更不要自己要求用户把 key 交给你**：
 
 ```jsonc
 "env": {
@@ -132,6 +144,8 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
   "变量名": { "required": true, "secret": true, "pattern": "^…$", "default": "…", "description": "…" }
 }
 ```
+
+**LLM 应用模型约定**：声明 `capabilities` 包含 `llm` 的应用必须在 `env` 中声明必填的 `MODEL`（`{"required": true}`），并通过 `os.environ["MODEL"]` 读取后显式传给 `aap.llm.chat(..., model=model)`。模型名由门户的可用模型目录选择；`MODEL` 不要声明为机密变量，不需要填写专属 `description`，也不要设置默认模型。现有包中的 `OCR_MODEL`、`MODEL_NAME` 等历史命名仍受门户模型选择器兼容，但新包统一使用 `MODEL`。
 
 | 字段 | 说明 |
 |---|---|
@@ -200,12 +214,14 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
 ### 3.1 `aap.llm.chat(messages, **opts)` — 调用大模型
 
 ```python
+import os
+
 resp = aap.llm.chat(
     messages=[
         {"role": "system", "content": "你是一个财务分析助手"},
         {"role": "user", "content": f"总结 {text} 的要点"},
     ],
-    model="glm-4.7",        # 可选；不填用平台默认模型
+    model=os.environ["MODEL"],  # 必填模型配置，见 §1.1
     temperature=0.7,         # 可选
     max_tokens=2000,         # 可选，建议写——影响预检额度预估
 )
@@ -324,6 +340,7 @@ aap.log.error("生成失败: %s", err)               # 失败（同时按规范�
 
 ```python
 # manifest: type=python, runtime=invoked, capabilities=["llm"]
+import os
 
 def handle(input: dict, aap) -> dict:
     """
@@ -340,6 +357,7 @@ def handle(input: dict, aap) -> dict:
                 {"role": "system", "content": "你是财务摘要助手，输出 JSON"},
                 {"role": "user", "content": f"股票 {code}，备注 {text}，生成三句话摘要"},
             ],
+            model=os.environ["MODEL"],
             max_tokens=800,
         )
     except Exception as err:                   # noqa: BLE001 — 顶层兜底
@@ -371,7 +389,10 @@ def home():
 
 @app.route("/generate", methods=["POST"])
 def generate():
-    resp = aap.llm.chat(messages=[{"role": "user", "content": request.form["topic"]}])
+    resp = aap.llm.chat(
+        messages=[{"role": "user", "content": request.form["topic"]}],
+        model=os.environ["MODEL"],
+    )
     return jsonify({"text": resp["content"]})
 
 if __name__ == "__main__":
@@ -385,7 +406,9 @@ if __name__ == "__main__":
 **manifest 与能力声明**
 
 - [ ] manifest 各字段齐备；`capabilities` / `network` / `runtime` / `env` 与代码实际行为严格一致，按需最小声明；仅 `llm` 当前由服务端对未声明调用强制拒绝，`db`/`storage` 声明目前不构成逐项运行时闸
+- [ ] 若这是既有应用的新更新包，已核对当前版本并递增 `manifest.version`（至少 PATCH）；交付说明标出旧版本 → 新版本，版本未知时先询问而非重置/猜测
 - [ ] 外部配置项已声明 manifest `env`（§1.1）：必填/可选、secret、pattern 划分正确，代码经 `os.environ` 读取，未声明平台保留变量名
+- [ ] 声明 `llm` 能力的包已声明必填 `env.MODEL`，代码显式将其传给 `aap.llm.chat`；不使用应用专属模型变量描述或硬编码模型
 - [ ] 没有硬编码任何密钥/令牌；没有绕过平台向使用者索要密钥（前端输入框收 key = 设计错误）
 
 **代码边界**

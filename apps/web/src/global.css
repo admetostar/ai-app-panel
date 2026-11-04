@@ -81,6 +81,8 @@ body {
 
 .aap-tls-progress {
   display: grid;
+  width: 100%;
+  box-sizing: border-box;
   min-width: 0;
   overflow: hidden;
   gap: 12px;
@@ -147,6 +149,24 @@ body {
 
 .aap-tls-progress .ant-steps-item {
   min-width: 0;
+}
+
+.aap-tls-progress__steps,
+.aap-tls-progress .ant-steps-item-content {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.aap-llm-upstreams-table,
+.aap-llm-upstreams-table .ant-table,
+.aap-llm-upstreams-table .ant-table-container {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.aap-llm-upstreams-table .ant-table-cell {
+  overflow-wrap: anywhere;
 }
 
 .aap-tls-progress > .ant-typography {

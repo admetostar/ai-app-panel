@@ -165,13 +165,24 @@ export async function updatePlan(id: number, patch: {
   pricePoints?: number;
   redeemUrl?: unknown;
   tokenGrant?: number;
+  tier?: number;
   appUploadLimit?: number;
   appCloneLimit?: number;
   enabled?: boolean;
 }): Promise<void> {
+  if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, 'INVALID_PLAN_ID', '套餐编号无效');
+  const existing = (await getDb().select({ id: membershipPlans.id }).from(membershipPlans).where(eq(membershipPlans.id, id)))[0];
+  if (!existing) throw new HttpError(404, 'PLAN_NOT_FOUND', '套餐不存在');
+
   const set: Partial<typeof membershipPlans.$inferInsert> = {};
-  if (patch.name !== undefined) set.name = patch.name.trim().slice(0, 64);
-  if (patch.durationDays !== undefined) set.durationDays = Math.max(1, patch.durationDays);
+  if (patch.name !== undefined) {
+    if (!patch.name.trim()) throw new HttpError(400, 'INVALID_PLAN_NAME', '计划名称不能为空');
+    set.name = patch.name.trim().slice(0, 64);
+  }
+  if (patch.durationDays !== undefined) {
+    if (![30, 90, 365].includes(patch.durationDays)) throw new HttpError(400, 'INVALID_DURATION', '套餐有效期必须是 30、90 或 365 天');
+    set.durationDays = patch.durationDays;
+  }
   if (patch.priceCurrency !== undefined) {
     if (!['CNY', 'USD', 'POINTS'].includes(patch.priceCurrency)) throw new HttpError(400, 'INVALID_CURRENCY', '不支持的套餐计价单位');
     set.priceCurrency = patch.priceCurrency;
@@ -185,10 +196,27 @@ export async function updatePlan(id: number, patch: {
       throw new HttpError(400, 'INVALID_PRICE', `${label}必须是 0 到 ${MAX_INTEGER_PRICE} 之间的整数`);
     }
   }
-  if (patch.tokenGrant !== undefined) set.tokenGrant = Math.max(0, patch.tokenGrant);
-  if (patch.appUploadLimit !== undefined) set.appUploadLimit = Math.max(0, patch.appUploadLimit);
-  if (patch.appCloneLimit !== undefined) set.appCloneLimit = Math.max(0, patch.appCloneLimit);
-  if (patch.enabled !== undefined) set.enabled = patch.enabled;
+  if (patch.tokenGrant !== undefined) {
+    if (!Number.isSafeInteger(patch.tokenGrant) || patch.tokenGrant < 0) throw new HttpError(400, 'INVALID_TOKEN_GRANT', 'Token 额度必须是非负安全整数');
+    set.tokenGrant = patch.tokenGrant;
+  }
+  if (patch.tier !== undefined) {
+    if (!Number.isInteger(patch.tier) || patch.tier < 0 || patch.tier > 5) throw new HttpError(400, 'INVALID_TIER', '权益等级必须是 0 到 5 的整数');
+    set.tier = patch.tier;
+  }
+  if (patch.appUploadLimit !== undefined) {
+    if (!Number.isInteger(patch.appUploadLimit) || patch.appUploadLimit < 0) throw new HttpError(400, 'INVALID_UPLOAD_LIMIT', '可创建应用数量必须是非负整数');
+    set.appUploadLimit = patch.appUploadLimit;
+  }
+  if (patch.appCloneLimit !== undefined) {
+    if (!Number.isInteger(patch.appCloneLimit) || patch.appCloneLimit < 0) throw new HttpError(400, 'INVALID_CLONE_LIMIT', '可克隆应用数量必须是非负整数');
+    set.appCloneLimit = patch.appCloneLimit;
+  }
+  if (patch.enabled !== undefined) {
+    if (typeof patch.enabled !== 'boolean') throw new HttpError(400, 'INVALID_ENABLED', '套餐状态无效');
+    set.enabled = patch.enabled;
+  }
+  if (Object.keys(set).length === 0) throw new HttpError(400, 'EMPTY_PLAN_UPDATE', '没有提供需要更新的套餐字段');
   await getDb().update(membershipPlans).set(set).where(eq(membershipPlans.id, id));
 }
 
