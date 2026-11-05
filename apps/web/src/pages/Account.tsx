@@ -1379,6 +1379,7 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
             className="aap-owned-apps-table"
             size="small"
             tableLayout="fixed"
+            scroll={{ x: 782 }}
             pagination={{ pageSize: 10, showSizeChanger: false }}
             loading={mine.isLoading}
             dataSource={mine.data?.apps ?? []}
