@@ -1,5 +1,5 @@
 /**
- * 用户中心（A4）：个人资料、邮箱换绑（验证码通道 + 步升认证）、
+ * 用户中心（A4）：个人资料、邮箱/手机号换绑（验证码 + 步升认证）、
  * 登录会话列表与踢下线、账单占位（M3）、注销（7 天冷静期可撤回）。
  */
 import { Router } from 'express';
@@ -16,6 +16,7 @@ import { activateMembership, assertMembershipTierAllowed, cancelOrder, createOrd
 import { redeem as redeemCodeLib } from '../lib/redeem.js';
 import { audit } from '../lib/audit.js';
 import { recomputeBalance } from '../lib/llm.js';
+import { aliyunSmsConfigured } from '../lib/aliyunSms.js';
 
 export const userRouter = Router();
 
@@ -40,6 +41,7 @@ userRouter.use('/user', (req, res, next) => {
 });
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_RE = /^1[3-9]\d{9}$/;
 const MAX_AVATAR_BYTES = 100 * 1024;
 
 userRouter.get(
@@ -118,6 +120,46 @@ userRouter.post(
     if (taken && taken.id !== req.user!.id) throw new HttpError(409, 'EMAIL_TAKEN', '邮箱已被其他账号占用');
     await getDb().update(users).set({ email: newEmail }).where(eq(users.id, req.user!.id));
     await audit(`user:${req.user!.id}`, req.clientIp ?? null, 'user.email.changed', {});
+    res.json({ ok: true });
+  }),
+);
+
+userRouter.post(
+  '/user/phone/change/start',
+  requireStepUp,
+  h(async (req, res) => {
+    if (!aliyunSmsConfigured()) {
+      throw new HttpError(503, 'SMS_NOT_CONFIGURED', '手机短信服务暂未配置，无法换绑手机号');
+    }
+    const body = (req.body ?? {}) as { newPhone?: string };
+    const newPhone = String(body.newPhone ?? '').trim();
+    if (!PHONE_RE.test(newPhone)) throw new HttpError(400, 'INVALID_PHONE', '请输入有效的中国大陆手机号码');
+    const currentUser = (await getDb()
+      .select({ phone: users.phone })
+      .from(users)
+      .where(eq(users.id, req.user!.id)))[0];
+    if (!currentUser) throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
+    if (currentUser.phone === newPhone) throw new HttpError(400, 'PHONE_UNCHANGED', '新手机号与当前绑定手机号相同');
+    const taken = (await getDb().select({ id: users.id }).from(users).where(eq(users.phone, newPhone)))[0];
+    if (taken) throw new HttpError(409, 'PHONE_TAKEN', '手机号已被其他账号占用');
+    const issued = await issueCode('phone', newPhone, 'bind', req.clientIp ?? null);
+    res.json({ sentTo: issued.sentTo, resendAfterMs: issued.resendAfterMs });
+  }),
+);
+
+userRouter.post(
+  '/user/phone/change/verify',
+  requireStepUp,
+  h(async (req, res) => {
+    const body = (req.body ?? {}) as { newPhone?: string; code?: string };
+    const newPhone = String(body.newPhone ?? '').trim();
+    if (!PHONE_RE.test(newPhone)) throw new HttpError(400, 'INVALID_PHONE', '请输入有效的中国大陆手机号码');
+    const taken = (await getDb().select({ id: users.id }).from(users).where(eq(users.phone, newPhone)))[0];
+    if (taken && taken.id !== req.user!.id) throw new HttpError(409, 'PHONE_TAKEN', '手机号已被其他账号占用');
+    const result = await verifyCode('phone', newPhone, 'bind', String(body.code ?? '').trim());
+    if (!result.ok) throw new HttpError(400, result.error === 'CODE_MISMATCH' ? 'CODE_MISMATCH' : 'CODE_INVALID', '验证码错误或已过期');
+    await getDb().update(users).set({ phone: newPhone }).where(eq(users.id, req.user!.id));
+    await audit(`user:${req.user!.id}`, req.clientIp ?? null, 'user.phone.changed', {});
     res.json({ ok: true });
   }),
 );

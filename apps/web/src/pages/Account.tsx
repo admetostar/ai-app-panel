@@ -5,6 +5,7 @@
 import { withBase } from '../lib/base';
 import {
   Alert,
+  Avatar,
   Button,
   Card,
   Descriptions,
@@ -22,8 +23,8 @@ import {
   message,
 } from 'antd';
 import { DeleteOutlined, SettingOutlined } from '@ant-design/icons';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom';
+import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
+import { Link, useNavigate, useOutletContext, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import { obtainPowToken } from '../lib/pow';
@@ -37,6 +38,8 @@ import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '@aap/shared';
 import { formatEntitlementCount, formatMembershipOrderPrice, formatMembershipPlanPrice, isFreeMembershipPlan } from '../lib/membershipPricing';
 import { downloadInviteIdentityCard } from '../lib/inviteIdentityCard';
 import { bytesToBase64 } from '../lib/base64';
+import { userAvatarSrc } from '../lib/userAvatar';
+import { appVisibilityBadgeSrc, appVisibilityLabel } from '../lib/appVisibility';
 
 // ---------- 主页面 ----------
 
@@ -59,18 +62,27 @@ export function AccountPage() {
   const qc = useQueryClient();
   const [stepUpModal, ensureStepUp] = useStepUp(activeUserPageTheme);
   const [profileForm] = Form.useForm();
+  const avatarInputRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
   const [exportingInviteCard, setExportingInviteCard] = useState(false);
   const [emailModal, setEmailModal] = useState(false);
   const [emailForm] = Form.useForm();
+  const [emailCodeTarget, setEmailCodeTarget] = useState<string | null>(null);
   const [emailCooldown, setEmailCooldown] = useState(0);
+  const [phoneModal, setPhoneModal] = useState(false);
+  const [phoneForm] = Form.useForm();
+  const [phoneCodeTarget, setPhoneCodeTarget] = useState<string | null>(null);
+  const [phoneCooldown, setPhoneCooldown] = useState(0);
   const [deleteModal, setDeleteModal] = useState(false);
   const [deleteForm] = Form.useForm();
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [sendingEmailCode, setSendingEmailCode] = useState(false);
   const [emailSending, setEmailSending] = useState(false);
+  const [sendingPhoneCode, setSendingPhoneCode] = useState(false);
+  const [phoneSending, setPhoneSending] = useState(false);
 
   const user = me?.user;
+  const profileAvatar = Form.useWatch('avatar', profileForm) as string | null | undefined;
   const requestedTab = searchParams.get('tab');
   const accountTab: AccountTabKey = requestedTab === 'billing'
     ? 'benefits'
@@ -104,7 +116,7 @@ export function AccountPage() {
   };
 
   useEffect(() => {
-    if (user) profileForm.setFieldsValue({ name: user.name });
+    if (user) profileForm.setFieldsValue({ name: user.name, avatar: user.avatar });
   }, [user, profileForm]);
 
   async function loadSessions(): Promise<void> {
@@ -126,21 +138,71 @@ export function AccountPage() {
     return () => window.clearTimeout(timer);
   }, [emailCooldown]);
 
+  useEffect(() => {
+    if (phoneCooldown <= 0) return;
+    const timer = window.setTimeout(() => setPhoneCooldown((current) => Math.max(0, current - 1)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [phoneCooldown]);
+
   if (!me || !user) {
     return <Alert type="info" showIcon message="请先登录" description={<a href={withBase('/login')}>去登录</a>} />;
   }
 
-  async function saveProfile(values: { name: string }): Promise<void> {
+  async function saveProfile(values: { name: string; avatar: string | null }): Promise<void> {
     setSaving(true);
     try {
       await api('/api/user/profile', { method: 'PATCH', json: values });
-      message.success('已保存');
+      message.success('资料已更新');
       void refetch();
       void qc.invalidateQueries({ queryKey: ['me'] });
     } catch (err) {
       message.error(err instanceof Error ? err.message : '保存失败');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function updateAvatar(event: ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    event.target.value = '';
+    if (!file.type.startsWith('image/')) {
+      message.error('请选择图片文件');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      message.error('头像图片不能超过 10 MB');
+      return;
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const image = new Image();
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error('无法读取该图片，请换一张图片重试'));
+        image.src = objectUrl;
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 256;
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('浏览器暂不支持图片处理');
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      const scale = Math.max(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight);
+      const width = image.naturalWidth * scale;
+      const height = image.naturalHeight * scale;
+      context.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+      const avatar = [0.86, 0.78, 0.7, 0.62, 0.54]
+        .map((quality) => canvas.toDataURL('image/jpeg', quality))
+        .find((dataUrl) => dataUrl.length <= 90 * 1024);
+      if (!avatar) throw new Error('图片压缩后仍过大，请选择尺寸较小的图片');
+      profileForm.setFieldValue('avatar', avatar);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '头像处理失败');
+    } finally {
+      URL.revokeObjectURL(objectUrl);
     }
   }
 
@@ -192,11 +254,14 @@ export function AccountPage() {
     setSendingEmailCode(true);
     try {
       const { newEmail } = await emailForm.validateFields(['newEmail']);
+      const normalizedEmail = String(newEmail).trim().toLowerCase();
       const powToken = await obtainPowToken();
       const r = await api<{ sentTo: string; viaLogFallback: boolean; resendAfterMs: number }>('/api/user/email/change/start', {
         method: 'POST',
-        json: { newEmail, powToken },
+        json: { newEmail: normalizedEmail, powToken },
       });
+      emailForm.setFieldValue('newEmail', normalizedEmail);
+      setEmailCodeTarget(normalizedEmail);
       message.success(r.viaLogFallback ? '验证码在服务端日志中' : `验证码已发送至 ${r.sentTo}`);
       setEmailCooldown(Math.ceil(r.resendAfterMs / 1000));
     } catch (err) {
@@ -208,22 +273,79 @@ export function AccountPage() {
 
   async function beginEmailChange(): Promise<void> {
     emailForm.resetFields();
+    setEmailCodeTarget(null);
     const verified = await ensureStepUp({ force: true, passwordOnly: true });
     if (verified) setEmailModal(true);
   }
 
   async function verifyEmailChange(values: { newEmail: string; code: string }): Promise<void> {
+    if (!emailCodeTarget) {
+      message.error('请先发送验证码');
+      return;
+    }
     setEmailSending(true);
     try {
-      await api('/api/user/email/change/verify', { method: 'POST', json: values });
+      await api('/api/user/email/change/verify', { method: 'POST', json: { ...values, newEmail: emailCodeTarget } });
       message.success('邮箱已更新');
       setEmailModal(false);
       setEmailCooldown(0);
       void refetch();
+      void qc.invalidateQueries({ queryKey: ['bootstrap'] });
     } catch (err) {
       message.error(err instanceof Error ? err.message : '验证失败');
     } finally {
       setEmailSending(false);
+    }
+  }
+
+  async function sendPhoneCode(): Promise<void> {
+    setSendingPhoneCode(true);
+    try {
+      const { newPhone } = await phoneForm.validateFields(['newPhone']);
+      const normalizedPhone = String(newPhone).trim();
+      const r = await api<{ sentTo: string; resendAfterMs: number }>('/api/user/phone/change/start', {
+        method: 'POST',
+        json: { newPhone: normalizedPhone },
+      });
+      phoneForm.setFieldValue('newPhone', normalizedPhone);
+      setPhoneCodeTarget(normalizedPhone);
+      message.success(`验证码已发送至 ${r.sentTo}`);
+      setPhoneCooldown(Math.ceil(r.resendAfterMs / 1000));
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '发送失败');
+    } finally {
+      setSendingPhoneCode(false);
+    }
+  }
+
+  async function beginPhoneChange(): Promise<void> {
+    phoneForm.resetFields();
+    setPhoneCodeTarget(null);
+    const verified = await ensureStepUp({ force: true, passwordOnly: true });
+    if (verified) setPhoneModal(true);
+  }
+
+  async function verifyPhoneChange(values: { newPhone: string; code: string }): Promise<void> {
+    if (!phoneCodeTarget) {
+      message.error('请先发送验证码');
+      return;
+    }
+    setPhoneSending(true);
+    try {
+      await api('/api/user/phone/change/verify', {
+        method: 'POST',
+        json: { ...values, newPhone: phoneCodeTarget },
+      });
+      message.success('手机号已更新');
+      setPhoneModal(false);
+      setPhoneCooldown(0);
+      setPhoneCodeTarget(null);
+      void refetch();
+      void qc.invalidateQueries({ queryKey: ['me'] });
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '验证失败');
+    } finally {
+      setPhoneSending(false);
     }
   }
 
@@ -277,7 +399,12 @@ export function AccountPage() {
       <header className="aap-account-heading">
         <Typography.Text className="aap-account-eyebrow">{sectionDetails[accountTab].group}</Typography.Text>
         <Typography.Title level={2}>{sectionDetails[accountTab].title}</Typography.Title>
-        <Typography.Paragraph>{sectionDetails[accountTab].description}</Typography.Paragraph>
+        <Typography.Paragraph>
+          {sectionDetails[accountTab].description}
+          {accountTab === 'myapps' ? (
+            <> <Link to="/guide">点击查看操作指南</Link></>
+          ) : null}
+        </Typography.Paragraph>
       </header>
 
       <Tabs
@@ -293,20 +420,48 @@ export function AccountPage() {
               <div id="account-section-profile" className="aap-account-section">
               <Space direction="vertical" size="middle" style={{ width: '100%' }}>
                 <Card size="small" title="基础资料">
-                  <Form form={profileForm} layout="vertical" onFinish={saveProfile} style={{ maxWidth: 420 }}>
-                    <Form.Item name="name" label="昵称" rules={[{ required: true, message: '昵称不能为空' }]}>
-                      <Input maxLength={64} />
-                    </Form.Item>
-                    <Descriptions column={1} size="small" style={{ marginBottom: 16 }}>
+                  <Form form={profileForm} layout="vertical" onFinish={saveProfile}>
+                    <Form.Item name="avatar" hidden><Input /></Form.Item>
+                    <Descriptions column={1} size="small" className="aap-profile-details">
+                      <Descriptions.Item label="头像">
+                        <Space align="center">
+                          <Tooltip
+                            title="点击更换图像"
+                            overlayClassName={`aap-profile-avatar-tooltip aap-profile-avatar-tooltip--${activeUserPageTheme}`}
+                          >
+                            <button
+                              type="button"
+                              className="aap-profile-avatar-button"
+                              aria-label="点击更换图像"
+                              onClick={() => avatarInputRef.current?.click()}
+                            >
+                              <Avatar size={64} src={userAvatarSrc(profileAvatar, user.id)} />
+                            </button>
+                          </Tooltip>
+                          <input
+                            ref={avatarInputRef}
+                            type="file"
+                            accept="image/*"
+                            onChange={(event) => void updateAvatar(event)}
+                            style={{ display: 'none' }}
+                          />
+                        </Space>
+                      </Descriptions.Item>
+                      <Descriptions.Item label="昵称">
+                        <Form.Item name="name" rules={[{ required: true, message: '昵称不能为空' }]} style={{ marginBottom: 0 }}>
+                          <Input className="aap-profile-name-input" maxLength={64} />
+                        </Form.Item>
+                      </Descriptions.Item>
                       <Descriptions.Item label="用户名">{user.username ?? '—'}</Descriptions.Item>
                       <Descriptions.Item label="邮箱">{user.email ?? '未绑定'}</Descriptions.Item>
+                      <Descriptions.Item label="手机号">{user.phone ?? '未绑定'}</Descriptions.Item>
                       <Descriptions.Item label="角色">
                         {user.role === 'admin' ? <Tag color="gold">管理员</Tag> : <Tag>用户</Tag>}
                       </Descriptions.Item>
                     </Descriptions>
-                    <Space wrap>
-                      <Button type="primary" htmlType="submit" loading={saving}>
-                        保存
+                    <Space className="aap-profile-actions" wrap>
+                      <Button className="aap-profile-submit-button" type="primary" htmlType="submit" loading={saving}>
+                        确认修改
                       </Button>
                       <Button loading={exportingInviteCard} onClick={() => void exportInviteCard()}>
                         导出邀请电子卡
@@ -316,12 +471,21 @@ export function AccountPage() {
                 </Card>
                 <Card size="small" title="绑定邮箱">
                   <Typography.Paragraph type="secondary">
-                    当前：{user.email ?? '未绑定'}。换绑需先验证身份，再验证新邮箱。
+                    请保持邮箱长期可以使用，忘记密码可以通过邮箱找回。
                   </Typography.Paragraph>
+                  <Typography.Paragraph type="secondary">当前绑定：{user.email ?? '未绑定'}</Typography.Paragraph>
                   <Button
                     onClick={() => void beginEmailChange()}
                   >
                     换绑邮箱
+                  </Button>
+                </Card>
+                <Card size="small" title="绑定手机号">
+                  <Typography.Paragraph type="secondary">
+                    当前绑定：{user.phone ?? '未绑定'}
+                  </Typography.Paragraph>
+                  <Button onClick={() => void beginPhoneChange()}>
+                    换绑手机号
                   </Button>
                 </Card>
                 <Card size="small" title="注销账号">
@@ -448,6 +612,7 @@ export function AccountPage() {
         onCancel={() => {
           setEmailModal(false);
           setEmailCooldown(0);
+          setEmailCodeTarget(null);
         }}
         footer={null}
         destroyOnClose
@@ -459,8 +624,9 @@ export function AccountPage() {
             label="新邮箱"
             rules={[{ required: true, message: '请输入新邮箱' }, { type: 'email', message: '邮箱格式不正确' }]}
           >
-            <Input autoComplete="email" placeholder="请输入新邮箱地址" />
+            <Input disabled={emailCodeTarget !== null} autoComplete="email" placeholder="请输入新邮箱地址" />
           </Form.Item>
+          {emailCodeTarget ? <div className="aap-muted">验证码仅对本次发送的邮箱有效；如需更换邮箱，请关闭窗口后重新打开。</div> : null}
           <div className="aap-email-change-code-row">
             <Form.Item name="code" rules={[{ required: true, message: '请输入验证码' }]}>
               <Input maxLength={6} inputMode="numeric" autoComplete="one-time-code" placeholder="请输入验证码" />
@@ -474,6 +640,48 @@ export function AccountPage() {
             </Button>
           </div>
           <Button type="primary" htmlType="submit" block loading={emailSending}>
+            确认换绑
+          </Button>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="换绑手机号"
+        open={phoneModal}
+        onCancel={() => {
+          setPhoneModal(false);
+          setPhoneCooldown(0);
+          setPhoneCodeTarget(null);
+        }}
+        footer={null}
+        destroyOnClose
+        rootClassName={`aap-account-modal aap-account-modal--${activeUserPageTheme}`}
+      >
+        <Form form={phoneForm} layout="vertical" onFinish={verifyPhoneChange}>
+          <Form.Item
+            name="newPhone"
+            label="新手机号"
+            rules={[
+              { required: true, message: '请输入新手机号' },
+              { pattern: /^1[3-9]\d{9}$/, message: '请输入有效的中国大陆手机号码' },
+            ]}
+          >
+            <Input disabled={phoneCodeTarget !== null} inputMode="tel" maxLength={11} placeholder="请输入新的中国大陆手机号" />
+          </Form.Item>
+          {phoneCodeTarget ? <Typography.Text type="secondary">验证码仅对本次发送的手机号有效；如需更换号码，请关闭窗口后重新打开。</Typography.Text> : null}
+          <div className="aap-email-change-code-row">
+            <Form.Item name="code" rules={[{ required: true, message: '请输入验证码' }]}>
+              <Input maxLength={6} inputMode="numeric" autoComplete="one-time-code" placeholder="请输入短信验证码" />
+            </Form.Item>
+            <Button
+              loading={sendingPhoneCode}
+              disabled={sendingPhoneCode || phoneCooldown > 0}
+              onClick={() => void sendPhoneCode()}
+            >
+              {phoneCooldown > 0 ? `重新发送（${phoneCooldown}秒）` : '发送验证码'}
+            </Button>
+          </div>
+          <Button type="primary" htmlType="submit" block loading={phoneSending}>
             确认换绑
           </Button>
         </Form>
@@ -1227,14 +1435,8 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
               { title: '运行', width: 88, render: (_, r) => r.kind === 'html' ? 'HTML 页面' : r.runtimeMode === 'invoked' ? '按调用' : r.runtimeMode === 'persistent' ? '持久服务' : '—' },
               {
                 title: '可见范围',
-                width: 96,
-                render: (_, r) => (
-                  <Tag
-                    color={r.visibility === 'public' ? 'green' : r.visibility === 'private' ? 'default' : 'blue'}
-                  >
-                    {r.visibility === 'public' ? '公开' : r.visibility === 'private' ? '仅自己' : '站内'}
-                  </Tag>
-                ),
+                width: 112,
+                render: (_, r) => <img className="aap-visibility-badge" src={appVisibilityBadgeSrc(r.visibility, 'list')} alt={appVisibilityLabel(r.visibility)} title={appVisibilityLabel(r.visibility)} />,
               },
               {
                 title: '操作',

@@ -2,8 +2,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { PortalBootstrap } from '@aap/shared';
+import { eq } from 'drizzle-orm';
 import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
+import { getDb } from '../db/index.js';
+import { users } from '../db/schema.js';
 import { createGroup } from '../lib/groups.js';
 import { createPlan, updatePlan } from '../lib/billing.js';
 import { setSetting } from '../lib/settings.js';
@@ -71,6 +74,27 @@ describe('W1 冒烟', () => {
     const res = await fetch(`${baseUrl}/api/portal/bootstrap`);
     const body = (await res.json()) as PortalBootstrap;
     expect(body.branding.footerCopyright).toBe('版权所有：示例团队');
+  });
+
+  it('GET /api/portal/bootstrap 返回启用管理员的举报邮箱', async () => {
+    const [admin] = await getDb().insert(users).values({
+      kind: 'local',
+      username: 'report-admin',
+      email: 'reports@example.com',
+      name: 'Report admin',
+      role: 'admin',
+      status: 'active',
+      createdAt: Date.now(),
+    }).returning({ id: users.id });
+    if (!admin) throw new Error('Failed to create report email test admin');
+
+    try {
+      const res = await fetch(`${baseUrl}/api/portal/bootstrap`);
+      const body = await res.json() as PortalBootstrap;
+      expect(body.branding.reportEmail).toBe('reports@example.com');
+    } finally {
+      await getDb().delete(users).where(eq(users.id, admin.id));
+    }
   });
 
   it('GET /api/portal/plans 匿名返回管理员启用的权益套餐', async () => {

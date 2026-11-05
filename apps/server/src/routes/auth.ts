@@ -20,7 +20,7 @@ import { issueChallenge, verifyPow } from '../lib/pow.js';
 import { createSession, destroySession, markStepUp, mustEnrollMfaFor } from '../lib/session.js';
 import { getSetting, getSettingInt } from '../lib/settings.js';
 import { verifyTurnstile, turnstileEnabled } from '../lib/turnstile.js';
-import { issueCode, maskEmail, verifyCode } from '../lib/verification.js';
+import { issueCode, maskEmail, maskPhone, verifyCode, type VerifyChannel } from '../lib/verification.js';
 import { buildLoginRedirect, exchangeCallback, isAdminSubject } from '../lib/oidc.js';
 import { adminCount, disposeCredentialsFile, getLocalPasswordHash, writeLocalCredentials } from '../lib/bootstrap.js';
 import { audit, registerPurgeTask } from '../lib/audit.js';
@@ -28,11 +28,13 @@ import { publicUserOf } from './shared.js';
 import { defaultAvatarForUser } from '../lib/userAvatar.js';
 import { listPlans } from '../lib/billing.js';
 import { ensureInviteCode } from '../lib/invites.js';
+import { aliyunSmsConfigured } from '../lib/aliyunSms.js';
 
 export const authRouter = Router();
 
 const USERNAME_RE = /^[a-z0-9][a-z0-9_.-]{2,63}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_RE = /^1[3-9]\d{9}$/;
 
 // ---------- PoW 挑战（公开；内存限速减少挑战数据写入） ----------
 
@@ -124,7 +126,9 @@ authRouter.post(
       username?: string;
       password?: string;
       email?: string;
+      phone?: string;
       inviteCode?: string;
+      channel?: VerifyChannel;
     } & PowBody;
 
     await enforcePow(req, body, true);
@@ -132,15 +136,27 @@ authRouter.post(
 
     const username = String(body.username ?? '').trim().toLowerCase();
     const password = String(body.password ?? '');
-    const email = String(body.email ?? '').trim().toLowerCase();
+    const defaultChannel: VerifyChannel = getSetting('REGISTRATION_VERIFY_CHANNEL') === 'phone' ? 'phone' : 'email';
+    if (body.channel !== undefined && body.channel !== 'email' && body.channel !== 'phone') {
+      throw new HttpError(400, 'INVALID_REGISTRATION_CHANNEL', '注册验证方式无效');
+    }
+    const channel: VerifyChannel = body.channel ?? defaultChannel;
+    if (channel === 'phone' && !aliyunSmsConfigured()) {
+      throw new HttpError(503, 'PHONE_REGISTRATION_UNAVAILABLE', '手机短信注册暂未配置，请改用邮箱注册');
+    }
+    const email = channel === 'email' ? String(body.email ?? '').trim().toLowerCase() : null;
+    const phone = channel === 'phone' ? String(body.phone ?? '').trim() : null;
     if (!USERNAME_RE.test(username)) {
       throw new HttpError(400, 'INVALID_USERNAME', '用户名需 3-64 位小写字母/数字/_.- 且以字母或数字开头');
     }
     if (!isPasswordValid(password)) {
       throw new HttpError(400, 'INVALID_PASSWORD', PASSWORD_POLICY_MESSAGE);
     }
-    if (!EMAIL_RE.test(email)) {
+    if (channel === 'email' && !EMAIL_RE.test(email ?? '')) {
       throw new HttpError(400, 'INVALID_EMAIL', '邮箱格式不正确');
+    }
+    if (channel === 'phone' && !PHONE_RE.test(phone ?? '')) {
+      throw new HttpError(400, 'INVALID_PHONE', '请输入有效的中国大陆手机号码');
     }
 
     const inviteCode = String(body.inviteCode ?? '').trim().toUpperCase() || null;
@@ -168,13 +184,19 @@ authRouter.post(
       (await getDb().select({ id: users.id }).from(users).where(eq(users.username, username)))[0] ??
       (await getDb().select({ id: registrations.id }).from(registrations).where(and(eq(registrations.username, username), isNull(registrations.completedAt))))[0];
     if (usernameTaken) throw new HttpError(409, 'USERNAME_TAKEN', '用户名已被占用');
-    const emailTaken =
-      (await getDb().select({ id: users.id }).from(users).where(eq(users.email, email)))[0] ??
-      (await getDb().select({ id: registrations.id }).from(registrations).where(and(eq(registrations.email, email), isNull(registrations.completedAt))))[0];
-    if (emailTaken) throw new HttpError(409, 'EMAIL_TAKEN', '邮箱已被占用');
+    const contactTaken = channel === 'email'
+      ? (await getDb().select({ id: users.id }).from(users).where(eq(users.email, email!)))[0] ??
+        (await getDb().select({ id: registrations.id }).from(registrations).where(and(eq(registrations.email, email!), isNull(registrations.completedAt))))[0]
+      : (await getDb().select({ id: users.id }).from(users).where(eq(users.phone, phone!)))[0] ??
+        (await getDb().select({ id: registrations.id }).from(registrations).where(and(eq(registrations.phone, phone!), isNull(registrations.completedAt))))[0];
+    if (contactTaken) {
+      if (channel === 'email') throw new HttpError(409, 'EMAIL_TAKEN', '邮箱已被占用');
+      throw new HttpError(409, 'PHONE_TAKEN', '手机号已被占用');
+    }
 
     // 发送验证码（60s/24h 限发在 issueCode 内）
-    const issued = await issueCode('email', email, 'register', ip);
+    const target = channel === 'email' ? email! : phone!;
+    const issued = await issueCode(channel, target, 'register', ip);
 
     const id = randomToken(16);
     const now = Date.now();
@@ -185,15 +207,22 @@ authRouter.post(
         username,
         passwordHash: await hashPassword(password),
         email,
+        phone,
         inviteCode,
         ip,
         createdAt: now,
         expiresAt: now + 24 * 3600_000, // 24h 内完成验证；废弃行按 N 天清理
       });
 
-    await audit(`anon:${ip}`, ip, 'user.register.start', { username, email: maskEmail(email), invite: inviteCode });
+    await audit(`anon:${ip}`, ip, 'user.register.start', {
+      username,
+      contact: channel === 'email' ? maskEmail(email!) : maskPhone(phone!),
+      channel,
+      invite: inviteCode,
+    });
     res.json({
       registrationId: id,
+      channel,
       sentTo: issued.sentTo,
       resendAfterMs: issued.resendAfterMs,
       viaLogFallback: issued.viaLogFallback,
@@ -214,7 +243,9 @@ authRouter.post(
       throw new HttpError(404, 'REGISTRATION_NOT_FOUND', '注册会话不存在或已过期，请重新注册');
     }
 
-    const result = await verifyCode('email', reg.email ?? '', 'register', String(body.code ?? '').trim());
+    const channel: VerifyChannel = reg.phone ? 'phone' : 'email';
+    const target = reg.phone ?? reg.email ?? '';
+    const result = await verifyCode(channel, target, 'register', String(body.code ?? '').trim());
     if (!result.ok) {
       // 尝试次数限制：≥5 次失败作废整个注册
       await getDb()
@@ -240,6 +271,7 @@ authRouter.post(
           kind: 'local',
           username: reg.username,
           email: reg.email,
+          phone: reg.phone,
           name: reg.username,
           role: promote ? 'admin' : 'user',
           status: 'active',

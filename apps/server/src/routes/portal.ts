@@ -1,5 +1,5 @@
 ﻿import { Router } from 'express';
-import { sql } from 'drizzle-orm';
+import { and, eq, isNotNull, sql } from 'drizzle-orm';
 import type { PortalBootstrap } from '@aap/shared';
 import { getDb } from '../db/index.js';
 import { users } from '../db/schema.js';
@@ -9,6 +9,7 @@ import { listPlans } from '../lib/billing.js';
 import { listGroups } from '../lib/groups.js';
 import { appDomainRoot } from '../gateway/appDomains.js';
 import { config } from '../config/index.js';
+import { aliyunSmsConfigured } from '../lib/aliyunSms.js';
 
 /**
  * 门户公共引导信息（未登录可读）：品牌数据（A1）+ 注册开关状态 + 初始化标记。
@@ -17,6 +18,14 @@ import { config } from '../config/index.js';
 export const portalRouter = Router();
 
 portalRouter.get('/portal/bootstrap', async (_req, res) => {
+  const adminEmails = await getDb()
+    .select({ email: users.email })
+    .from(users)
+    .where(and(eq(users.role, 'admin'), eq(users.status, 'active'), isNotNull(users.email)))
+    .orderBy(users.id);
+  const reportEmail = adminEmails
+    .map(({ email }) => email?.trim() ?? '')
+    .find((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) ?? null;
   const bootstrap: PortalBootstrap = {
     appDomainRoot: appDomainRoot(),
     appPort: appDomainRoot() === 'localhost' ? config.port : null,
@@ -29,12 +38,15 @@ portalRouter.get('/portal/bootstrap', async (_req, res) => {
       accentColor: null,
       footerText: getSetting('FOOTER_TEXT') || '',
       footerCopyright: getSetting('FOOTER_COPYRIGHT') || '',
+      reportEmail,
       icpNumber: getSetting('ICP_NUMBER') || null,
       policeNumber: getSetting('POLICE_NUMBER') || null,
     },
     registration: {
       mode: 'open',
       turnstileEnabled: Boolean(getSetting('TURNSTILE_SITE_KEY')),
+      verificationChannel: getSetting('REGISTRATION_VERIFY_CHANNEL') === 'phone' ? 'phone' : 'email',
+      phoneRegistrationEnabled: aliyunSmsConfigured(),
     },
     needsInit: Number((await getDb().select({ n: sql<number>`count(*)` }).from(users))[0]?.n ?? 0) === 0,
     oidc: { enabled: oidcEnabled() },

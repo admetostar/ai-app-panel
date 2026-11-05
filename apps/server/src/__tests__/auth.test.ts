@@ -6,7 +6,7 @@ import { setupTestDb, teardownTestDb } from './testkit.js';
 import { closeDb } from '../db/index.js';
 import { seedSettings, setSetting } from '../lib/settings.js';
 import { getDb } from '../db/index.js';
-import { inviteCodes, registrations, topupOrders, users, verificationCodes } from '../db/schema.js';
+import { inviteCodes, localCredentials, registrations, topupOrders, users, verificationCodes } from '../db/schema.js';
 import { and, eq, gt, sql } from 'drizzle-orm';
 import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
@@ -15,6 +15,37 @@ import { createGroup } from '../lib/groups.js';
 import { createPlan, deletePlan } from '../lib/billing.js';
 import { sessionCookieFor } from './testkit.js';
 import { hashPassword } from '../lib/passwords.js';
+
+const aliyunSmsMock = vi.hoisted(() => ({
+  send: vi.fn(),
+  check: vi.fn(),
+  configs: [] as unknown[],
+}));
+
+vi.mock('@alicloud/dypnsapi20170525', () => {
+  class Request {
+    constructor(values: Record<string, unknown> = {}) {
+      Object.assign(this, values);
+    }
+  }
+  return {
+    SendSmsVerifyCodeRequest: Request,
+    CheckSmsVerifyCodeRequest: Request,
+    default: {
+      default: class {
+        constructor(config: unknown) {
+          aliyunSmsMock.configs.push(config);
+        }
+        sendSmsVerifyCode(request: unknown) {
+          return aliyunSmsMock.send(request);
+        }
+        checkSmsVerifyCode(request: unknown) {
+          return aliyunSmsMock.check(request);
+        }
+      },
+    },
+  };
+});
 
 let server: Server;
 let base: string;
@@ -77,10 +108,123 @@ afterAll(async () => {
 });
 
 describe('W3 注册（A2）', () => {
+  it('未绑定邮箱的手机号用户可以验证并绑定邮箱', async () => {
+    const [user] = await getDb()
+      .insert(users)
+      .values({
+        kind: 'local',
+        username: 'phoneonly',
+        phone: '13800138000',
+        name: 'phoneonly',
+        createdAt: Date.now(),
+      })
+      .returning({ id: users.id });
+    if (!user) throw new Error('Failed to create phone-only test user');
+    await getDb().insert(localCredentials).values({
+      userId: user.id,
+      passwordHash: await hashPassword('TestPassword123'),
+      updatedAt: Date.now(),
+    });
+    const cookie = await sessionCookieFor(user.id);
+    const headers = { 'content-type': 'application/json', cookie };
+
+    const sent = await fetch(`${base}/api/user/email/change/start`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ newEmail: 'bound@example.com' }),
+    });
+    expect(sent.status).toBe(200);
+    const code = lastCodeFromLog();
+
+    const verified = await fetch(`${base}/api/user/email/change/verify`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ newEmail: 'bound@example.com', code }),
+    });
+    expect(verified.status).toBe(200);
+    const updated = (await getDb().select().from(users).where(eq(users.id, user.id)))[0];
+    expect(updated?.email).toBe('bound@example.com');
+  });
+
+  it('已登录用户通过短信验证码验证后可以换绑手机号', async () => {
+    aliyunSmsMock.send.mockReset().mockResolvedValue({ body: { success: true, code: 'OK' } });
+    aliyunSmsMock.check.mockReset().mockResolvedValue({
+      body: { success: true, code: 'OK', model: { verifyResult: 'UNKNOWN' } },
+    });
+    await setSetting('ALIYUN_ACCESS_KEY_ID', 'test-access-key-id');
+    await setSetting('ALIYUN_ACCESS_KEY_SECRET', 'test-access-key-secret');
+    await setSetting('ALIYUN_SMS_SIGN_NAME', 'Test Sign');
+    await setSetting('ALIYUN_SMS_TEMPLATE_CODE', 'SMS_TEST_CODE');
+    await setSetting('ALIYUN_SMS_TEMPLATE_PARAM', '{"code":"##code##"}');
+
+    const [user] = await getDb()
+      .insert(users)
+      .values({
+        kind: 'local',
+        username: 'phone-rebind',
+        phone: '13800000001',
+        name: 'phone-rebind',
+        createdAt: Date.now(),
+      })
+      .returning({ id: users.id });
+    if (!user) throw new Error('Failed to create phone rebind test user');
+    await getDb().insert(users).values({
+      kind: 'local',
+      username: 'phone-owner',
+      phone: '13800000003',
+      name: 'phone-owner',
+      createdAt: Date.now(),
+    });
+    const cookie = await sessionCookieFor(user.id);
+    const headers = { 'content-type': 'application/json', cookie };
+
+    const taken = await fetch(`${base}/api/user/phone/change/start`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ newPhone: '13800000003' }),
+    });
+    expect(taken.status).toBe(409);
+    expect(aliyunSmsMock.send).not.toHaveBeenCalled();
+
+    const sent = await fetch(`${base}/api/user/phone/change/start`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ newPhone: '13800000002' }),
+    });
+    expect(sent.status).toBe(200);
+    expect(aliyunSmsMock.send).toHaveBeenCalledOnce();
+
+    const invalid = await fetch(`${base}/api/user/phone/change/verify`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ newPhone: '13800000002', code: '123456' }),
+    });
+    expect(invalid.status).toBe(400);
+
+    aliyunSmsMock.check.mockResolvedValue({
+      body: { success: true, code: 'OK', model: { verifyResult: 'PASS' } },
+    });
+    const verified = await fetch(`${base}/api/user/phone/change/verify`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ newPhone: '13800000002', code: '123456' }),
+    });
+    expect(verified.status).toBe(200);
+    expect(aliyunSmsMock.check).toHaveBeenCalledTimes(2);
+    expect(aliyunSmsMock.check.mock.calls[0]?.[0]).toMatchObject({
+      phoneNumber: '13800000002',
+      verifyCode: '123456',
+    });
+    const updated = (await getDb().select().from(users).where(eq(users.id, user.id)))[0];
+    expect(updated?.phone).toBe('13800000002');
+  });
+
   it('公共引导信息始终返回开放注册', async () => {
     const res = await fetch(`${base}/api/portal/bootstrap`);
     expect(res.status).toBe(200);
-    expect(((await res.json()) as { registration: { mode: string } }).registration.mode).toBe('open');
+    const registration = (await res.json() as { registration: { mode: string; verificationChannel: string } }).registration;
+    expect(registration.mode).toBe('open');
+    expect(registration.verificationChannel).toBe('email');
   });
 
   it('开放注册：无 PoW 拒绝；带 PoW 发码；首账号自动 admin', async () => {
@@ -174,6 +318,87 @@ describe('W3 注册（A2）', () => {
     expect(info.user.username).toBe('neo');
     expect(info.mustEnrollMfa).toBe(true); // admin 强制 MFA（W4 落地绑定流程）
 
+  });
+
+  it('使用阿里云短信验证码完成手机号注册，不把验证码交给本地或客户端', async () => {
+    aliyunSmsMock.send.mockReset().mockResolvedValue({ body: { success: true, code: 'OK' } });
+    aliyunSmsMock.check.mockReset().mockResolvedValue({
+      body: { success: true, code: 'OK', model: { verifyResult: 'UNKNOWN' } },
+    });
+    aliyunSmsMock.configs.length = 0;
+
+    await setSetting('ALIYUN_ACCESS_KEY_ID', 'test-access-key-id');
+    await setSetting('ALIYUN_ACCESS_KEY_SECRET', 'test-access-key-secret');
+    await setSetting('ALIYUN_SMS_SIGN_NAME', 'Test Sign');
+    await setSetting('ALIYUN_SMS_TEMPLATE_CODE', 'SMS_TEST_CODE');
+    await setSetting('ALIYUN_SMS_TEMPLATE_PARAM', '{"code":"##code##"}');
+    await setSetting('REGISTRATION_VERIFY_CHANNEL', 'email');
+
+    try {
+      const bootstrap = await fetch(`${base}/api/portal/bootstrap`);
+      expect(((await bootstrap.json()) as { registration: { verificationChannel: string; phoneRegistrationEnabled: boolean } }).registration)
+        .toMatchObject({ verificationChannel: 'email', phoneRegistrationEnabled: true });
+
+      const started = await fetch(`${base}/api/auth/register/start`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          username: 'sms-user',
+          password: 'Password123',
+          phone: '13812345678',
+          channel: 'phone',
+          powToken: await solvePow(),
+        }),
+      });
+      expect(started.status).toBe(200);
+      const result = await started.json() as { registrationId: string; channel: string; sentTo: string; viaLogFallback: boolean };
+      expect(result.channel).toBe('phone');
+      expect(result.sentTo).toBe('138****5678');
+      expect(result.viaLogFallback).toBe(false);
+      expect(aliyunSmsMock.send).toHaveBeenCalledOnce();
+      const sendRequest = aliyunSmsMock.send.mock.calls[0]?.[0] as {
+        phoneNumber: string;
+        signName: string;
+        templateCode: string;
+        templateParam: string;
+        codeLength: number;
+        returnVerifyCode: boolean;
+      };
+      expect(sendRequest).toMatchObject({
+        phoneNumber: '13812345678',
+        signName: 'Test Sign',
+        templateCode: 'SMS_TEST_CODE',
+        templateParam: '{"code":"##code##"}',
+        codeLength: 6,
+        returnVerifyCode: false,
+      });
+      expect(aliyunSmsMock.configs[0]).toMatchObject({
+        accessKeyId: 'test-access-key-id',
+        accessKeySecret: 'test-access-key-secret',
+      });
+
+      const invalid = await fetch(`${base}/api/auth/register/verify`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ registrationId: result.registrationId, code: '000001' }),
+      });
+      expect(invalid.status).toBe(400);
+
+      aliyunSmsMock.check.mockResolvedValue({
+        body: { success: true, code: 'OK', model: { verifyResult: 'PASS' } },
+      });
+      const verified = await fetch(`${base}/api/auth/register/verify`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ registrationId: result.registrationId, code: '123456' }),
+      });
+      expect(verified.status).toBe(200);
+      const user = (await getDb().select().from(users).where(eq(users.username, 'sms-user')))[0];
+      expect(user?.phone).toBe('13812345678');
+      expect(user?.email).toBeNull();
+    } finally {
+      await getDb().delete(registrations).where(eq(registrations.username, 'sms-user'));
+    }
   });
 
   it('无权益包时仍允许开放注册；新账号获得注册积分并以未订阅状态进入个人中心', async () => {

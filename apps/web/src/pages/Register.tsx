@@ -1,8 +1,9 @@
 /** 注册页（A2）：始终开放注册；两步注册（资料 → 邮箱验证码）；全程 PoW。 */
 import { Alert, Button, Form, Input, Typography, message } from 'antd';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '@aap/shared';
+import { useQuery } from '@tanstack/react-query';
+import { isPasswordValid, PASSWORD_POLICY_MESSAGE, type PortalBootstrap } from '@aap/shared';
 import { api } from '../api/client';
 import { obtainPowToken } from '../lib/pow';
 import { usePostAuthRedirect } from '../state/session';
@@ -10,6 +11,7 @@ import { AuthPanel } from '../components/AuthPanel';
 
 interface StartResult {
   registrationId: string;
+  channel: 'email' | 'phone';
   sentTo: string;
   viaLogFallback: boolean;
 }
@@ -17,15 +19,34 @@ interface StartResult {
 export function RegisterPage() {
   const redirect = usePostAuthRedirect();
   const [searchParams] = useSearchParams();
+  const bootstrapQ = useQuery({
+    queryKey: ['bootstrap'],
+    queryFn: () => api<PortalBootstrap>('/api/portal/bootstrap'),
+  });
   const [step, setStep] = useState<'form' | 'code'>('form');
   const [start, setStart] = useState<StartResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [form] = Form.useForm();
+  const requestedChannel = searchParams.get('channel');
+  const phoneRegistrationEnabled = bootstrapQ.data?.registration.phoneRegistrationEnabled ?? false;
+  const registrationChannel = requestedChannel === 'email'
+    ? 'email'
+    : requestedChannel === 'phone' && phoneRegistrationEnabled
+      ? 'phone'
+      : bootstrapQ.data?.registration.verificationChannel ?? 'email';
+
+  useEffect(() => {
+    setStep('form');
+    setStart(null);
+    form.resetFields();
+    form.setFieldValue('inviteCode', registrationChannel === 'email' ? searchParams.get('invite') ?? '' : undefined);
+  }, [form, registrationChannel, searchParams]);
 
   async function onFormFinish(values: {
     username: string;
     password: string;
-    email: string;
+    email?: string;
+    phone?: string;
     inviteCode?: string;
   }): Promise<void> {
     setLoading(true);
@@ -33,7 +54,7 @@ export function RegisterPage() {
       const powToken = await obtainPowToken();
       const r = await api<StartResult>('/api/auth/register/start', {
         method: 'POST',
-        json: { ...values, powToken },
+        json: { ...values, channel: registrationChannel, powToken },
       });
       setStart(r);
       setStep('code');
@@ -66,7 +87,7 @@ export function RegisterPage() {
   }
 
   return (
-    <AuthPanel>
+    <AuthPanel className="aap-auth-panel--register">
       <Typography.Title level={3} className="aap-auth-title">
         注册账号
       </Typography.Title>
@@ -74,12 +95,18 @@ export function RegisterPage() {
         创建账号，开始使用并发布你的应用创作。
       </Typography.Paragraph>
 
-      {step === 'form' ? (
+      {bootstrapQ.isError ? (
+        <Alert type="error" showIcon message="无法读取注册设置，请稍后重试" />
+      ) : !bootstrapQ.data ? (
+        <Alert type="info" showIcon message="正在读取注册设置…" />
+      ) : step === 'form' ? (
         <Form
           form={form}
           layout="vertical"
           onFinish={onFormFinish}
-          initialValues={{ inviteCode: searchParams.get('invite') ?? '' }}
+          initialValues={{
+            ...(registrationChannel === 'email' ? { inviteCode: searchParams.get('invite') ?? '' } : {}),
+          }}
         >
           <Form.Item
             name="username"
@@ -122,26 +149,44 @@ export function RegisterPage() {
           >
             <Input.Password />
           </Form.Item>
-          <Form.Item
-            name="email"
-            label="邮箱"
-            rules={[
-              { required: true, message: '请输入邮箱' },
-              { type: 'email', message: '邮箱格式不正确' },
-            ]}
-            extra="用于接收验证码与找回密码"
-          >
-            <Input />
-          </Form.Item>
-          <Form.Item
-            name="inviteCode"
-            label="邀请码（选填）"
-            extra="填写有效邀请码，邀请人可获得奖励积分；无效或已停用的邀请码不影响注册。"
-          >
-            <Input placeholder="xxxx-xxxx-xxxx-xxxx" maxLength={191} />
-          </Form.Item>
+          {registrationChannel === 'phone' ? (
+            <Form.Item
+              name="phone"
+              label="手机号码"
+              preserve={false}
+              rules={[
+                { required: true, message: '请输入手机号码' },
+                { pattern: /^1[3-9]\d{9}$/, message: '请输入有效的中国大陆手机号码' },
+              ]}
+              extra="仅支持中国大陆手机号码，用于接收注册验证码"
+            >
+              <Input inputMode="tel" maxLength={11} />
+            </Form.Item>
+          ) : (
+            <Form.Item
+              name="email"
+              label="邮箱"
+              preserve={false}
+              rules={[
+                { required: true, message: '请输入邮箱' },
+                { type: 'email', message: '邮箱格式不正确' },
+              ]}
+              extra="用于接收注册验证码与找回密码"
+            >
+              <Input />
+            </Form.Item>
+          )}
+          {registrationChannel === 'email' ? (
+            <Form.Item
+              name="inviteCode"
+              label="邀请码（选填）"
+              extra="填写有效邀请码，邀请人可获得奖励积分；无效或已停用的邀请码不影响注册。"
+            >
+              <Input placeholder="xxxx-xxxx-xxxx-xxxx" maxLength={191} />
+            </Form.Item>
+          ) : null}
           <Button type="primary" htmlType="submit" loading={loading} block>
-            获取邮箱验证码
+            获取{registrationChannel === 'phone' ? '短信' : '邮箱'}验证码
           </Button>
           <div style={{ marginTop: 12, textAlign: 'center' }}>
             <Link to="/login">已有账号？登录</Link>
@@ -155,8 +200,8 @@ export function RegisterPage() {
             style={{ marginBottom: 16 }}
             message={
               start?.viaLogFallback
-                ? `验证码已发送（服务端未配置 SMTP，验证码在服务端日志中）`
-                : `验证码已发送至 ${start?.sentTo ?? ''}，5 分钟内有效`
+                ? `邮件服务未配置，验证码已写入服务端日志`
+                : `验证码已发送至${start?.channel === 'phone' ? '手机' : '邮箱'} ${start?.sentTo ?? ''}，5 分钟内有效`
             }
           />
           <Form layout="vertical" onFinish={onCodeFinish}>

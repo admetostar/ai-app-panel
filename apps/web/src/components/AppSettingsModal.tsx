@@ -1,5 +1,5 @@
-import { AppstoreOutlined, UploadOutlined } from '@ant-design/icons';
-import { Alert, Button, Form, Input, Modal, Select, Tabs, Typography, message } from 'antd';
+import { AppstoreOutlined } from '@ant-design/icons';
+import { Alert, Button, Empty, Form, Input, Modal, Select, Tabs, Typography, message } from 'antd';
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { OwnedAppCard } from '@aap/shared';
@@ -120,7 +120,7 @@ export function AppSettingsModal({ app, open, onClose, onSaved, theme }: {
       onCancel={onClose}
       width={640}
       destroyOnClose
-      rootClassName={`aap-account-modal aap-account-modal--${theme}`}
+      rootClassName={`aap-account-modal aap-account-modal--${theme} aap-app-settings-modal`}
       footer={[
         <Button key="cancel" onClick={onClose}>取消</Button>,
         <Button key="save" type="primary" loading={saving} onClick={() => form.submit()}>保存设置</Button>,
@@ -140,12 +140,13 @@ export function AppSettingsModal({ app, open, onClose, onSaved, theme }: {
                     <Typography.Paragraph type="secondary">
                       更新应用卡片展示的信息，并设置哪些用户可以发现和访问此应用。
                     </Typography.Paragraph>
-                    <Form.Item label="应用图标" extra="点击图标或上传按钮选择 PNG、JPEG、GIF 或 WebP 图片，最大 2 MB。">
+                    <Form.Item label="应用图标" extra="点击图标选择 PNG、JPEG、GIF 或 WebP 图片，最大 2 MB。">
                       <div className="aap-app-icon-picker">
                         <button
                           type="button"
                           className="aap-app-icon-picker__preview"
-                          aria-label="上传应用图标"
+                          aria-label="选择应用图标"
+                          disabled={iconUploading}
                           onClick={() => iconInputRef.current?.click()}
                         >
                           {icon?.startsWith(`/api/apps/${encodeURIComponent(app.id)}/icon/`)
@@ -153,9 +154,6 @@ export function AppSettingsModal({ app, open, onClose, onSaved, theme }: {
                             : icon || app.name.slice(0, 1) || <AppstoreOutlined />}
                         </button>
                         <div className="aap-app-icon-picker__actions">
-                          <Button icon={<UploadOutlined />} loading={iconUploading} onClick={() => iconInputRef.current?.click()}>
-                            上传图标
-                          </Button>
                           {icon ? (
                             <Button disabled={iconUploading} onClick={() => void resetIcon()}>
                               恢复默认
@@ -226,9 +224,10 @@ export function AppSettingsModal({ app, open, onClose, onSaved, theme }: {
                     saveRef={envSaveRef}
                   />
                 ) : (
-                  <Typography.Paragraph type="secondary">
-                    此应用不是 AWPK 包，无需配置应用环境变量。
-                  </Typography.Paragraph>
+                  <Empty
+                    image={Empty.PRESENTED_IMAGE_SIMPLE}
+                    description="暂无环境变量配置"
+                  />
                 ),
               },
             ]}

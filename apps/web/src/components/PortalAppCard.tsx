@@ -8,6 +8,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { PortalBootstrap } from '@aap/shared';
 import { api } from '../api/client';
 import { appUrl } from '../lib/appUrl';
+import { appVisibilityBadgeSrc, appVisibilityLabel } from '../lib/appVisibility';
 import QRCode from 'qrcode';
 import { useEffect, useState } from 'react';
 
@@ -32,11 +33,15 @@ export function PortalAppCard({
   unavailableHref = '/login',
   footerAction,
   hideQr = false,
+  showVisibilityBadge = false,
+  hideVisibilityLabel = false,
 }: {
   app: AppCard;
   unavailableHref?: string | null;
   footerAction?: ReactNode;
   hideQr?: boolean;
+  showVisibilityBadge?: boolean;
+  hideVisibilityLabel?: boolean;
 }) {
   const bootstrap = useQuery({
     queryKey: ['bootstrap'],
@@ -48,9 +53,17 @@ export function PortalAppCard({
     <Card
       size="small"
       hoverable
-      className="aap-app-card"
+      className={`aap-app-card${showVisibilityBadge ? ' aap-app-card--visibility-badge' : ''}`}
       style={{ height: '100%', opacity: app.accessible ? 1 : 0.72, borderColor: 'var(--aap-border)' }}
     >
+      {showVisibilityBadge ? (
+        <img
+          className="aap-app-card__visibility-badge"
+          src={appVisibilityBadgeSrc(app.visibility, 'tag')}
+          alt=""
+          title={appVisibilityLabel(app.visibility)}
+        />
+      ) : null}
       <div className="aap-app-card__layout">
         <div className="aap-app-card__content">
           <div className="aap-app-card__main">
@@ -69,7 +82,9 @@ export function PortalAppCard({
             </div>
           </div>
           <div className="aap-app-card__footer">
-            <Tag bordered={false} style={{ fontSize: 11 }}>{VISIBILITY_LABEL[app.visibility]}</Tag>
+            {!showVisibilityBadge && !hideVisibilityLabel ? (
+              <Tag bordered={false} style={{ fontSize: 11 }}>{VISIBILITY_LABEL[app.visibility]}</Tag>
+            ) : null}
             {!app.accessible ? (
               <span className="aap-app-card__unavailable">
                 {app.visibility === 'login' ? '仅可克隆' : '暂不可用'}

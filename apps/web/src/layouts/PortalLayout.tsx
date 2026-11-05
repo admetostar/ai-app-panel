@@ -96,6 +96,7 @@ export function PortalLayout() {
   const isHome = location.pathname === '/';
   const isMembershipSelectionPage = location.pathname === '/membership-selection';
   const isAuthPage = ['/login', '/register'].includes(location.pathname);
+  const isRegisterPage = location.pathname === '/register';
   const isGuidePage = location.pathname === '/guide';
   const isAccountPage = location.pathname === '/account';
   const isMyApplicationsPage = location.pathname === '/my-apps';
@@ -222,7 +223,7 @@ export function PortalLayout() {
 
   return (
     <div
-      className={`aap-shell aap-background-shell${isHome || isMembershipSelectionPage ? ' aap-home-shell' : ''}${isHome ? ' aap-home-page-shell' : ''}${isGuidePage ? ' aap-guide-shell' : ''}${isAuthPage ? ' aap-auth-shell' : ''}${isAccountPage ? ' aap-account-shell' : ''}${isMyApplicationsPage ? ' aap-my-apps-shell' : ''}${isLegalPage ? ' aap-legal-shell' : ''}${isUserPage ? ' aap-user-page-shell' : ''}${isUserPage && sidebarCollapsed ? ' aap-user-page-shell--sidebar-collapsed' : ''}${isMembershipSelectionPage ? ' aap-membership-selection-shell' : ''}`}
+      className={`aap-shell aap-background-shell${isHome || isMembershipSelectionPage ? ' aap-home-shell' : ''}${isHome ? ' aap-home-page-shell' : ''}${isGuidePage ? ' aap-guide-shell' : ''}${isAuthPage ? ' aap-auth-shell' : ''}${isRegisterPage ? ' aap-register-shell' : ''}${isAccountPage ? ' aap-account-shell' : ''}${isMyApplicationsPage ? ' aap-my-apps-shell' : ''}${isLegalPage ? ' aap-legal-shell' : ''}${isUserPage ? ' aap-user-page-shell' : ''}${isUserPage && sidebarCollapsed ? ' aap-user-page-shell--sidebar-collapsed' : ''}${isMembershipSelectionPage ? ' aap-membership-selection-shell' : ''}`}
       data-user-theme={isUserPage ? activeUserPageTheme : undefined}
     >
       {isUserPage ? (
@@ -535,7 +536,7 @@ export function PortalLayout() {
           <Outlet context={{ activeUserPageTheme }} />
         )}
       </main>
-      {branding ? <BeianFooter branding={branding} /> : null}
+      {branding && (isHome || isAuthPage) ? <BeianFooter branding={branding} isHome={isHome} /> : null}
     </div>
   );
 }

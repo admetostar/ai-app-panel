@@ -135,9 +135,9 @@ export function HomePage() {
           ) : (
             filtered.map(([category, apps]) => (
               <section key={category} className="aap-home-category">
-                <h3>{category}</h3>
+                {category !== '用户提交' ? <h3>{category}</h3> : null}
                 <div className="aap-home-app-grid">
-                  {apps.map((app) => <PortalAppCard key={app.id} app={app} />)}
+                  {apps.map((app) => <PortalAppCard key={app.id} app={app} hideVisibilityLabel />)}
                 </div>
               </section>
             ))

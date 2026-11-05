@@ -1,12 +1,12 @@
 /**
  * 应用环境变量 / 机密配置弹窗（G6）。
  * 管理后台（应用管理）与用户中心（我的应用）共用：
- *  - 列出 manifest.env 声明：必填/可选、密钥/普通、描述与格式校验提示
- *  - 普通变量可查看当前值；机密只显示「已设置 ••••1234」，留空提交 = 不修改
+ *  - 以变量名、变量值、变量说明三列展示 manifest.env 声明
+ *  - 普通变量可查看当前值；机密不回显明文，留空提交 = 不修改
  *  - 保存经 PUT /api/apps/:id/env，值加密落盘并在沙箱启动时注入
  */
 import { useEffect, useState, type ReactNode } from 'react';
-import { Alert, Button, Empty, Input, Modal, Select, Space, Spin, Tag, Typography, message } from 'antd';
+import { Alert, Button, Empty, Input, Modal, Select, Space, Spin, message } from 'antd';
 import { api } from '../api/client';
 
 interface EnvVarView {
@@ -113,79 +113,74 @@ export function AppEnvModal({ appId, appName, open, onClose, theme, embedded = f
       <Spin />
     </div>
   ) : !hasVars ? (
-    <Empty description="该包的 manifest 未声明任何环境变量" />
+    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无环境变量配置" />
   ) : (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
-        值加密存储；沙箱（按调用执行 / 持久服务）启动时注入为进程环境变量。机密变量保存后不可再查看。
-      </Typography.Paragraph>
-      {data!.declared.map((v) => {
-        const isModelVariable = /(?:^|_)MODEL(?:_NAME)?$/i.test(v.name);
-        return (
-          <div key={v.name}>
-            <Space size="small" wrap style={{ marginBottom: 4 }}>
-              {v.required ? <span className="aap-env-required-mark" aria-label="必填">*</span> : null}
-              <Typography.Text code strong>
-                {v.name}
-              </Typography.Text>
-              {!isModelVariable && v.secret ? (
-                <Tag color="purple" style={{ fontSize: 11 }}>
-                  密钥
-                </Tag>
-              ) : null}
-              {!isModelVariable && v.description ? (
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {v.description}
-                </Typography.Text>
-              ) : null}
-            </Space>
-            {isModelVariable ? (
-              <Select
-                showSearch
-                optionFilterProp="label"
-                allowClear={!v.required}
-                style={{ width: '100%' }}
-                value={values[v.name] || undefined}
-                placeholder="选择模型"
-                notFoundContent={data!.models?.length ? '没有匹配的模型' : '管理后台尚未配置可用模型'}
-                options={(data!.models ?? []).map((model) => ({ value: model, label: model }))}
-                onChange={(value: string | undefined) => setValues((p) => ({ ...p, [v.name]: value ?? '' }))}
-              />
-            ) : v.secret ? (
-              <Space.Compact style={{ width: '100%' }}>
-                <Input.Password
-                  value={secretClears[v.name] ? '' : values[v.name] ?? ''}
-                  placeholder={v.configured ? `已设置 ${v.hint ?? ''}（留空保持不变）` : '未设置，请输入'}
-                  onChange={(e) => {
-                    setValues((p) => ({ ...p, [v.name]: e.target.value }));
-                    if (secretClears[v.name]) setSecretClears((p) => ({ ...p, [v.name]: false }));
-                  }}
-                  autoComplete="new-password"
-                />
-                {v.configured ? (
-                  <Button
-                    danger={secretClears[v.name]}
-                    onClick={() => setSecretClears((p) => ({ ...p, [v.name]: !p[v.name] }))}
-                  >
-                    {secretClears[v.name] ? '取消清除' : '清除'}
-                  </Button>
-                ) : null}
-              </Space.Compact>
-            ) : (
-              <Input
-                value={values[v.name] ?? ''}
-                placeholder={v.default != null ? `默认值：${v.default}` : '未设置'}
-                onChange={(e) => setValues((p) => ({ ...p, [v.name]: e.target.value }))}
-              />
-            )}
-            {!isModelVariable && v.pattern ? (
-              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                格式校验：{v.pattern}
-              </Typography.Text>
-            ) : null}
-          </div>
-        );
-      })}
+    <div className="aap-app-env-table-wrap">
+      <table className="aap-app-env-table">
+        <thead>
+          <tr>
+            <th scope="col">变量名</th>
+            <th scope="col">变量值</th>
+            <th scope="col">变量说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data!.declared.map((v) => {
+            const isModelVariable = /(?:^|_)MODEL(?:_NAME)?$/i.test(v.name);
+            const requiredClassName = v.required ? 'aap-env-required-input' : undefined;
+            return (
+              <tr key={v.name}>
+                <td><code>{v.name}</code></td>
+                <td>
+                  {isModelVariable ? (
+                    <Select
+                      showSearch
+                      optionFilterProp="label"
+                      allowClear={!v.required}
+                      className={requiredClassName}
+                      style={{ width: '100%' }}
+                      value={values[v.name] || undefined}
+                      placeholder={v.required ? '必填' : '选择模型'}
+                      notFoundContent={data!.models?.length ? '没有匹配的模型' : '管理后台尚未配置可用模型'}
+                      options={(data!.models ?? []).map((model) => ({ value: model, label: model }))}
+                      onChange={(value: string | undefined) => setValues((p) => ({ ...p, [v.name]: value ?? '' }))}
+                    />
+                  ) : v.secret ? (
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Input.Password
+                        className={requiredClassName}
+                        value={secretClears[v.name] ? '' : values[v.name] ?? ''}
+                        placeholder={v.required ? '必填' : v.configured ? `已设置 ${v.hint ?? ''}（留空保持不变）` : '未设置，请输入'}
+                        onChange={(e) => {
+                          setValues((p) => ({ ...p, [v.name]: e.target.value }));
+                          if (secretClears[v.name]) setSecretClears((p) => ({ ...p, [v.name]: false }));
+                        }}
+                        autoComplete="new-password"
+                      />
+                      {v.configured ? (
+                        <Button
+                          danger={secretClears[v.name]}
+                          onClick={() => setSecretClears((p) => ({ ...p, [v.name]: !p[v.name] }))}
+                        >
+                          {secretClears[v.name] ? '取消清除' : '清除'}
+                        </Button>
+                      ) : null}
+                    </Space.Compact>
+                  ) : (
+                    <Input
+                      className={requiredClassName}
+                      value={values[v.name] ?? ''}
+                      placeholder={v.required ? '必填' : v.default != null ? `默认值：${v.default}` : '未设置'}
+                      onChange={(e) => setValues((p) => ({ ...p, [v.name]: e.target.value }))}
+                    />
+                  )}
+                </td>
+                <td>{v.description}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
       {data!.undeclared.length > 0 ? (
         <Alert
           type="warning"
@@ -193,7 +188,7 @@ export function AppEnvModal({ appId, appName, open, onClose, theme, embedded = f
           message={`以下变量已存储但当前包版本不再声明（可忽略，或重新配置同名变量以清除）：${data!.undeclared.join('、')}`}
         />
       ) : null}
-    </Space>
+    </div>
   );
 
   if (embedded) {

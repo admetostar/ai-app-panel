@@ -3,8 +3,8 @@
 /** 项目主页（页脚未配置文案时的默认署名链接） */
 const PROJECT_URL = 'https://github.com/admetostar/ai-app-panel';
 
-/** 页脚：署名（未配置文案时默认展示「ai-app-panel」并链接项目主页）+ ICP + 公安备案组件。 */
-export function BeianFooter({ branding }: { branding: BrandingInfo }) {
+/** 页脚：主页显示举报邮箱，并展示站点署名与备案信息。 */
+export function BeianFooter({ branding, isHome = false }: { branding: BrandingInfo; isHome?: boolean }) {
   const year = new Date().getFullYear();
   const icp = branding.icpNumber?.trim();
   const police = branding.policeNumber?.trim();
@@ -17,8 +17,14 @@ export function BeianFooter({ branding }: { branding: BrandingInfo }) {
   return (
     <footer className="aap-footer">
       <div className="aap-footer__inner">
-        {hasFirstLine ? (
+        {isHome && branding.reportEmail ? (
           <div>
+            站内违法和不良信息举报邮箱：
+            <a href={`mailto:${branding.reportEmail}`}>{branding.reportEmail}</a>
+          </div>
+        ) : null}
+        {hasFirstLine ? (
+          <div style={{ marginTop: isHome && branding.reportEmail ? 4 : 0 }}>
             {configured ? <span>{branding.footerText}</span> : null}
             {configured && (icp || police) ? <span> · </span> : null}
             {icp ? (

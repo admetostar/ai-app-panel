@@ -13,7 +13,7 @@
                   │        └─ WS upgrade / SSE 零缓冲 / passUser 身份注入（X-AAP-Identity）
                   ├─ LLM 网关 /v1/* ──▶ 多上游 failover ──▶ OpenAI 兼容上游（智谱/阿里/vLLM…）
                   ├─ 账号/订阅/计费/卡券码/运营（PostgreSQL + Drizzle）
-                  └─ 通知通道（SMTP / Resend / 日志兜底）
+                  └─ 通知通道（SMTP / Resend / 阿里云 Dypnsapi / 邮件日志兜底）
 ```
 
 - 单进程单机语义：WS 会话、LLM 挑战、限流桶均在进程内；关系型数据（含账号、会话、计费与配置）保存在 PostgreSQL，证书/密钥文件/托管应用/应用包在 `DATA_DIR`（默认 `apps/server/data`，Docker 为 `/data`）。
@@ -26,7 +26,7 @@ pnpm install
 pnpm dev            # server:8080（tsx watch）+ web:5173（Vite，代理 /api 与 /app）
 pnpm skills:sync    # 从 Markdown 更新 .skill/.zip 包并同步三种下载格式到 apps/server/assets
 pnpm build          # 先同步 skill，再构建 shared → server → web（生产产物 apps/web/dist）
-pnpm test           # 服务端测试（vitest，23 个文件 224 个用例）
+pnpm test           # 服务端测试（vitest，24 个文件 232 个用例）
 pnpm test:e2e       # Playwright 端到端（自动拉起真实服务 + mock 上游）
 pnpm typecheck      # 全仓类型检查
 pnpm db:generate    # drizzle-kit 生成迁移（schema 变更后必跑）
@@ -40,6 +40,8 @@ AWPK Agent skill 的权威 Markdown 为 `docs/app-develop.skill-v0.3.md`。更�
 
 本地账号的新密码策略由 `packages/shared` 的 `isPasswordValid` 单一维护：8-128 位，至少包含大写字母、小写字母和数字。服务端在注册、找回密码、修改密码、管理员创建用户和密码重置时校验；前端对应表单同步提示与校验。管理员自动生成的初始密码由随机字母数字组成并符合此策略。
 
+邮箱和手机号换绑均需步升认证，验证码与发码时填写的目标地址绑定。个人中心发码成功后会锁定地址输入，避免验证码发送到一个地址、验证请求却提交另一个地址；如需更换目标地址，可关闭换绑窗口后重新打开。手机号换绑使用阿里云 Dypnsapi 短信验证码，并拒绝格式无效或已被其他账号占用的手机号。
+
 Docker Compose 默认启动 PostgreSQL 17 和门户。复制 `deploy/docker/.env.example` 为 `.env` 并设置强 `POSTGRES_PASSWORD`，然后在 `deploy/docker` 运行 `docker compose up -d --build`。新项目使用 `ai-app-panel-postgres-data` 数据卷和 `ai-app-panel-data` 文件卷；门户会等数据库健康检查通过后启动，并自动应用 `drizzle-pg/` 中的 PostgreSQL 初始迁移。旧项目的 Docker 卷、数据库、表和文件均不迁移；Compose 使用新的项目、容器和卷名称，不会自动删除或导入旧卷。不要将旧项目数据库连接串用于新部署。
 
 `DATABASE_URL` 是唯一运行时数据库连接配置，`MIGRATIONS_DIR` 可覆盖迁移目录（Docker 镜像中为 `/out/drizzle-pg`）。schema 有变更时运行 `pnpm db:generate`，生成的 PostgreSQL 迁移必须与 schema 一起提交。初始基线由 `src/db/schema.ts` 生成，外键引用保持基于 `search_path` 的未限定表名，以便测试在隔离 schema 中应用同一份迁移。
@@ -51,17 +53,18 @@ Docker Compose 默认启动 PostgreSQL 17 和门户。复制 `deploy/docker/.env
 
 密钥查看：secret 型默认不可读；`GET /api/admin/secrets/:key` 可查看（记审计），管理界面同路径有「查看」按钮——自研应用接入验签（`AAP_SIGN_SECRET`）从这里取。passUser 应用免手动取值：勾选「注入用户身份」的 .aap 包沙箱自动注入 `AAP_SIGN_SECRET`（baseEnv）；上游应用在管理后台应用表单勾选 passUser 时直接显示复制。后台轮换密钥（stopAllPersistent）或切换 passUser 开关（stopPersistentFor）自动停起 persistent 进程，下次访问以新配置拉起。
 
-主要分组：站点与品牌 / 注册与账号 / 人机验证 / 通知通道（验证码发信：SMTP 或 Resend）/ 证书与 HTTPS / 安全与限流 / 应用网关 / 计费。
+主要分组：站点与品牌 / 注册与账号 / 人机验证 / 通知通道（邮件 SMTP 或 Resend、阿里云 Dypnsapi 短信）/ 证书与 HTTPS / 安全与限流 / 应用网关 / 计费。
 
 管理端渲染约定（`apps/web/src/pages/Admin.tsx`）：
 - 每项按元数据选控件：`choiceLabels` → 下拉（中文选项）、bool → 开关、`secret` → 密码框 + 「查看」（`GET /api/admin/secrets/:key`，记审计）、int → 数字框
 - `exclusiveOf` 互斥渲染：如 `MAIL_PROVIDER=resend` 时只显示 Resend 两项、隐藏 SMTP 五项
+- 通知面板将注册验证方式与阿里云短信配置分组保存；AccessKey ID/Secret 按 secret 配置加密存储且掩码回显
 - 展示降噪：短标签 + 悬浮详情（完整描述与配置键）；仅 `defaultsWork=false` 的项显示「需配置」橙标
 - 「通知通道」「计费」「证书(HTTPS 跳转)」等有专用面板，经 `excludeKeys` 排除由专用表单写入的键
 
 管理员页面复用个人中心的主题与可折叠左侧导航，站点、应用、用户、安全、通知、证书、LLM 和运营设置均由侧栏进入，不再显示首次配置向导或顶部标签栏。管理页按当前主题单独配置 Ant Design 组件算法；深色模式下表单、选择器及弹出列表、表格、卡片、提示和文字均切换到高对比度深色配色。`GET /api/admin/overview` 为总览提供 CPU/内存水位、网络收发速率、用户与应用累计数、近 30 天 Token 消耗以及按套餐分组的有效订阅数量。CPU 使用进程内采样，首次采样显示采集中；内存使用主机总量/空闲量；网络带宽通过 Linux `/proc/net/dev` 的接口收发字节差计算，并以 10 Mbps 为水位基准，非 Linux 或计数器不可读时明确显示不可用。无固定上限的用户、应用和 Token 累计数使用数量级映射进度条，不代表权益上限。
 
-站点设置的 Logo 可通过输入框后的「上传」按钮选择 PNG/JPEG/GIF/WebP 图片（最大 5 MB）；文件写入 `DATA_DIR/admin/site-logo/`，服务端返回的 `/uploads/sitelogo/<随机文件名>` 路径回填到设置框，保存设置后应用到门户品牌和浏览器标签页图标；站点名称同步作为浏览器页面标题。页脚文案、版权声明、ICP备案号及公安备案号均可在站点设置中配置；版权声明留空时默认显示当前年份与站点名称，首页页脚内容居中对齐。平台会话 Cookie 默认不设置 `Domain`，按当前访问主机建立 host-only 会话；只有配置「本站域名」时才设置 Cookie 域名。Docker Compose 将整个 `/data` 挂载到 `ai-app-panel-data` 命名卷，因此该目录会在容器重建后保留。
+站点设置的 Logo 可通过输入框后的「上传」按钮选择 PNG/JPEG/GIF/WebP 图片（最大 5 MB）；文件写入 `DATA_DIR/admin/site-logo/`，服务端返回的 `/uploads/sitelogo/<随机文件名>` 路径回填到设置框，保存设置后应用到门户品牌和浏览器标签页图标；站点名称同步作为浏览器页面标题。页脚文案、版权声明、ICP备案号及公安备案号均可在站点设置中配置；版权声明留空时默认显示当前年份与站点名称，首页页脚内容居中对齐，并从启用管理员账号自动读取举报邮箱，生成 `mailto:` 链接。平台会话 Cookie 默认不设置 `Domain`，按当前访问主机建立 host-only 会话；只有配置「本站域名」时才设置 Cookie 域名。Docker Compose 将整个 `/data` 挂载到 `ai-app-panel-data` 命名卷，因此该目录会在容器重建后保留。
 
 证书管理通过 Cloudflare DNS-01 自动签发根域名及 `*.<根域名>` 通配符证书，并自动清理验证 TXT 记录。签发步骤和当前证书详情显示在管理后台「证书」页；证书详情包括颁发者、覆盖域名、生效/到期时间、剩余天数和指纹，Staging 测试证书会明确标记为浏览器不信任。后台签发固定使用 Let's Encrypt 正式环境；手动 PEM 安装作为高级选项保留。Cloudflare 配置位于管理后台「证书」→「Cloudflare DNS-01 配置」：填写 Zone ID 和仅对此 Zone 授予 DNS:Edit 权限的 API Token；Token 使用 settings secret 加密保存，签发状态与审计记录不包含 Token。DNS-01 配置会用于自动续期。ACME HTTPS 请求优先使用 IPv4，以兼容没有 IPv6 出站路由的服务器；服务器还需能解析并通过 HTTPS 访问 ACME 服务。签发失败会在状态页与容器日志中显示失败阶段及嵌套网络原因（例如连接超时及错误码），便于区分 Cloudflare/ACME 连通性、DNS 和 TLS 故障；API Token 不写入错误信息。
 
@@ -112,19 +115,19 @@ client = OpenAI(base_url="http://<host>:8080/v1", api_key="aapk_…")
 
 ## 6. 账号与通知通道
 
-- **个人中心 Dashboard**：固定可折叠左侧导航，按「应用」「账户和安全」「权益中心」分组提供六个二级入口，导航项悬浮时显示高亮和轻微位移；隐藏门户页眉，品牌与用户入口分别置于侧栏顶部和底部，每次只展示一个带标题和说明的内容面板。应用管理、资料/MFA/会话管理、权益查看/获取操作均保留。
+- **个人中心 Dashboard**：固定可折叠左侧导航，按「应用」「账户和安全」「权益中心」分组提供六个二级入口，导航项悬浮时显示高亮和轻微位移；「应用管理」标题说明后提供「点击查看操作指南」入口；分步操作指南最后一步对已登录用户显示「完成」、未登录用户显示「完成，前往登录 / 注册」，分别按现有登录态导航；隐藏门户页眉，品牌与用户入口分别置于侧栏顶部和底部，每次只展示一个带标题和说明的内容面板。应用管理、资料/MFA/会话管理、权益查看/获取操作均保留。
 
-- 注册默认开放，注册页支持选填邀请码（可从 `?invite=...` 预填）；每个账号创建时自动分配唯一、可重复使用的邀请码。验证码通道 `MAIL_PROVIDER`：`smtp`（五项配置）或 `resend`（仅需 API Key，`RESEND_FROM` 留空用沙箱发件人）；都未配置时为日志兜底（验证码打到服务端日志，内网可离线）。
-- **注册后权益选择**：邮箱注册完成验证后，普通新用户在存在启用权益包时进入 `/membership-selection` 选择套餐，服务端会拦截其他受保护 API 直至选择完成；零价包立即开通，积分足额时原子扣减并立即开通，人民币/美元套餐创建人工确认订单。无启用权益包时不要求选择套餐，新用户以未订阅状态进入个人中心，个人权益及额度为 0，注册赠送积分照常入账。若套餐在选择期间全部下架，用户可跳过选择继续使用未订阅账号。OIDC 新普通账号同样遵循此流程；首个管理员账号豁免，以便先完成后台配置。注册策略 `REGISTRATION_POINTS_GIFT` 为新建本地及 OIDC 账号赠送独立积分，默认 0，不追溯已有账号。开放注册不要求配置零价权益包。有效邀请码注册成功后，在同一数据库事务中累计邀请码使用数并按 `INVITE_REWARD_POINTS` 奖励邀请码属主，默认 100 分；管理员停用邀请码后仍可使用该邀请码完成开放注册，但不奖励。无效邀请码也不阻止注册。用户菜单底部的「账号电子身份卡」展示邀请码和带邀请码参数的注册二维码；后台邀请码列表显示属主、成功注册数并支持启停，不再提供手动生成。
+- 注册默认开放，注册页支持选填邀请码（可从 `?invite=...` 预填）；每个账号创建时自动分配唯一、可重复使用的邀请码。`REGISTRATION_VERIFY_CHANNEL` 可即时切换新用户注册验证方式：默认 `email`，沿用 `MAIL_PROVIDER` 的 `smtp`（五项配置）或 `resend`（仅需 API Key，`RESEND_FROM` 留空用沙箱发件人），邮件未配置时为日志兜底；设为 `phone` 时使用阿里云 Dypnsapi `SendSmsVerifyCode` / `CheckSmsVerifyCode`，注册页同步显示中国大陆手机号输入。短信启用前需在管理后台「通知通道」配置 AccessKey ID/Secret、已审核签名、模板编码及 JSON 模板参数（验证码占位符 `##code##`）；方案名称可选。验证码由阿里云生成并校验，服务端不记录或回传明文短信验证码。该开关仅影响新用户注册，登录仍使用用户名和密码，邮箱找回/绑定流程保持不变。
+- **注册后权益选择**：邮箱或短信注册完成验证后，普通新用户在存在启用权益包时进入 `/membership-selection` 选择套餐，服务端会拦截其他受保护 API 直至选择完成；零价包立即开通，积分足额时原子扣减并立即开通，人民币/美元套餐创建人工确认订单。无启用权益包时不要求选择套餐，新用户以未订阅状态进入个人中心，个人权益及额度为 0，注册赠送积分照常入账。若套餐在选择期间全部下架，用户可跳过选择继续使用未订阅账号。OIDC 新普通账号同样遵循此流程；首个管理员账号豁免，以便先完成后台配置。注册策略 `REGISTRATION_POINTS_GIFT` 为新建本地及 OIDC 账号赠送独立积分，默认 0，不追溯已有账号。开放注册不要求配置零价权益包。有效邀请码注册成功后，在同一数据库事务中累计邀请码使用数并按 `INVITE_REWARD_POINTS` 奖励邀请码属主，默认 100 分；管理员停用邀请码后仍可使用该邀请码完成开放注册，但不奖励。无效邀请码也不阻止注册。用户菜单底部的「账号电子身份卡」展示邀请码和带邀请码参数的注册二维码；后台邀请码列表显示属主、成功注册数并支持启停，不再提供手动生成。
 - 防滥用：注册/找回/绑定全程 PoW + 可选 Turnstile；同通道 60s 限 1 条 + 24h 上限；同 IP 24h 注册 ≤5（**计数含已完成注册**——registrations 完成时置 `completed_at` 保留行而非删行，完成行超 24h 清、未完成行按 TTL 清；2026-09-19 审计前删行即释放名额，上限形同虚设）。**找回验证码错猜 ≥5 次（10 分钟窗）作废该邮箱全部待用码**，错猜计入登录失败队列（联动 PoW 门槛与 IP 自动封禁）；重新发码即恢复全新尝试额度。**找回密码发码的 60s 重发/日上限命中时对外静默 200**（与不存在的邮箱响应体完全一致，ghost 路径补等量 scrypt 拉齐时序量级）——429 差异曾是确定性账号枚举 oracle（2026-09-19 审计修复）。**客户端 PoW 求解优先 WebCrypto，非安全上下文（HTTP 部署，`crypto.subtle` 不存在）自动回退纯 JS SHA-256**（`apps/web/src/lib/sha256.ts`，默认难度 16 位纯 JS 亚秒级；服务端校验语义不变）——否则 NAS/内网 HTTP 访问时注册、绑定邮箱等全部 PoW 流程直接抛 `crypto.subtle.digest` TypeError（2026-09-22 修复）。
 - MFA：TOTP（±1 窗 + 计数器重放拒绝，写回带 `last_used_counter < ?` 条件护栏防并发一码双用）+ Passkey（WebAuthn）+ 恢复码（10 枚一次性）+ 步升认证（密码或因子重验，`MFA_STEPUP_TTL` 内免重验）；管理员强制启用。**TOTP 登录/步升验证错猜 ≥5 次（10 分钟窗）作废当前会话**（`MFA_TOO_MANY_ATTEMPTS`），**并叠加账号维度持久计数（login_attempts 表 `mfa:<uid>` 命名空间，跨会话合计，成功清零，ip 列写哨兵不污染 IP 封禁面）**——单会话作废后重新登录不再重置额度（2026-09-19 审计修复）。**改密要求完全登录态**（`authState==='full'`，半登录态 403）。**强制流程服务端门禁（forceFlowGate）**：`mustChangePassword` 或「本地 admin 未绑 MFA」（OIDC 管理员委托 IdP 豁免）的会话除白名单端点（me/logout/change-password/mfa/*/step-up/*/portal/bootstrap）外一律 403 `FORCE_CHANGE_PASSWORD`/`FORCE_ENROLL_MFA`；登录/注册响应与 /auth/me 统一返回 `mustEnrollMfa`。**绑定新因子（TOTP enroll/confirm、Passkey 注册）需步升认证**（防被劫持会话静默绑新因子实现持久化）；登录即授予步升窗口（密码/Passkey/邮箱码本身就是刚验证过的因子，强制绑 MFA 流程因此不被卡）。**首启引导时序**：`ensureInitialAdmin` 等初始凭据 scrypt 落库后才 `listen`（曾 fire-and-forget，首秒内登录随机 401）。
 - **前端 MFA 流转（2026-09-24）**：强制改密页成功后按 `/auth/me` 重算的 `mustEnrollMfa` 分流——仅未绑 MFA 的 admin 进绑定页，普通用户直达门户（曾写死跳 `/mfa-setup`，普通用户被误带入绑定页）。绑定页（`/mfa-setup`）挂载先查 `/api/auth/mfa/status` 预检：TOTP 已确认不自动重发 enroll（服务端会 409）；绑齐 TOTP+Passkey 引导去个人中心；非强制场景出示「跳过绑定」。步升窗口（5 分钟）过期时绑定/管理动作收到 403 `STEP_UP_REQUIRED` 自动弹步升窗重验后重试（`useStepUp`/`withStepUp` 共享于 `apps/web/src/components/StepUpModal.tsx`）。**个人中心·安全 Tab 的 MFA 管理卡片**：状态与恢复码余量展示、Passkey 列表/删除/注册本设备、解绑 TOTP（admin 保底约束由服务端消息透出）、恢复码重新生成（弹窗一次性出示），全部前置步升。
-- **账户导航与头像**：门户页眉右侧头像/昵称入口以灰白信息面板展示账号资料、从当前有效订阅接口读取的权益名称与等级图标、角色和三段式主题选择；个人中心与「我的应用」使用固定可折叠侧栏，将品牌置顶、用户入口置底，并按「应用」「账户和安全」「权益中心」分组显示二级导航；每次仅渲染当前内容面板。浅色主题下个人中心页面、侧栏与信息卡片统一使用纯白背景；深色主题下个人中心各板块、表格（含分页区域）和主题相关弹窗统一使用深色表面，避免遗留浅色长条。其它页面用户菜单提供「个人中心」「我的应用」「退出登录」「账号电子身份卡」及管理员专属「管理后台」导航。浅色为默认主题，深色与跟随系统选项仅作用于个人中心和「我的应用」，通过同源 cookie 保持刷新后的选择，不写入后台；登录成功直接进入个人中心。头像文件位于 `apps/server/assets/icons`，新注册、本地管理员建号、OIDC 首登及首次管理员均按用户 ID 稳定分配；历史空头像账号由 `publicUserOf` 提供确定性回退，Web 构建通过 Vite glob 将头像打包。注销卡片位于账户信息面板末尾，操作需步升验证。
+- **账户导航与头像**：门户页眉右侧头像/昵称入口以灰白信息面板展示账号资料、从当前有效订阅接口读取的权益名称与等级图标、角色和三段式主题选择；个人中心基础资料以无边框二维表格展示，头像支持上传图片并在前端裁剪压缩为 256×256 JPEG（≤90KB），昵称可编辑，用户名、邮箱和角色只读，保存统一提交到 `PATCH /api/user/profile`。个人中心与「我的应用」使用固定可折叠侧栏，将品牌置顶、用户入口置底，并按「应用」「账户和安全」「权益中心」分组显示二级导航；每次仅渲染当前内容面板。浅色主题下个人中心页面、侧栏与信息卡片统一使用纯白背景；深色主题下个人中心各板块、表格（含分页区域）和主题相关弹窗统一使用深色表面，避免遗留浅色长条。其它页面用户菜单提供「个人中心」「我的应用」「退出登录」「账号电子身份卡」及管理员专属「管理后台」导航。浅色为默认主题，深色与跟随系统选项仅作用于个人中心和「我的应用」，通过同源 cookie 保持刷新后的选择，不写入后台；登录成功直接进入个人中心。头像文件位于 `apps/server/assets/icons`，新注册、本地管理员建号、OIDC 首登及首次管理员均按用户 ID 稳定分配；历史空头像账号由 `publicUserOf` 提供确定性回退，Web 构建通过 Vite glob 将头像打包。注销卡片位于账户信息面板末尾，操作需步升验证。
 - **网页字体**：门户、认证页、操作导航、个人中心及管理后台共用系统无衬线字体栈（优先系统字体，中文依次回退到苹方/微软雅黑，再回退 `sans-serif`）；代码、密钥及验证码等需要对齐的内容保留专用等宽字体。
-- **我的应用**：`/my-apps` 在个人中心共用侧栏与页面标题样式，分为“我自己的”“已共享的”“站内共享”；前两区卡片点击可访问，站内共享区显示不可直接访问、但可按权益克隆的应用。站内克隆复制应用文件和环境变量，不复制应用运行期 `app.sqlite`/`storage` 数据，副本固定为仅自己可见；删除后释放一个克隆名额。可访问卡片带轻量 3D 阴影与悬浮效果，悬停时右侧以抽屉动效展示访问二维码。`GET /api/apps/shared` 返回可直接访问的公开共享应用，`GET /api/apps/site-shared` 返回可克隆的站内共享应用，`GET /api/apps/mine` 返回用户托管应用及克隆标记。发布、配置环境变量、删除等操作仍集中在「应用管理」分区。
-- **应用设置**：个人中心「应用管理」的已创建应用列表以「设置」弹窗集中管理图标、名称、描述和可见范围；图标仅通过图片上传修改，保存于数据卷 `DATA_DIR/app-private/icons/<应用 ID 的 SHA-256>/`，不进入可下载的应用文件目录。`POST /api/apps/:id/icon` 只允许归属者上传受签名校验的 PNG/JPEG/GIF/WebP 图片（最大 2 MB）；读取接口按应用门户可见范围校验。AWPK 包的环境变量也可在同一弹窗中配置，唯一的「保存设置」按钮会先保存环境变量，再保存基本信息和可见范围；若后一步失败会明确提示环境变量已先行保存。`PUT /api/apps/:id/settings` 仅允许归属者修改名称、描述及可见范围，并校验字段长度；环境变量仍经 `/api/apps/:id/env` 保存并加密。已创建应用列表以列展示安装日期、包大小、版本和平台支持，不再点击名称展开详情。
+- **我的应用**：`/my-apps` 在个人中心共用侧栏与页面标题样式，分为“我自己的”“已共享的”“站内共享”；卡片左上角显示 `apps/server/assets/badges/tag-internal.svg`、`tag-private.svg` 或 `tag-public.svg` 可见性角标，角标为绝对定位，不占用卡片内容的上方空间；卡片内容垂直居中并保持相同上下留白，角标不遮挡应用图标；应用管理列表使用相应的 `internal.svg`、`private.svg`、`public.svg` 图标替代文字标签。前两区卡片点击可访问，站内共享区显示不可直接访问、但可按权益克隆的应用。站内克隆复制应用文件和环境变量，不复制应用运行期 `app.sqlite`/`storage` 数据，副本固定为仅自己可见；删除后释放一个克隆名额。可访问卡片带轻量 3D 阴影与悬浮效果，悬停时右侧以抽屉动效展示访问二维码。`GET /api/apps/shared` 返回可直接访问的公开共享应用，`GET /api/apps/site-shared` 返回可克隆的站内共享应用，`GET /api/apps/mine` 返回用户托管应用及克隆标记。发布、配置环境变量、删除等操作仍集中在「应用管理」分区。
+- **应用设置**：个人中心「应用管理」的已创建应用列表以圆角「设置」弹窗集中管理图标、名称、描述和可见范围；点击图标即可选择图片上传，不另设上传按钮；图标保存于数据卷 `DATA_DIR/app-private/icons/<应用 ID 的 SHA-256>/`，不进入可下载的应用文件目录。`POST /api/apps/:id/icon` 只允许归属者上传受签名校验的 PNG/JPEG/GIF/WebP 图片（最大 2 MB）；读取接口按应用门户可见范围校验。AWPK 包的环境变量也可在同一弹窗中配置，无变量时显示简洁空状态图，变量说明使用较小字号，输入框与选择框使用圆角；唯一的「保存设置」按钮会先保存环境变量，再保存基本信息和可见范围；若后一步失败会明确提示环境变量已先行保存。`PUT /api/apps/:id/settings` 仅允许归属者修改名称、描述及可见范围，并校验字段长度；环境变量仍经 `/api/apps/:id/env` 保存并加密。已创建应用列表以列展示安装日期、包大小、版本和平台支持，不再点击名称展开详情。
 - **个人中心权益**：「我的权益」解释权益对服务范围、有效期、应用上传名额及 Token 额度的作用，并突出实际余额；历史订阅仅展示权益订阅订单。「获取权益」说明可通过积分兑换和兑换码获取指定权益，额度订单以 Token 额度描述。
-- **门户首页与认证页**：首页品牌文案读取门户引导接口 `branding.siteName`，欢迎标题、品牌介绍和上传说明均随后台站点名称设置变化；首页按首屏欢迎区、应用列表、在售权益包、常见问题纵向排列；发现应用卡片带轻量 3D 阴影与悬浮效果，悬停时右侧以抽屉动效展示访问二维码，点击卡片直接打开应用；首页页眉固定在顶部，未滚动时完全透明并显示灰白导航文字与白底黑字登录按钮，滚动后切换为毛玻璃乳白半透明背景、灰黑导航文字与黑底白字登录按钮；「发现应用」、权益、FAQ 与登录按钮等间距排列，不显示区块入口选中态。其它显示门户页眉的页面保持磨砂透明背景；页眉导航平滑定位到对应区块。「现在开始」对未登录用户进入分步应用制作导航（五章使用中文数字编号、精简章节内容与留白以减少滚动，逐步阅读或跳过后进入登录/注册），已登录用户直达应用管理；其它页面页眉的「操作指南」进入同一分步导航。登录成功不再弹出操作指南。权益包通过公开只读接口 `/api/portal/plans` 获取，仅返回管理员启用的套餐；FAQ 与操作指南共用同一份问答数据。登录/注册页使用 `apps/server/assets/login.jpg` 铺满左栏，提供服务条款与可接受使用政策静态页并显示站点页脚；首页首屏使用 `apps/server/assets/home-background.png`，其余区块为浅色背景。
+- **门户首页与认证页**：首页品牌文案读取门户引导接口 `branding.siteName`，欢迎标题、品牌介绍和上传说明均随后台站点名称设置变化；首页按首屏欢迎区、应用列表、在售权益包、常见问题纵向排列；发现应用卡片内容垂直居中并保持上下留白一致，“用户提交”分类不显示独立小标题；卡片带轻量 3D 阴影与悬浮效果，悬停时右侧以抽屉动效展示访问二维码，点击卡片直接打开应用；首页页眉固定在顶部，未滚动时完全透明并显示灰白导航文字与白底黑字登录按钮，滚动后切换为毛玻璃乳白半透明背景、灰黑导航文字与黑底白字登录按钮；「发现应用」、权益、FAQ 与登录按钮等间距排列，不显示区块入口选中态。其它显示门户页眉的页面保持磨砂透明背景；页眉导航平滑定位到对应区块。「现在开始」对未登录用户进入分步应用制作导航（五章使用中文数字编号、精简章节内容与留白以减少滚动，逐步阅读或跳过后进入登录/注册），已登录用户直达应用管理；其它页面页眉的「操作指南」进入同一分步导航。登录成功不再弹出操作指南。权益包通过公开只读接口 `/api/portal/plans` 获取，仅返回管理员启用的套餐；FAQ 与操作指南共用同一份问答数据。登录/注册页使用 `apps/server/assets/login.jpg` 铺满左栏，注册表单紧凑排列，短视口下右侧内容可独立滚动；服务条款与可接受使用政策位于认证面板下方。页脚仅显示于首页、登录页和注册页；首页首屏使用 `apps/server/assets/home-background.png`，其余区块为浅色背景。
 - 防爆破双维度：IP 维度之外增加**账号维度**失败计数（`login_attempts.user_key`），同账号跨 IP 分布式撞库同样触发 PoW 要求。邀请码归属用户唯一索引保证每个账号只有一个专属码；并发注册通过事务锁定邀请码行，使有效注册计数和邀请积分奖励原子生效。
 - OIDC SSO：配置 Issuer/ClientId/Secret 即启用（重启生效）；`OIDC_ADMIN_SUBJECTS` 首登提升管理员；待批准账号重复登录干净回到待批提示（不下发即刻失效的会话）。
 
@@ -150,7 +153,7 @@ client = OpenAI(base_url="http://<host>:8080/v1", api_key="aapk_…")
 - FPK（**原生形态**，2026-09 定稿）：`deploy/fpk/build-fpk.sh <版本> <x86|arm|all>`——载荷 = `deploy/native` 自包含包，`manifest`/`config`/`cmd`/`wizard`/双尺寸图标按官方 fnpack 必检清单组装；**主入口 = 本服务自主监听端口**（向导 `wizard_port` 默认 8080，绑 0.0.0.0，`checkport=false`），与 Docker 形态路径行为完全一致；桌面图标 = `type=url` 端口快捷方式（不经飞牛统一网关——跨源 iframe 会被门户自身 frame-ancestors 拦截）；业务鉴权全部走门户自有账号体系。服务端 `GATEWAY_PREFIX`/`SOCKET_PATH`/`HOST` 能力保留休眠。取舍与真机待验证清单见 `deploy/fpk/README.md`。Docker 形态不再出 FPK。
 - 原生（无 Docker）：`deploy/native/build-native.sh linux/arm64|linux/amd64` —— 在 node:22-bookworm（glibc）容器内构建，产出自包含应用包（Node 22、服务端/前端构建产物与 PostgreSQL 迁移）；需外部 PostgreSQL 17 和系统 `python3`。运行方式与安全红线（systemd 专用用户替代 `SANDBOX_UID/GID` 降权）见包内 `README-NATIVE.md`。
 - CI：`.github/workflows/docker-publish.yml` —— push main / tag `v*`：多架构镜像 → ghcr.io（tag 冒烟 `/api/health`）；原生 FPK 与镜像发布解耦，按 amd64/arm64 矩阵构建自包含包 → 打包 x86/arm 双 FPK 附 Release；tag 必须与根 `package.json.version` 一致。
-- 测试机快速部署：`./deploy/fast-deploy.sh`（本地构建产物 + rsync + **docker cp** 灌入容器重启，零服务器下载——轻量机带宽小，服务器上构建曾两次整机饿死）；仅依赖变更（lockfile）才需服务器 `compose build`（Dockerfile 已 manifest 先行 COPY + pnpm store BuildKit 缓存挂载，源码变更不再触发全量拉包）。
+- 测试机快速部署：`AAP_DEPLOY_HOST=user@host AAP_DEPLOY_KEY=~/.ssh/key ./deploy/fast-deploy.sh`（本地构建 Docker 镜像，经 SSH 流式导入 ECS 后仅重建 portal；保留远端 `.env`，不在服务器构建，不重建 PostgreSQL 或持久卷）。依赖变更也由本地镜像构建带入，避免服务器下载与构建。
 
 ## 9. 约束与纪律
 
@@ -159,11 +162,11 @@ client = OpenAI(base_url="http://<host>:8080/v1", api_key="aapk_…")
 - 契约变更：`packages/shared` 为单一来源；`.awpk` 接口面变更必须升版 `app-develop.skill` 并同步 internal skill。
 - 审计：账号/应用/网关/计费的关键动作全部落 `audit_logs`（保留期可配，分批清理）。
 - **沙箱隔离现状**：`.awpk` Python 进程的受控出网通道是平台 egress 代理（manifest 白名单 + IP 黑名单**逐跳**校验，`routes/aap.ts`）；runner 内置 **Python 层出站守卫**（`connect` 仅放行 `AAP_PLATFORM`，直连其余地址/Unix socket 报错，`AAP_NET_GUARD=0` 关闭）；子进程环境变量走白名单（`lib/sandbox.ts` 的 `SANDBOX_ENV_KEYS`）；invoked 执行有全局并发上限（`SANDBOX_MAX_CONCURRENT_RUNS`，默认 8，超出排队防进程炸弹）；persistent 有全局进程数上限（`SANDBOX_MAX_PERSISTENT`，默认 12，超限回收最久未用进程——任务状态应落 aap.db，重拉无损）；**persistent 空闲回收时长可配**（`SANDBOX_IDLE_RECYCLE_SECONDS`，默认 300s，最小 30s，管理端改完即时生效）；沙箱以预建的 ai-app-panel 用户（10001）**默认降权运行**（compose `SANDBOX_UID`/`SANDBOX_GID` 已默认启用；新部署按当前目录权限初始化，后续新上传包目录由平台自动放宽权限）。**开放注册 + 允许用户上传包的部署必须保持降权**，否则任意注册用户可读全站凭据哈希与 master.key（二轮渗透实测）。门户业务数据位于 PostgreSQL；托管应用的 `app.sqlite` 是应用自己的状态数据。`master.key` 文件权限为 0600。**进程级禁网、CPU/内存限额与 ns/cgroups 硬隔离仍未实装**（Python 层守卫属纵深防御，非硬保证）；第三方包须通过上传阶段的包结构、manifest、当前权益包上传数量与依赖校验，公开发布不限制应用数量。
-- **应用环境变量 / 机密（G6）**：包在 manifest `env` 声明变量（required/secret/pattern/default，保留名黑名单防劫持 `AAP_*`/`PORT`/代理变量等平台注入面，`parseEnvSpec`），归属者/管理员经 `GET/PUT /api/apps/:id/env` 填值（`app_env_vars` 表 AES-256-GCM 加密落盘，secret 只写不读仅回尾 4 位 hint，审计只记名不记值）。除机密外，env 亦是**应用级默认配置**的承载（如 llm-proofread 的 `PROOFREAD_PROMPT`/`COHERENCE_PROMPT`：归属者配置对所有用户生效，用户个人设置可覆盖）；`baseEnv()` 在 invoked/persistent 沙箱启动时注入（未配置非机密变量回退声明 default）；必填缺配在执行（400 ENV_MISSING）/拉起（503 错误页）时明确拦截；persistent 配置变更后自动重启进程。入口：管理后台·应用管理与用户中心·我的应用的「环境变量」弹窗。规范见 `./app-develop.skill-v0.3.md` §1.1。
+- **应用环境变量 / 机密（G6）**：包在 manifest `env` 声明变量（required/secret/pattern/default，保留名黑名单防劫持 `AAP_*`/`PORT`/代理变量等平台注入面，`parseEnvSpec`），归属者/管理员经 `GET/PUT /api/apps/:id/env` 填值（`app_env_vars` 表 AES-256-GCM 加密落盘，secret 只写不读仅回尾 4 位 hint，审计只记名不记值）。除机密外，env 亦是**应用级默认配置**的承载（如 llm-proofread 的 `PROOFREAD_PROMPT`/`COHERENCE_PROMPT`：归属者配置对所有用户生效，用户个人设置可覆盖）；`baseEnv()` 在 invoked/persistent 沙箱启动时注入（未配置非机密变量回退声明 default）；必填缺配在执行（400 ENV_MISSING）/拉起（503 错误页）时明确拦截；persistent 配置变更后自动重启进程。入口：管理后台·应用管理与用户中心·我的应用的「环境变量」弹窗，编辑器以“变量名、变量值、变量说明”三列展示；必填项使用红色边框和“必填”占位提示，不显示星号或额外说明文案。规范见 `./app-develop.skill-v0.3.md` §1.1。
 - 包上传安全语义：用户提交（`POST /api/apps/submit`）与执行（`/api/apps/:id/run`）均要求登录；正式目录的写入/删除一律在归属校验与同名查重之后（admin 上传 409 不触碰既有站点目录）；临时目录按请求唯一命名；15MB 包体 JSON 在鉴权之后解析（匿名大包 DoS 面收敛）。
 - **python 包第三方依赖（skill v0.2.6 声明制）**：manifest `requirements` 声明（`parseRequirements` 仅收「名称[extras]+版本约束」，拒 URL/本地路径/-r，上限 32 条），**上传/更新时服务端 `pip install --only-binary=:all: --target <appsites>/<id>/.deps`**（`lib/pydeps.ts`，超时 300s；容器日志记录开始、每 30 秒仍在安装的状态、完成或失败；失败=上传被拒并清理临时目录，不带病上线）；个人中心和管理后台会提示依赖安装阶段及最长等待时间。沙箱 `baseEnv` 注入 `PYTHONPATH=.deps`（native/FPK `start.sh` 自检补装的预置框架目录经 `AAP_PREINSTALLED_PYTHONPATH` 前置——docker 镜像预装 py3-flask 无此环节）。安装源走「应用网关 → pip 索引源」设置（`PIP_INDEX_URL`，默认官方 PyPI）；新版本不再声明的依赖更新时自动清除；`.deps` 在数据卷应用目录下，容器重建/升级不丢。管理端包预览展示依赖清单。
 - **egress 出站代理（P0-3 修复）**：白名单域名经 `dns.lookup` 解析后对全部 A/AAAA 复核私网/保留段黑名单（环回/RFC1918/169.254 链路本地/CGNAT/ULA 等，防 `*.nip.io` 类 DNS 绕过，线上实锤项）；IP 字面量与 localhost/.local/.internal 仍一律拒绝；出站失败详情只进服务端日志不回传调用者（防内网探测 oracle）。残留风险：解析与请求间存在理论 TOCTOU 窗口，容器形态网络隔离补齐后消除。 **内网部署例外**：管理员可在「应用网关 → 内网出站白名单」（`EGRESS_INTRANET_ALLOWLIST`）配置域名/IP/IPv4 CIDR，命中即完全放行（管理员权威高于包声明，无需包 manifest 重复声明；CIDR 区间无法逐 IP 声明）；169.254 链路本地无条件拒绝。未命中时包 manifest 照常生效、内网目标照常拒绝。**自定义请求头转发**：`aap.http.fetch(url, timeout, headers)` 支持包传自定义头（第三方 API 鉴权场景，密钥经门户环境变量注入）；≤16 个、值 ≤4KB，Host/Connection/Content-Length/Proxy-* 等逐跳与托管头剥除；响应 `{"status": 上游状态码, "body": 文本≤500KB}`。
-- **敏感配置加密**：settings 的 secret 型配置（`AAP_SIGN_SECRET`/`SMTP_PASS`/`RESEND_API_KEY`/`OIDC_CLIENT_SECRET`）落盘前 AES-256-GCM 加密（`enc:` 前缀自描述；存量明文读取兼容，后台再次保存即转密文）。
+- **敏感配置加密**：settings 的 secret 型配置（`AAP_SIGN_SECRET`/`SMTP_PASS`/`RESEND_API_KEY`/`ALIYUN_ACCESS_KEY_ID`/`ALIYUN_ACCESS_KEY_SECRET`/`OIDC_CLIENT_SECRET`）落盘前 AES-256-GCM 加密（`enc:` 前缀自描述；存量明文读取兼容，后台再次保存即转密文）。
 - **传输与跳转**：HTTPS 实际启用时全站挂 HSTS（2 年，主域）；HTTP→HTTPS 跳转目标只认 `ACME_DOMAIN`（不反射请求 Host，防直达源 IP 场景的钓鱼/缓存投毒组件）；**loopback Host（127.0.0.1/localhost/::1）豁免跳转**——沙箱 runner 与 FPK 统一网关的平台内部 POST 调用若被 302 到公网域名，跟随重定向会降级为 GET 打断全部沙箱出站（llm-proofread 实测）。
 - **信息泄露收敛**：匿名 `/api/health` 仅回 ok（version/uptime 移入管理员总览）；登录 401 不再回 failures/banned；`/api/dev/guide` 需登录。
 - **身份头（X-AAP-Identity）**：验签强制 exp 存在且未过期；jti 一次性（TTL 窗口内防重放；平台内部归因 `allowReplay` 豁免）。`/api/admin/redeem/*` 显式挂 `requireAdmin`（不再依赖挂载顺序偶然保护）。`AAP_PLATFORM`/沙箱平台地址一律取明文 HTTP 环回口（`loopbackPlatformPort`：HTTP 到达取 `req.socket.localPort`，**TLS 口到达回落 `config.port`**——第二轮渗透 NEW-2，8443 是 TLS 监听、明文调用必断），绝不信客户端 Host。

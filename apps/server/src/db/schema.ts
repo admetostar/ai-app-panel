@@ -153,7 +153,7 @@ export const verificationCodes = pgTable(
   'verification_codes',
   {
     id: serial('id').primaryKey(),
-    /** 'email' | 'phone'（M1 首发邮件；phone 为短信通道预留） */
+    /** 'email' | 'phone'（邮件验证码或阿里云 Dypnsapi 短信验证码） */
     channel: varchar('channel', { length: 191 }).notNull(),
     target: varchar('target', { length: 320 }).notNull(),
     /** 'register' | 'reset' | 'bind' */

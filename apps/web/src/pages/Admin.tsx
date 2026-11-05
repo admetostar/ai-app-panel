@@ -30,6 +30,7 @@ import { CopyOutlined } from '@ant-design/icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
+import { appVisibilityBadgeSrc, appVisibilityLabel } from '../lib/appVisibility';
 import { useSession } from '../state/session';
 import { AppEnvModal } from '../components/AppEnvModal';
 import { TierBadge } from '../components/TierBadge';
@@ -689,18 +690,8 @@ function AppsTab(): ReactNode {
             { title: '上游', dataIndex: 'upstream', ellipsis: true, render: (v: string) => v || '—' },
             {
               title: '可见性',
-              width: 160,
-              render: (_, r) => (
-                <Tag
-                  color={r.visibility === 'public' ? 'green' : r.visibility === 'private' ? 'default' : 'blue'}
-                >
-                  {r.visibility === 'public'
-                    ? '公开'
-                    : r.visibility === 'private'
-                      ? '仅自己'
-                      : '站内'}
-                </Tag>
-              ),
+              width: 120,
+              render: (_, r) => <img className="aap-visibility-badge" src={appVisibilityBadgeSrc(r.visibility, 'list')} alt={appVisibilityLabel(r.visibility)} title={appVisibilityLabel(r.visibility)} />,
             },
             { title: '健康', width: 90, render: (_, r) => dot(r.healthState) },
             {
@@ -1166,7 +1157,7 @@ function UsersRegTab(): ReactNode {
         description="邀请码为选填项；使用有效邀请码注册后，邀请人获得配置的奖励积分。管理员停用邀请码后仍可继续注册，但不发放邀请奖励。"
       />
       <Card size="small" title="注册与邀请奖励">
-        <SettingsForm groups={['注册与账号']} />
+        <SettingsForm groups={['注册与账号']} excludeKeys={['REGISTRATION_VERIFY_CHANNEL']} />
       </Card>
 
       <GroupsCard />
@@ -1364,7 +1355,7 @@ function SecurityTab(): ReactNode {
   );
 }
 
-// ---------- 通知通道（邮件 [SMTP/Resend] / 未来短信 + 发信测试） ----------
+// ---------- 通知通道（邮件 [SMTP/Resend] / 阿里云短信） ----------
 
 function MailTab(): ReactNode {
   const qc = useQueryClient();
@@ -1373,7 +1364,9 @@ function MailTab(): ReactNode {
     queryFn: () => api<{ settings: SettingRow[] }>('/api/admin/settings'),
   });
   const [form] = Form.useForm();
+  const [smsForm] = Form.useForm();
   const [saving, setSaving] = useState(false);
+  const [smsSaving, setSmsSaving] = useState(false);
   const [testTo, setTestTo] = useState('');
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -1388,14 +1381,27 @@ function MailTab(): ReactNode {
       ? ['MAIL_PROVIDER', 'RESEND_API_KEY', 'RESEND_FROM']
       : ['MAIL_PROVIDER', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM'];
   const visible = defs.filter((s) => visibleKeys.includes(s.key));
+  const smsKeys = [
+    'REGISTRATION_VERIFY_CHANNEL',
+    'ALIYUN_ACCESS_KEY_ID',
+    'ALIYUN_ACCESS_KEY_SECRET',
+    'ALIYUN_SMS_SIGN_NAME',
+    'ALIYUN_SMS_TEMPLATE_CODE',
+    'ALIYUN_SMS_TEMPLATE_PARAM',
+    'ALIYUN_SMS_SCHEME_NAME',
+  ];
+  const smsSettings = defs.filter((s) => smsKeys.includes(s.key));
+  const smsChannel = Form.useWatch('REGISTRATION_VERIFY_CHANNEL', smsForm) ??
+    defs.find((s) => s.key === 'REGISTRATION_VERIFY_CHANNEL')?.value ?? 'email';
 
   useEffect(() => {
     if (settingsQ.data) {
       const values: Record<string, string> = {};
       for (const s of defs) values[s.key] = s.value;
       form.setFieldsValue(values);
+      smsForm.setFieldsValue(values);
     }
-  }, [settingsQ.data, form, defs]);
+  }, [settingsQ.data, form, smsForm, defs]);
 
   async function save(): Promise<void> {
     setSaving(true);
@@ -1413,6 +1419,25 @@ function MailTab(): ReactNode {
       message.error(err instanceof Error ? err.message : '保存失败');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function saveSmsSettings(): Promise<void> {
+    setSmsSaving(true);
+    try {
+      const payload: Record<string, string> = {};
+      for (const key of smsKeys) {
+        const value = smsForm.getFieldValue(key);
+        if (value !== undefined && value !== null) payload[key] = String(value);
+      }
+      await api('/api/admin/settings', { method: 'PUT', json: payload });
+      message.success('短信配置已保存并即时生效');
+      void qc.invalidateQueries({ queryKey: ['admin-settings'] });
+      void qc.invalidateQueries({ queryKey: ['bootstrap'] });
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '保存短信配置失败');
+    } finally {
+      setSmsSaving(false);
     }
   }
 
@@ -1480,6 +1505,26 @@ function MailTab(): ReactNode {
             未配置通道时验证码走服务端日志兜底（内网可离线）。
           </div>
         )}
+      </Card>
+
+      <Card size="small" title="手机短信注册（阿里云 Dypnsapi）">
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="短信仅用于新用户注册验证，登录仍使用用户名和密码"
+          description="仅支持中国大陆手机号。启用短信注册前，请填写有效的阿里云 AccessKey、已审核签名、模板编码和模板参数；模板参数需为 JSON 对象并包含 ##code##。"
+        />
+        <Form form={smsForm} layout="vertical">
+          {smsSettings.map((s) => (
+            <Form.Item key={s.key} name={s.key} label={s.label} tooltip={s.desc}>
+              {renderControl(s, smsForm, true)}
+            </Form.Item>
+          ))}
+          <Button type="primary" loading={smsSaving} onClick={() => void saveSmsSettings()}>
+            {smsChannel === 'phone' ? '保存并启用短信注册' : '保存短信配置'}
+          </Button>
+        </Form>
       </Card>
     </Space>
   );

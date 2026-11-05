@@ -123,6 +123,15 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     initial: () => '10',
     defaultsWork: true,
   },
+  REGISTRATION_VERIFY_CHANNEL: {
+    label: '新用户注册验证方式',
+    group: '注册与账号',
+    type: 'string',
+    choiceLabels: { email: '邮箱验证码', phone: '手机短信验证码' },
+    desc: '作为注册页默认验证方式；用户可在邮件与已配置的阿里云短信间切换，登录仍使用用户名和密码',
+    initial: () => 'email',
+    defaultsWork: true,
+  },
   DELETION_COOLDOWN_DAYS: {
     label: '注销冷静期（天）',
     group: '注册与账号',
@@ -355,7 +364,7 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   TURNSTILE_SECRET_KEY: {
     group: '人机验证', label: 'Turnstile 服务端密钥', type: 'string', desc: 'Turnstile 服务端密钥', initial: () => '', secret: true, defaultsWork: true },
 
-  // ---- 通知通道（A2，验证码发信：邮件 [Resend/SMTP] 与未来短信） ----
+  // ---- 通知通道（A2，验证码发信：邮件 [Resend/SMTP] 与阿里云短信） ----
   SMTP_HOST: {
     label: 'SMTP 服务器',
     group: '通知通道（验证码发信）', type: 'string', desc: 'SMTP 服务器（注册/找回/绑定邮箱验证码发信）', initial: () => '', defaultsWork: false },
@@ -385,6 +394,56 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
     group: '通知通道（验证码发信）', type: 'string',
     desc: 'Resend 发件人（留空：默认用沙箱发件人 onboarding@resend.dev，仅能发给本 Resend 账号注册邮箱；绑定自有域名后填 "ai-app-panel <no-reply@mail.example.com>" 即可发给任意用户）',
     initial: () => '', defaultsWork: true },
+  ALIYUN_ACCESS_KEY_ID: {
+    label: '阿里云 AccessKey ID',
+    group: '通知通道（验证码发信）',
+    type: 'string',
+    desc: '调用阿里云 Dypnsapi 短信验证码接口的 AccessKey ID',
+    initial: () => '',
+    secret: true,
+    defaultsWork: false,
+  },
+  ALIYUN_ACCESS_KEY_SECRET: {
+    label: '阿里云 AccessKey Secret',
+    group: '通知通道（验证码发信）',
+    type: 'string',
+    desc: '调用阿里云 Dypnsapi 短信验证码接口的 AccessKey Secret；加密保存',
+    initial: () => '',
+    secret: true,
+    defaultsWork: false,
+  },
+  ALIYUN_SMS_SIGN_NAME: {
+    label: '阿里云短信签名',
+    group: '通知通道（验证码发信）',
+    type: 'string',
+    desc: 'SendSmsVerifyCode 接口要求的已审核短信签名',
+    initial: () => '',
+    defaultsWork: false,
+  },
+  ALIYUN_SMS_TEMPLATE_CODE: {
+    label: '阿里云短信模板编码',
+    group: '通知通道（验证码发信）',
+    type: 'string',
+    desc: '阿里云短信平台审核通过的验证码模板编码',
+    initial: () => '',
+    defaultsWork: false,
+  },
+  ALIYUN_SMS_TEMPLATE_PARAM: {
+    label: '阿里云短信模板参数',
+    group: '通知通道（验证码发信）',
+    type: 'string',
+    desc: 'JSON 格式的模板变量；验证码占位符使用 ##code##，例如 {"code":"##code##"}',
+    initial: () => '',
+    defaultsWork: false,
+  },
+  ALIYUN_SMS_SCHEME_NAME: {
+    label: '阿里云短信方案名称',
+    group: '通知通道（验证码发信）',
+    type: 'string',
+    desc: '可选；留空时使用阿里云默认方案',
+    initial: () => '',
+    defaultsWork: true,
+  },
 };
 
 const settingCache = new Map<string, string>();

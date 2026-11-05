@@ -31,7 +31,7 @@ export function InviteIdentityCard({
   });
   const [qr, setQr] = useState<string | null>(null);
   const inviteLink = useMemo(
-    () => invite.data ? `${window.location.origin}${withBase('/register')}?invite=${encodeURIComponent(invite.data.code)}` : '',
+    () => invite.data ? `${window.location.origin}${withBase('/register')}?channel=email&invite=${encodeURIComponent(invite.data.code)}` : '',
     [invite.data],
   );
 

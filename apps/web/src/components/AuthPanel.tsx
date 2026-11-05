@@ -1,9 +1,9 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
-export function AuthPanel({ children }: { children: ReactNode }): ReactNode {
+export function AuthPanel({ children, className = '' }: { children: ReactNode; className?: string }): ReactNode {
   return (
-    <div className="aap-auth-panel">
+    <div className={`aap-auth-panel${className ? ` ${className}` : ''}`}>
       <div className="aap-auth-art" aria-hidden="true">
         <span className="aap-auth-mark">A</span>
       </div>

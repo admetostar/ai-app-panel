@@ -240,7 +240,7 @@ export function GuidePage() {
                 <Button onClick={() => setActiveStep((step) => step - 1)}>上一步</Button>
               ) : null}
               <Button type="primary" icon={<ArrowRightOutlined />} onClick={goNext}>
-                {isLastStep ? '完成，前往登录 / 注册' : '下一步'}
+                {isLastStep ? (me ? '完成' : '完成，前往登录 / 注册') : '下一步'}
               </Button>
             </div>
           </footer>

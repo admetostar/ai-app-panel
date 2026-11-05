@@ -1,6 +1,5 @@
 ﻿/**
- * 验证码通道抽象（A2）：SMTP / SMS adapter 选一首发，M1 首发 SMTP；
- * 未配置 SMTP 时用「日志通道」兜底（内网可离线：验证码打到服务端日志）。
+ * 验证码通道抽象（A2）：邮件支持 SMTP / Resend / 日志兜底，手机使用阿里云 Dypnsapi。
  * 限发硬要求：同通道 60s 限 1 条 + 24h 上限（防短信轰炸刷穿话费的同源问题）。
  */
 import { createHash, randomBytes, randomInt } from 'node:crypto';
@@ -11,6 +10,7 @@ import { getDb } from '../db/index.js';
 import { verificationCodes } from '../db/schema.js';
 import { audit, registerPurgeTask } from './audit.js';
 import { getSetting, getSettingInt } from './settings.js';
+import { checkAliyunSmsVerifyCode, sendAliyunSmsVerifyCode } from './aliyunSms.js';
 
 export type { CodePurpose, VerifyChannel };
 
@@ -37,7 +37,7 @@ class LogChannel implements CodeChannel {
     // 醒目警告替代掩码——掩码会让兜底失去可用性。
     if (!LogChannel.warned) {
       LogChannel.warned = true;
-      console.warn(`[dev-${this.id}] ⚠️ 邮件/短信通道未配置，验证码正经服务端日志兜底送达——生产环境务必配置 SMTP 或 Resend，并确保日志仅管理员可见`);
+      console.warn(`[dev-${this.id}] ⚠️ 邮件通道未配置，验证码正经服务端日志兜底送达——生产环境务必配置 SMTP 或 Resend，并确保日志仅管理员可见`);
     }
     console.log(`[dev-${this.id}] 验证码 purpose=${purpose} target=${target} code=${code}（5 分钟内有效）`);
   }
@@ -100,7 +100,14 @@ class SmtpEmailChannel implements CodeChannel {
   }
 }
 
-/** email 通道：按 MAIL_PROVIDER 选择 Resend / SMTP；都未配置时日志兜底（短信通道未来接入） */
+class AliyunSmsChannel implements CodeChannel {
+  readonly id = 'phone' as const;
+  async send(target: string, _code: string, _purpose: CodePurpose): Promise<void> {
+    await sendAliyunSmsVerifyCode(target);
+  }
+}
+
+/** email 通道：按 MAIL_PROVIDER 选择 Resend / SMTP；都未配置时日志兜底 */
 export function getEmailChannel(): CodeChannel {
   const provider = (getSetting('MAIL_PROVIDER') ?? 'smtp').toLowerCase();
   if (provider === 'resend') {
@@ -121,8 +128,7 @@ export function getChannel(id: VerifyChannel): CodeChannel {
     case 'email':
       return getEmailChannel();
     case 'phone':
-      // M1 不首发 SMS adapter；接口预留（阿里云/腾讯云短信后续按需接）
-      throw new HttpError(501, 'CHANNEL_NOT_CONFIGURED', '短信通道未配置，请使用邮箱');
+      return new AliyunSmsChannel();
   }
 }
 
@@ -146,6 +152,10 @@ export function maskEmail(email: string): string {
   if (at <= 0) return '***';
   const name = email.slice(0, at);
   return `${name.slice(0, 1)}***${email.slice(at)}`;
+}
+
+export function maskPhone(phone: string): string {
+  return phone.length > 7 ? `${phone.slice(0, 3)}****${phone.slice(-4)}` : '***';
 }
 
 export interface IssueResult {
@@ -194,8 +204,10 @@ export async function issueCode(
     throw new HttpError(429, 'CODE_DAILY_LIMIT', '今日发送次数已达上限，请明天再试');
   }
 
-  const code = String(randomInt(0, 10 ** CODE_LENGTH)).padStart(CODE_LENGTH, '0');
-  await db.insert(verificationCodes)
+  const code = channel === 'email'
+    ? String(randomInt(0, 10 ** CODE_LENGTH)).padStart(CODE_LENGTH, '0')
+    : randomBytes(32).toString('hex');
+  const [verification] = await db.insert(verificationCodes)
     .values({
       channel,
       target,
@@ -204,19 +216,24 @@ export async function issueCode(
       ip,
       createdAt: now,
       expiresAt: now + CODE_TTL_MS,
-    });
+    })
+    .returning({ id: verificationCodes.id });
 
   const ch = getChannel(channel);
   try {
     await ch.send(target, code, purpose);
   } catch (err) {
-    console.error('[verification] 通道发送失败:', err);
+    if (verification) await db.delete(verificationCodes).where(eq(verificationCodes.id, verification.id));
+    console.error('[verification] 通道发送失败:', err instanceof Error ? err.message : err);
     throw new HttpError(502, 'CODE_SEND_FAILED', '验证码发送失败，请稍后重试或联系管理员');
   }
 
-  await audit(`channel:${channel}`, ip, 'verification.issued', { purpose, target: channel === 'email' ? maskEmail(target) : target });
+  await audit(`channel:${channel}`, ip, 'verification.issued', {
+    purpose,
+    target: channel === 'email' ? maskEmail(target) : maskPhone(target),
+  });
   return {
-    sentTo: channel === 'email' ? maskEmail(target) : target,
+    sentTo: channel === 'email' ? maskEmail(target) : maskPhone(target),
     resendAfterMs: RESEND_INTERVAL_MS,
     viaLogFallback: ch instanceof LogChannel,
   };
@@ -242,7 +259,17 @@ export async function verifyCode(channel: VerifyChannel, target: string, purpose
     )
     .orderBy(sql`id DESC`))[0];
   if (!row) return { ok: false, error: 'CODE_INVALID_OR_EXPIRED' };
-  if (!codeMatches(row.codeHash, code)) return { ok: false, error: 'CODE_MISMATCH' };
+  if (channel === 'phone') {
+    if (!/^\d{6}$/.test(code)) return { ok: false, error: 'CODE_MISMATCH' };
+    try {
+      if (!await checkAliyunSmsVerifyCode(target, code)) return { ok: false, error: 'CODE_MISMATCH' };
+    } catch (err) {
+      console.error('[verification] 阿里云短信验证码校验失败:', err instanceof Error ? err.message : err);
+      throw new HttpError(502, 'CODE_CHECK_FAILED', '短信验证码暂时无法校验，请稍后重试');
+    }
+  } else if (!codeMatches(row.codeHash, code)) {
+    return { ok: false, error: 'CODE_MISMATCH' };
+  }
   // 条件消费（consumed_at IS NULL 才置值）：同步模型下 SELECT/UPDATE 本不可交错，
   // 此为防御纵深（未来引入多进程/异步通道时不退化为一码多用）
   const consumed = await db

@@ -329,6 +329,21 @@ adminRouter.put(
       if (key === 'SITE_DOMAIN') {
         body[key] = normalizeSiteDomain(String(body[key] ?? ''));
       }
+      if (key === 'REGISTRATION_VERIFY_CHANNEL' && !['email', 'phone'].includes(String(body[key]))) {
+        throw new HttpError(400, 'INVALID_SETTING', '新用户注册验证方式只能是邮箱或手机短信');
+      }
+      if (key === 'ALIYUN_SMS_TEMPLATE_PARAM' && String(body[key] ?? '').trim()) {
+        const templateParam = String(body[key]);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(templateParam);
+        } catch {
+          throw new HttpError(400, 'INVALID_SETTING', '阿里云短信模板参数必须是有效 JSON');
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !templateParam.includes('##code##')) {
+          throw new HttpError(400, 'INVALID_SETTING', '模板参数需为 JSON 对象，并包含验证码占位符 ##code##');
+        }
+      }
       if (key === 'REGISTRATION_POINTS_GIFT') {
         const points = Number(body[key]);
         if (!Number.isSafeInteger(points) || points < 0 || points > 2_147_483_647) {
@@ -341,8 +356,29 @@ adminRouter.put(
           throw new HttpError(400, 'INVALID_SETTING', '邀请注册奖励积分必须是 0 到 2147483647 之间的整数');
         }
       }
-      await updateSettingFromAdmin(key, String(body[key] ?? ''));
     }
+    const channelValue = Object.hasOwn(body, 'REGISTRATION_VERIFY_CHANNEL')
+      ? String(body.REGISTRATION_VERIFY_CHANNEL)
+      : getSetting('REGISTRATION_VERIFY_CHANNEL') ?? 'email';
+    if (channelValue === 'phone') {
+      const requiredSmsSettings = [
+        'ALIYUN_ACCESS_KEY_ID',
+        'ALIYUN_ACCESS_KEY_SECRET',
+        'ALIYUN_SMS_SIGN_NAME',
+        'ALIYUN_SMS_TEMPLATE_CODE',
+        'ALIYUN_SMS_TEMPLATE_PARAM',
+      ];
+      for (const key of requiredSmsSettings) {
+        const submitted = Object.hasOwn(body, key) ? String(body[key] ?? '').trim() : null;
+        const value = submitted === null || (SETTING_DEFS[key]?.secret && submitted === '********')
+          ? getSetting(key)?.trim()
+          : submitted;
+        if (!value) {
+          throw new HttpError(400, 'SMS_NOT_CONFIGURED', `启用手机短信注册前请先填写${SETTING_DEFS[key]?.label ?? key}`);
+        }
+      }
+    }
+    for (const key of keys) await updateSettingFromAdmin(key, String(body[key] ?? ''));
     // 轮换身份签名密钥后，passUser 沙箱 env 里还是旧密钥（spawn 时定格）：
     // 全部停掉，下次访问以新密钥重新拉起
     if (keys.includes('AAP_SIGN_SECRET')) stopAllPersistent();

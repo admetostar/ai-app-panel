@@ -119,6 +119,7 @@ export interface BrandingInfo {
   accentColor: string | null;
   footerText: string;
   footerCopyright: string;
+  reportEmail: string | null;
   /** ICP 备案号（组件自动带工信部查询链接） */
   icpNumber: string | null;
   /** 公安备案号（组件自动带公安备案查询链接） */
@@ -138,6 +139,8 @@ export interface PortalBootstrap {
   registration: {
     mode: RegistrationMode;
     turnstileEnabled: boolean;
+    verificationChannel: 'email' | 'phone';
+    phoneRegistrationEnabled: boolean;
   };
   /** 首个账号尚未创建 → 前端引导「初始化管理员」流程 */
   needsInit: boolean;
