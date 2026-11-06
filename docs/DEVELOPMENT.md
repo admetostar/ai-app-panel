@@ -26,7 +26,7 @@ pnpm install
 pnpm dev            # server:8080（tsx watch）+ web:5173（Vite，代理 /api 与 /app）
 pnpm skills:sync    # 从 Markdown 更新 .skill/.zip 包并同步三种下载格式到 apps/server/assets
 pnpm build          # 先同步 skill，再构建 shared → server → web（生产产物 apps/web/dist）
-pnpm test           # 服务端测试（vitest，24 个文件 232 个用例）
+pnpm test           # 服务端测试（vitest，24 个文件 233 个用例）
 pnpm test:e2e       # Playwright 端到端（自动拉起真实服务 + mock 上游）
 pnpm typecheck      # 全仓类型检查
 pnpm db:generate    # drizzle-kit 生成迁移（schema 变更后必跑）
@@ -60,9 +60,10 @@ Docker Compose 默认启动 PostgreSQL 17 和门户。复制 `deploy/docker/.env
 - `exclusiveOf` 互斥渲染：如 `MAIL_PROVIDER=resend` 时只显示 Resend 两项、隐藏 SMTP 五项
 - 通知面板将注册验证方式与阿里云短信配置分组保存；AccessKey ID/Secret 按 secret 配置加密存储且掩码回显
 - 展示降噪：短标签 + 悬浮详情（完整描述与配置键）；仅 `defaultsWork=false` 的项显示「需配置」橙标
+- 站点、应用网关、注册、安全、OIDC、通知和计费设置均使用两列行布局，名称列固定为 `15em`；部分外层配置卡片隐藏重复的分组卡片
 - 「通知通道」「计费」「证书(HTTPS 跳转)」等有专用面板，经 `excludeKeys` 排除由专用表单写入的键
 
-管理员页面复用个人中心的主题与可折叠左侧导航，站点、应用、用户、安全、通知、证书、LLM 和运营设置均由侧栏进入，不再显示首次配置向导或顶部标签栏。管理页按当前主题单独配置 Ant Design 组件算法；深色模式下表单、选择器及弹出列表、表格、卡片、提示和文字均切换到高对比度深色配色。`GET /api/admin/overview` 为总览提供 CPU/内存水位、网络收发速率、用户与应用累计数、近 30 天 Token 消耗以及按套餐分组的有效订阅数量。CPU 使用进程内采样，首次采样显示采集中；内存使用主机总量/空闲量；网络带宽通过 Linux `/proc/net/dev` 的接口收发字节差计算，并以 10 Mbps 为水位基准，非 Linux 或计数器不可读时明确显示不可用。无固定上限的用户、应用和 Token 累计数使用数量级映射进度条，不代表权益上限。
+管理员页面复用个人中心的主题与可折叠左侧导航，站点、应用、用户、安全、通知、证书、LLM 和运营设置均由侧栏进入，不再显示首次配置向导或顶部标签栏。应用列表展示应用 ID、名称、形态、归属用户名、可见性、健康状态和操作；应用事件只保留应用筛选，详情按需换行。上游与模型路由的新增表单作为表格最后一行；凭据列表使用「应用ID」列。卡券生成表固定为订阅码、额度码两行，分别选择套餐或单张 Token 数量。管理页按当前主题单独配置 Ant Design 组件算法；深色模式下表单、选择器及弹出列表、表格、卡片、提示和文字均切换到高对比度深色配色。`GET /api/admin/overview` 为总览提供 CPU/内存水位、网络收发速率、用户与应用累计数、近 30 天 Token 消耗以及按套餐分组的有效订阅数量。CPU 使用进程内采样，首次采样显示采集中；内存使用主机总量/空闲量；网络带宽通过 Linux `/proc/net/dev` 的接口收发字节差计算，并以 10 Mbps 为水位基准，非 Linux 或计数器不可读时明确显示不可用。无固定上限的用户、应用和 Token 累计数使用数量级映射进度条，不代表权益上限。
 
 站点设置的 Logo 可通过输入框后的「上传」按钮选择 PNG/JPEG/GIF/WebP 图片（最大 5 MB）；文件写入 `DATA_DIR/admin/site-logo/`，服务端返回的 `/uploads/sitelogo/<随机文件名>` 路径回填到设置框，保存设置后应用到门户品牌和浏览器标签页图标；站点名称同步作为浏览器页面标题。页脚文案、版权声明、ICP备案号及公安备案号均可在站点设置中配置；版权声明留空时默认显示当前年份与站点名称，首页页脚内容居中对齐，并从启用管理员账号自动读取举报邮箱，生成 `mailto:` 链接。平台会话 Cookie 默认不设置 `Domain`，按当前访问主机建立 host-only 会话；只有配置「本站域名」时才设置 Cookie 域名。Docker Compose 将整个 `/data` 挂载到 `ai-app-panel-data` 命名卷，因此该目录会在容器重建后保留。
 

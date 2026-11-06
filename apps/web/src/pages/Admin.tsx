@@ -142,11 +142,13 @@ function SettingsForm({
   groups,
   excludeKeys = [],
   banners,
+  hideGroupCards = false,
 }: {
   groups: string[];
   excludeKeys?: string[];
   /** 按组名渲染在配置项上方的提示块（如 OIDC 回调地址） */
   banners?: Record<string, ReactNode>;
+  hideGroupCards?: boolean;
 }): ReactNode {
   const qc = useQueryClient();
   const settingsQ = useQuery({
@@ -248,6 +250,7 @@ function SettingsForm({
         name={s.key}
         label={s.label}
         tooltip={s.desc}
+        style={{ width: '100%' }}
         valuePropName={s.type === 'bool' ? 'checked' : 'value'}
       >
         {s.key === 'LOGO' ? (
@@ -272,6 +275,7 @@ function SettingsForm({
                 />
               </>
             }
+            style={{ width: '100%' }}
           />
         ) : renderControl(s, form)}
       </Form.Item>
@@ -279,14 +283,27 @@ function SettingsForm({
   }
 
   return (
-    <Form form={form} layout="vertical">
+    <Form
+      form={form}
+      layout="horizontal"
+      className="aap-admin-settings-form"
+      labelCol={{ flex: '15em' }}
+      wrapperCol={{ flex: 1 }}
+    >
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         {ordered.map(([g, items]) =>
           items.length > 0 ? (
-            <Card key={g} size="small" title={g} extra={<Tag bordered={false} style={{ fontSize: 11 }}>{items.length} 项</Tag>}>
-              {banners?.[g]}
-              {items.map(renderItem)}
-            </Card>
+            hideGroupCards ? (
+              <div key={g} className="aap-admin-settings-group">
+                {banners?.[g]}
+                {items.map(renderItem)}
+              </div>
+            ) : (
+              <Card key={g} size="small" title={g} extra={<Tag bordered={false} style={{ fontSize: 11 }}>{items.length} 项</Tag>}>
+                {banners?.[g]}
+                {items.map(renderItem)}
+              </Card>
+            )
           ) : null,
         )}
         <Button type="primary" loading={saving} onClick={() => void save()}>
@@ -309,7 +326,7 @@ const KEY_WIDGET: Record<string, string> = {
 function renderControl(s: SettingRow, form?: { setFieldsValue: (v: Record<string, unknown>) => void }, secretReveal = false): ReactNode {
   if (s.type === 'bool') return <Switch />;
   if (s.choiceLabels) {
-    return <Select options={Object.entries(s.choiceLabels).map(([value, label]) => ({ value, label }))} />;
+    return <Select style={{ width: '100%' }} options={Object.entries(s.choiceLabels).map(([value, label]) => ({ value, label }))} />;
   }
   if (s.secret || KEY_WIDGET[s.key] === 'password') {
     const reveal = secretReveal ? (
@@ -343,10 +360,10 @@ function renderControl(s: SettingRow, form?: { setFieldsValue: (v: Record<string
   }
   if (s.type === 'int') {
     return s.key === 'REGISTRATION_POINTS_GIFT'
-      ? <InputNumber min={0} max={2_147_483_647} precision={0} style={{ width: 160 }} />
-      : <InputNumber style={{ width: 160 }} />;
+      ? <InputNumber min={0} max={2_147_483_647} precision={0} style={{ width: '100%' }} />
+      : <InputNumber style={{ width: '100%' }} />;
   }
-  return <Input placeholder={s.defaultsWork ? '（默认值即可）' : ''} />;
+  return <Input style={{ width: '100%' }} placeholder={s.defaultsWork ? '（默认值即可）' : ''} />;
 }
 
 // ---------- 主页面 ----------
@@ -548,13 +565,13 @@ function AppsTab(): ReactNode {
   const [packageSubmitting, setPackageSubmitting] = useState(false);
   const [envApp, setEnvApp] = useState<AdminApp | null>(null);
   const [runtimeAppId, setRuntimeAppId] = useState('');
-  const [runtimeLevel, setRuntimeLevel] = useState('');
 
   const appsQ = useQuery({ queryKey: ['admin-apps'], queryFn: () => api<{ apps: AdminApp[]; signSecret?: string }>('/api/admin/apps') });
+  const usersQ = useQuery({ queryKey: ['admin-users'], queryFn: () => api<{ users: PublicUser[] }>('/api/admin/users') });
   const runtimeEventsQ = useQuery({
-    queryKey: ['admin-app-runtime-events', runtimeAppId, runtimeLevel],
+    queryKey: ['admin-app-runtime-events', runtimeAppId],
     queryFn: () => api<{ events: AppRuntimeEvent[] }>(
-      `/api/admin/apps/runtime-events?limit=200${runtimeAppId ? `&appId=${encodeURIComponent(runtimeAppId)}` : ''}${runtimeLevel ? `&level=${runtimeLevel}` : ''}`,
+      `/api/admin/apps/runtime-events?limit=200${runtimeAppId ? `&appId=${encodeURIComponent(runtimeAppId)}` : ''}`,
     ),
     refetchInterval: 30_000,
   });
@@ -665,39 +682,31 @@ function AppsTab(): ReactNode {
   }
 
   const KIND_LABEL: Record<string, string> = { upstream: '反代', html: 'HTML', package: '包' };
+  const usernameById = new Map((usersQ.data?.users ?? []).map((user) => [user.id, user.username ?? user.name]));
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card
-        title="应用列表"
-        extra={
-          <Space size="small">
-            <Button type="primary" onClick={() => { form.resetFields(); setVisMode('login'); setPkgFile(null); setPkgPreview(null); setEditing(null); setCreating('upstream'); }}>接入上游应用</Button>
-            <Button onClick={() => { form.resetFields(); setVisMode('login'); setEditing(null); setCreating('html'); }}>接入 HTML 页</Button>
-            <Button onClick={() => { form.resetFields(); setVisMode('private'); setPkgFile(null); setPkgPreview(null); setEditing(null); setCreating('package'); }}>上传 .awpk</Button>
-          </Space>
-        }
-      >
+      <Card title="应用列表">
         <Table<AdminApp>
           rowKey="id"
           dataSource={appsQ.data?.apps ?? []}
           pagination={false}
           size="small"
-          scroll={{ x: 'max-content' }}
+          tableLayout="fixed"
           columns={[
-            { title: 'ID', dataIndex: 'id', width: 120 },
-            { title: '名称', dataIndex: 'name', width: 130 },
-            { title: '形态', width: 90, render: (_, r) => <Tag>{KIND_LABEL[r.kind] ?? r.kind}</Tag> },
-            { title: '上游', dataIndex: 'upstream', ellipsis: true, render: (v: string) => v || '—' },
+            { title: '应用ID', dataIndex: 'id', width: '20%', ellipsis: true, onCell: () => ({ style: { whiteSpace: 'nowrap' } }) },
+            { title: '名称', dataIndex: 'name', width: '20%', ellipsis: true, onCell: () => ({ style: { whiteSpace: 'nowrap' } }) },
+            { title: '形态', width: '8%', render: (_, r) => <Tag>{KIND_LABEL[r.kind] ?? r.kind}</Tag> },
+            { title: '用户', width: '14%', ellipsis: true, render: (_, r) => r.ownerUserId == null ? '—' : usernameById.get(r.ownerUserId) ?? `用户 ${r.ownerUserId}` },
             {
               title: '可见性',
-              width: 120,
+              width: '10%',
               render: (_, r) => <img className="aap-visibility-badge" src={appVisibilityBadgeSrc(r.visibility, 'list')} alt={appVisibilityLabel(r.visibility)} title={appVisibilityLabel(r.visibility)} />,
             },
-            { title: '健康', width: 90, render: (_, r) => dot(r.healthState) },
+            { title: '健康', width: '8%', render: (_, r) => dot(r.healthState) },
             {
               title: '操作',
-              width: 230,
+              width: '20%',
               render: (_, r) => (
                 <Space size="small" wrap>
                   {r.kind === 'upstream' ? <Button size="small" onClick={() => void testApp(r)}>测试</Button> : null}
@@ -746,7 +755,7 @@ function AppsTab(): ReactNode {
 
       <Card
         size="small"
-        title="应用运行事件（最近 200 条）"
+        title="应用事件"
         extra={
           <Space size="small">
             <Select
@@ -756,18 +765,6 @@ function AppsTab(): ReactNode {
               onChange={(value) => setRuntimeAppId(String(value ?? ''))}
               options={(appsQ.data?.apps ?? []).map((app) => ({ value: app.id, label: `${app.name}（${app.id}）` }))}
               style={{ minWidth: 200 }}
-            />
-            <Select
-              allowClear
-              placeholder="全部级别"
-              value={runtimeLevel || undefined}
-              onChange={(value) => setRuntimeLevel(String(value ?? ''))}
-              options={[
-                { value: 'error', label: '错误' },
-                { value: 'warn', label: '警告' },
-                { value: 'info', label: '信息' },
-              ]}
-              style={{ width: 110 }}
             />
             <Button size="small" loading={runtimeEventsQ.isFetching} onClick={() => void runtimeEventsQ.refetch()}>刷新</Button>
           </Space>
@@ -780,29 +777,27 @@ function AppsTab(): ReactNode {
           dataSource={runtimeEventsQ.data?.events ?? []}
           loading={runtimeEventsQ.isLoading}
           pagination={{ pageSize: 20, showSizeChanger: false }}
-          scroll={{ x: 'max-content' }}
+          tableLayout="fixed"
           columns={[
-            { title: '时间', width: 160, render: (_, row) => new Date(row.ts).toLocaleString() },
-            { title: '应用', dataIndex: 'appId', width: 150, ellipsis: true },
+            { title: '时间', width: 140, render: (_, row) => new Date(row.ts).toLocaleString() },
+            { title: '应用ID', dataIndex: 'appId', width: '20%', ellipsis: true },
             {
               title: '级别',
               dataIndex: 'level',
-              width: 80,
+              width: 75,
               render: (level: AppRuntimeEvent['level']) => <Tag color={level === 'error' ? 'red' : level === 'warn' ? 'orange' : 'blue'}>{level.toUpperCase()}</Tag>,
             },
-            { title: '事件', dataIndex: 'event', width: 150 },
-            { title: '用户', dataIndex: 'userId', width: 75, render: (value: number | null) => value ?? '—' },
+            { title: '事件', dataIndex: 'event', width: 120, ellipsis: true },
             {
               title: '请求',
-              width: 240,
-              render: (_, row) => row.method ? <Typography.Text code>{row.method} {row.path}</Typography.Text> : '—',
+              width: 180,
+              render: (_, row) => row.method ? <Typography.Text code style={{ fontSize: 12 }}>{row.method} {row.path}</Typography.Text> : '—',
             },
-            { title: '状态', dataIndex: 'statusCode', width: 75, render: (value: number | null) => value ?? '—' },
-            { title: '耗时', dataIndex: 'durationMs', width: 85, render: (value: number | null) => value == null ? '—' : `${value} ms` },
+            { title: '状态', dataIndex: 'statusCode', width: 70, render: (value: number | null) => value ?? '—' },
+            { title: '耗时', dataIndex: 'durationMs', width: 80, render: (value: number | null) => value == null ? '—' : `${value} ms` },
             {
               title: '详情',
-              ellipsis: true,
-              render: (_, row) => row.details ? <Typography.Text code style={{ fontSize: 11 }}>{JSON.stringify(row.details)}</Typography.Text> : '—',
+              render: (_, row) => row.details ? <Typography.Text code style={{ fontSize: 12, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>{JSON.stringify(row.details)}</Typography.Text> : '—',
             },
           ]}
         />
@@ -814,7 +809,7 @@ function AppsTab(): ReactNode {
       <AppEnvModal appId={envApp?.id ?? ''} appName={envApp?.name ?? ''} open={envApp != null} onClose={() => setEnvApp(null)} />
 
       <Card size="small" title="网关限流与超时" extra={<Tag bordered={false} color="green" style={{ fontSize: 11 }}>默认值即可跑</Tag>}>
-        <SettingsForm groups={['应用网关']} />
+        <SettingsForm groups={['应用网关']} hideGroupCards />
       </Card>
 
       {/* 接入 / 编辑 弹窗 */}
@@ -1159,7 +1154,7 @@ function UsersRegTab(): ReactNode {
         description="邀请码为选填项；使用有效邀请码注册后，邀请人获得配置的奖励积分。管理员停用邀请码后仍可继续注册，但不发放邀请奖励。"
       />
       <Card size="small" title="注册与邀请奖励">
-        <SettingsForm groups={['注册与账号']} excludeKeys={['REGISTRATION_VERIFY_CHANNEL']} />
+        <SettingsForm groups={['注册与账号']} excludeKeys={['REGISTRATION_VERIFY_CHANNEL']} hideGroupCards />
       </Card>
 
       <GroupsCard />
@@ -1306,6 +1301,7 @@ function SecurityTab(): ReactNode {
       <Card size="small" title="OIDC 单点登录">
         <SettingsForm
           groups={['OIDC 单点登录']}
+          hideGroupCards
           banners={{
             'OIDC 单点登录': (
               <Alert
@@ -1461,7 +1457,13 @@ function MailTab(): ReactNode {
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Card size="small" title="发信通道（验证码用）" extra={<Tag bordered={false} color="blue" style={{ fontSize: 11 }}>Resend 仅需 API Key</Tag>}>
-        <Form form={form} layout="vertical">
+        <Form
+          form={form}
+          layout="horizontal"
+          className="aap-admin-settings-form"
+          labelCol={{ flex: '15em' }}
+          wrapperCol={{ flex: 1 }}
+        >
           <Form.Item
             name="MAIL_PROVIDER"
             label="发信方式"
@@ -1519,7 +1521,13 @@ function MailTab(): ReactNode {
           message="短信仅用于新用户注册验证，登录仍使用用户名和密码"
           description="仅支持中国大陆手机号。启用短信注册前，请填写有效的阿里云 AccessKey、已审核签名、模板编码和模板参数；模板参数需为 JSON 对象并包含 ##code##。"
         />
-        <Form form={smsForm} layout="vertical">
+        <Form
+          form={smsForm}
+          layout="horizontal"
+          className="aap-admin-settings-form"
+          labelCol={{ flex: '15em' }}
+          wrapperCol={{ flex: 1 }}
+        >
           {smsSettings.map((s) => (
             <Form.Item key={s.key} name={s.key} label={s.label} tooltip={s.desc}>
               {renderControl(s, smsForm, true)}
@@ -1882,146 +1890,210 @@ function LlmTab(): ReactNode {
   }
 
   const upstreamOptions = (upstreamsQ.data?.upstreams ?? []).map((u) => ({ value: u.id, label: `${u.name}（${u.baseUrl}）` }));
+  const upstreamRows: LlmUpstream[] = [...(upstreamsQ.data?.upstreams ?? []), { id: 0, name: '', baseUrl: '', enabled: true, hasKey: false }];
+  const routeRows: LlmRoute[] = [...(routesQ.data?.routes ?? []), {
+    id: 0,
+    model: '',
+    upstreamId: 0,
+    upstreamName: '',
+    upstreamModel: '',
+    multiplier: 100,
+    priority: 100,
+    weight: 100,
+    enabled: true,
+  }];
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card
-        size="small"
-        title="上游（OpenAI 兼容）"
-        extra={
-          <Button
+      <Card size="small" title="上游（OpenAI 兼容）">
+        <Form
+          form={upForm}
+          onFinish={async (values) => {
+            try {
+              await api('/api/admin/llm/upstreams', { method: 'POST', json: values });
+              message.success('上游已添加');
+              upForm.resetFields();
+              invalidate();
+            } catch (err) {
+              message.error(err instanceof Error ? err.message : '添加失败');
+            }
+          }}
+        >
+          <Table<LlmUpstream>
+            className="aap-llm-upstreams-table"
+            rowKey="id"
             size="small"
-            type="primary"
-            onClick={async () => {
-              const v = await upForm.validateFields();
-              try {
-                await api('/api/admin/llm/upstreams', { method: 'POST', json: v });
-                message.success('上游已添加');
-                upForm.resetFields();
-                invalidate();
-              } catch (err) {
-                message.error(err instanceof Error ? err.message : '添加失败');
-              }
-            }}
-          >
-            添加上游
-          </Button>
-        }
-      >
-        <Table<LlmUpstream>
-          className="aap-llm-upstreams-table"
-          rowKey="id"
-          size="small"
-          pagination={false}
-          dataSource={upstreamsQ.data?.upstreams ?? []}
-          scroll={{ x: 'max-content' }}
-          columns={[
-            { title: '名称', dataIndex: 'name', width: 175 },
-            { title: 'Base URL', dataIndex: 'baseUrl', ellipsis: true },
-            { title: 'Key', width: 90, render: (_, r) => (r.hasKey ? <Tag color="green">已配置</Tag> : <Tag>无</Tag>) },
-            {
-              title: '操作',
-              width: 220,
-              render: (_, r) => (
-                <Space size="small" wrap>
-                  <Button size="small" onClick={() => void testUpstream(r.id)} loading={upTest[r.id]?.loading}>
-                    测试
-                  </Button>
-                  <Button
-                    size="small"
-                    onClick={async () => {
-                      await api(`/api/admin/llm/upstreams/${r.id}`, { method: 'PUT', json: { enabled: !r.enabled } });
+            pagination={false}
+            tableLayout="fixed"
+            dataSource={upstreamRows}
+            columns={[
+              {
+                title: '名称',
+                width: '20%',
+                render: (_, r) => r.id === 0 ? (
+                  <Form.Item name="name" rules={[{ required: true, message: '必填' }]} style={{ marginBottom: 0 }}>
+                    <Input placeholder="名称（如 智谱）" />
+                  </Form.Item>
+                ) : r.name,
+              },
+              {
+                title: 'Base URL',
+                width: '40%',
+                ellipsis: true,
+                render: (_, r) => r.id === 0 ? (
+                  <Form.Item name="baseUrl" rules={[{ required: true, message: '必填' }]} style={{ marginBottom: 0 }}>
+                    <Input placeholder="https://.../compatible-mode/v1" />
+                  </Form.Item>
+                ) : r.baseUrl,
+              },
+              {
+                title: 'Key',
+                width: '20%',
+                render: (_, r) => r.id === 0 ? (
+                  <Form.Item name="apiKey" rules={[{ required: true, message: '必填' }]} style={{ marginBottom: 0 }}>
+                    <Input.Password placeholder="API Key" autoComplete="new-password" />
+                  </Form.Item>
+                ) : r.hasKey ? <Tag color="green">已配置</Tag> : <Tag>无</Tag>,
+              },
+              {
+                title: '操作',
+                width: '20%',
+                render: (_, r) => r.id === 0 ? (
+                  <Button size="small" type="primary" htmlType="submit">添加上游</Button>
+                ) : (
+                  <Space size="small" wrap>
+                    <Button size="small" onClick={() => void testUpstream(r.id)} loading={upTest[r.id]?.loading}>
+                      测试
+                    </Button>
+                    <Button
+                      size="small"
+                      onClick={async () => {
+                        await api(`/api/admin/llm/upstreams/${r.id}`, { method: 'PUT', json: { enabled: !r.enabled } });
+                        invalidate();
+                      }}
+                    >
+                      {r.enabled ? '停用' : '启用'}
+                    </Button>
+                    <Popconfirm title="删除该上游？其模型路由将一并删除。" onConfirm={async () => {
+                      await api(`/api/admin/llm/upstreams/${r.id}`, { method: 'DELETE' });
                       invalidate();
-                    }}
-                  >
-                    {r.enabled ? '停用' : '启用'}
-                  </Button>
-                  <Popconfirm title="删除该上游？其模型路由将一并删除。" onConfirm={async () => {
-                    await api(`/api/admin/llm/upstreams/${r.id}`, { method: 'DELETE' });
-                    invalidate();
-                  }}>
-                    <Button size="small" danger>删除</Button>
-                  </Popconfirm>
-                </Space>
-              ),
-            },
-          ]}
-        />
+                    }}>
+                      <Button size="small" danger>删除</Button>
+                    </Popconfirm>
+                  </Space>
+                ),
+              },
+            ]}
+          />
+        </Form>
         {upstreamsQ.data?.upstreams?.filter((u) => upTest[u.id]?.text).map((u) => (
           <div key={u.id} style={{ fontSize: 12, marginTop: 2, color: upTest[u.id]?.ok ? 'var(--ins, #16a34a)' : 'var(--del, #dc2626)' }}>
             {u.name}：{upTest[u.id]?.text}
           </div>
         ))}
-        <Form form={upForm} layout="inline" style={{ marginTop: 10, rowGap: 8 }}>
-          <Form.Item name="name" rules={[{ required: true, message: '必填' }]}>
-            <Input placeholder="名称（如 智谱）" style={{ width: 175 }} />
-          </Form.Item>
-          <Form.Item name="baseUrl" rules={[{ required: true, message: '必填' }]}>
-            <Input placeholder="https://.../compatible-mode/v1" style={{ width: 300 }} />
-          </Form.Item>
-          <Form.Item name="apiKey" rules={[{ required: true, message: '必填' }]}>
-            <Input.Password placeholder="API Key" style={{ width: 220 }} autoComplete="new-password" />
-          </Form.Item>
-        </Form>
       </Card>
 
       <Card size="small" title="模型路由（公开模型名 → 上游模型；同名多条 = failover 候选）">
-        <Table<LlmRoute>
-          rowKey="id"
-          size="small"
-          pagination={false}
-          dataSource={routesQ.data?.routes ?? []}
-          scroll={{ x: 'max-content' }}
-          columns={[
-            { title: '模型名', dataIndex: 'model', width: 150 },
-            { title: '上游', dataIndex: 'upstreamName', width: 140 },
-            { title: '上游模型', dataIndex: 'upstreamModel', width: 160, ellipsis: true },
-            { title: '倍率‰', dataIndex: 'multiplier', width: 80 },
-            { title: '优先级', dataIndex: 'priority', width: 80 },
-            { title: '权重', dataIndex: 'weight', width: 70 },
-            {
-              title: '',
-              width: 80,
-              render: (_, r) => (
-                <Popconfirm title="删除该路由？" onConfirm={async () => {
-                  await api(`/api/admin/llm/routes/${r.id}`, { method: 'DELETE' });
-                  invalidate();
-                }}>
-                  <Button size="small" danger>删除</Button>
-                </Popconfirm>
-              ),
-            },
-          ]}
-        />
-        <Form form={routeForm} layout="inline" style={{ marginTop: 10, rowGap: 8 }} onFinish={async (v) => {
-          try {
-            await api('/api/admin/llm/routes', { method: 'POST', json: { ...v, upstreamId: Number(v.upstreamId), multiplier: Number(v.multiplier ?? 100), priority: Number(v.priority ?? 100), weight: Number(v.weight ?? 100) } });
-            message.success('路由已添加');
-            routeForm.resetFields();
-            invalidate();
-          } catch (err) {
-            message.error(err instanceof Error ? err.message : '添加失败');
-          }
-        }}>
-          <Form.Item name="model" rules={[{ required: true, message: '必填' }]}>
-            <Input placeholder="公开模型名" style={{ width: 150 }} />
-          </Form.Item>
-          <Form.Item name="upstreamId" rules={[{ required: true, message: '必选' }]}>
-            <Select placeholder="上游" style={{ width: 180 }} options={upstreamOptions} />
-          </Form.Item>
-          <Form.Item name="upstreamModel" rules={[{ required: true, message: '必填' }]}>
-            <Input placeholder="上游侧模型名" style={{ width: 170 }} />
-          </Form.Item>
-          <Form.Item name="multiplier" initialValue={100}>
-            <Input placeholder="倍率‰=100" style={{ width: 110 }} />
-          </Form.Item>
-          <Form.Item name="priority" initialValue={100}>
-            <Input placeholder="优先级=100" style={{ width: 110 }} />
-          </Form.Item>
-          <Form.Item name="weight" initialValue={100}>
-            <Input placeholder="权重=100" style={{ width: 100 }} />
-          </Form.Item>
-          <Button htmlType="submit" type="primary">添加路由</Button>
+        <Form
+          form={routeForm}
+          onFinish={async (values) => {
+            try {
+              await api('/api/admin/llm/routes', {
+                method: 'POST',
+                json: {
+                  ...values,
+                  upstreamId: Number(values.upstreamId),
+                  multiplier: Number(values.multiplier ?? 100),
+                  priority: Number(values.priority ?? 100),
+                  weight: Number(values.weight ?? 100),
+                },
+              });
+              message.success('路由已添加');
+              routeForm.resetFields();
+              invalidate();
+            } catch (err) {
+              message.error(err instanceof Error ? err.message : '添加失败');
+            }
+          }}
+        >
+          <Table<LlmRoute>
+            rowKey="id"
+            size="small"
+            pagination={false}
+            tableLayout="fixed"
+            dataSource={routeRows}
+            columns={[
+              {
+                title: '模型名',
+                width: '17%',
+                render: (_, r) => r.id === 0 ? (
+                  <Form.Item name="model" rules={[{ required: true, message: '必填' }]} style={{ marginBottom: 0 }}>
+                    <Input placeholder="公开模型名" />
+                  </Form.Item>
+                ) : r.model,
+              },
+              {
+                title: '上游',
+                width: '15%',
+                render: (_, r) => r.id === 0 ? (
+                  <Form.Item name="upstreamId" rules={[{ required: true, message: '必选' }]} style={{ marginBottom: 0 }}>
+                    <Select placeholder="上游" options={upstreamOptions} />
+                  </Form.Item>
+                ) : r.upstreamName,
+              },
+              {
+                title: '上游模型',
+                width: '17%',
+                ellipsis: true,
+                render: (_, r) => r.id === 0 ? (
+                  <Form.Item name="upstreamModel" rules={[{ required: true, message: '必填' }]} style={{ marginBottom: 0 }}>
+                    <Input placeholder="上游侧模型名" />
+                  </Form.Item>
+                ) : r.upstreamModel,
+              },
+              {
+                title: '倍率‰',
+                width: '12%',
+                render: (_, r) => r.id === 0 ? (
+                  <Form.Item name="multiplier" initialValue={100} style={{ marginBottom: 0 }}>
+                    <Input placeholder="100" />
+                  </Form.Item>
+                ) : r.multiplier,
+              },
+              {
+                title: '优先级',
+                width: '12%',
+                render: (_, r) => r.id === 0 ? (
+                  <Form.Item name="priority" initialValue={100} style={{ marginBottom: 0 }}>
+                    <Input placeholder="100" />
+                  </Form.Item>
+                ) : r.priority,
+              },
+              {
+                title: '权重',
+                width: '12%',
+                render: (_, r) => r.id === 0 ? (
+                  <Form.Item name="weight" initialValue={100} style={{ marginBottom: 0 }}>
+                    <Input placeholder="100" />
+                  </Form.Item>
+                ) : r.weight,
+              },
+              {
+                title: '',
+                width: '15%',
+                render: (_, r) => r.id === 0 ? (
+                  <Button size="small" type="primary" htmlType="submit">添加路由</Button>
+                ) : (
+                  <Popconfirm title="删除该路由？" onConfirm={async () => {
+                    await api(`/api/admin/llm/routes/${r.id}`, { method: 'DELETE' });
+                    invalidate();
+                  }}>
+                    <Button size="small" danger>删除</Button>
+                  </Popconfirm>
+                ),
+              },
+            ]}
+          />
         </Form>
       </Card>
 
@@ -2035,16 +2107,16 @@ function LlmTab(): ReactNode {
           size="small"
           pagination={false}
           dataSource={tokensQ.data?.tokens ?? []}
-          scroll={{ x: 'max-content' }}
+          tableLayout="fixed"
           columns={[
-            { title: '应用', dataIndex: 'appId', width: 140 },
-            { title: '名称', dataIndex: 'name', width: 140, render: (_, r) => (r.auto ? <Space size={4}><Tag color="blue" style={{ fontSize: 11 }}>自动签发</Tag>{r.name}</Space> : r.name) },
-            { title: '限流/分', dataIndex: 'perMinuteLimit', width: 90, render: (v: number | null) => v ?? '默认' },
-            { title: '状态', width: 90, render: (_, r) => (r.enabled ? <Tag color="green">启用</Tag> : <Tag color="red">已吊销</Tag>) },
-            { title: '最近使用', width: 170, render: (_, r) => (r.lastUsedAt ? new Date(r.lastUsedAt).toLocaleString() : '—') },
+            { title: '应用ID', dataIndex: 'appId', width: '20%', ellipsis: true, onCell: () => ({ style: { whiteSpace: 'nowrap' } }) },
+            { title: '名称', dataIndex: 'name', width: '20%', ellipsis: true, render: (_, r) => (r.auto ? <Space size={4}><Tag color="blue" style={{ fontSize: 11 }}>自动签发</Tag>{r.name}</Space> : r.name) },
+            { title: '限流/分', dataIndex: 'perMinuteLimit', width: '12%', render: (v: number | null) => v ?? '默认' },
+            { title: '状态', width: '12%', render: (_, r) => (r.enabled ? <Tag color="green">启用</Tag> : <Tag color="red">已吊销</Tag>) },
+            { title: '最近使用', width: '22%', render: (_, r) => (r.lastUsedAt ? new Date(r.lastUsedAt).toLocaleString() : '—') },
             {
               title: '',
-              width: 90,
+              width: '14%',
               render: (_, r) => (
                 <Popconfirm title="吊销该凭据？使用它的应用将立即 401。" onConfirm={async () => {
                   await api(`/api/admin/llm/tokens/${r.id}`, { method: 'DELETE' });
@@ -2288,8 +2360,6 @@ function planDurationUnit(days: number): string {
 
 function OpsTab(): ReactNode {
   const qc = useQueryClient();
-  const usersQ = useQuery({ queryKey: ['admin-users'], queryFn: () => api<{ users: PublicUser[] }>('/api/admin/users') });
-  const [adjustForm] = Form.useForm();
   const plansQ = useQuery({ queryKey: ['billing-plans'], queryFn: () => api<{ plans: PlanRowUI[] }>('/api/admin/billing/plans') });
   const ordersQ = useQuery({ queryKey: ['billing-orders'], queryFn: () => api<{ orders: OrderRowUI[] }>('/api/admin/billing/orders?status=pending') });
   const opsQ = useQuery({ queryKey: ['billing-ops'], queryFn: () => api<OpsStatsUI>('/api/admin/billing/ops') });
@@ -2585,43 +2655,8 @@ function OpsTab(): ReactNode {
 
       <RedeemCard />
 
-      <Card size="small" title="用户额度发放 / 调减">
-        <Form layout="inline" form={adjustForm} onFinish={async (v) => {
-          try {
-            const r = await api<{ balance: number }>('/api/admin/llm/adjust', {
-              method: 'POST',
-              json: { userId: Number(v.userId), delta: Number(v.delta), note: v.note },
-            });
-            message.success(`已调整，当前余额 ${r.balance}`);
-            adjustForm.resetFields();
-            void qc.invalidateQueries({ queryKey: ['billing-ops'] });
-            void qc.invalidateQueries({ queryKey: ['llm-usage'] });
-          } catch (err) {
-            message.error(err instanceof Error ? err.message : '调整失败');
-          }
-        }}>
-          <Form.Item name="userId" rules={[{ required: true, message: '必选' }]}>
-            <Select
-              placeholder="选择用户"
-              style={{ width: 180 }}
-              showSearch
-              optionFilterProp="label"
-              options={(usersQ.data?.users ?? []).map((u) => ({ value: u.id, label: `${u.name}（${u.username ?? u.id}）` }))}
-            />
-          </Form.Item>
-          <Form.Item name="delta" rules={[{ required: true, message: '必填' }]}>
-            <Input placeholder="变动量（±token）" style={{ width: 160 }} />
-          </Form.Item>
-          <Form.Item name="note">
-            <Input placeholder="备注" style={{ width: 180 }} />
-          </Form.Item>
-          <Button htmlType="submit" type="primary">确认调整</Button>
-        </Form>
-      </Card>
-
-
       <Card size="small" title="计费设置">
-        <SettingsForm groups={['计费']} />
+        <SettingsForm groups={['计费']} hideGroupCards />
       </Card>
 
 
@@ -2677,12 +2712,20 @@ interface RedeemCodeRowUI {
   expiresAt: number | null;
 }
 
+interface RedeemGeneratorValues {
+  membershipPlanId?: number;
+  membershipCount?: number;
+  membershipNote?: string;
+  tokensAmount?: number;
+  tokensCount?: number;
+  tokensNote?: string;
+}
+
 function RedeemCard(): ReactNode {
   const qc = useQueryClient();
   const batchesQ = useQuery({ queryKey: ['redeem-batches'], queryFn: () => api<{ batches: RedeemBatch[] }>('/api/admin/redeem/batches') });
   const plansQ = useQuery({ queryKey: ['billing-plans'], queryFn: () => api<{ plans: PlanRowUI[] }>('/api/admin/billing/plans') });
-  const [form] = Form.useForm();
-  const [kind, setKind] = useState<'tokens' | 'membership'>('tokens');
+  const [form] = Form.useForm<RedeemGeneratorValues>();
   const [generated, setGenerated] = useState<string[] | null>(null);
   const [viewBatch, setViewBatch] = useState<string>('');
 
@@ -2696,61 +2739,86 @@ function RedeemCard(): ReactNode {
     void qc.invalidateQueries({ queryKey: ['redeem-codes'] });
   }
 
+  async function generate(kind: 'tokens' | 'membership'): Promise<void> {
+    const valueField = kind === 'membership' ? 'membershipPlanId' : 'tokensAmount';
+    const countField = kind === 'membership' ? 'membershipCount' : 'tokensCount';
+    const noteField = kind === 'membership' ? 'membershipNote' : 'tokensNote';
+    try {
+      await form.validateFields([valueField, countField]);
+      const values = form.getFieldsValue([valueField, countField, noteField]);
+      const r = await api<{ batchId: string; codes: string[] }>('/api/admin/redeem/batches', {
+        method: 'POST',
+        json: {
+          kind,
+          count: Number(values[countField]),
+          tokens: kind === 'tokens' ? Number(values.tokensAmount) : undefined,
+          planId: kind === 'membership' ? Number(values.membershipPlanId) : undefined,
+          note: values[noteField] || undefined,
+        },
+      });
+      setGenerated(r.codes);
+      invalidate();
+    } catch (err) {
+      if (err instanceof Error) message.error(err.message);
+    }
+  }
+
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Card size="small" title="生成卡券码（额度码 / 订阅码）">
-        <Form form={form} layout="inline" style={{ rowGap: 8 }} onFinish={async (v) => {
-          try {
-            const r = await api<{ batchId: string; codes: string[] }>('/api/admin/redeem/batches', {
-              method: 'POST',
-              json: {
-                kind,
-                count: Number(v.count),
-                tokens: kind === 'tokens' ? Number(v.tokens) : undefined,
-                planId: kind === 'membership' ? Number(v.planId) : undefined,
-                expiresInDays: v.expiresInDays ? Number(v.expiresInDays) : null,
-                note: v.note || undefined,
+        <Form form={form}>
+          <Table<{ kind: 'membership' | 'tokens' }>
+            rowKey="kind"
+            size="small"
+            pagination={false}
+            tableLayout="fixed"
+            dataSource={[{ kind: 'membership' }, { kind: 'tokens' }]}
+            columns={[
+              { title: '卡券类型', width: '20%', render: (_, row) => row.kind === 'membership' ? '订阅码' : '额度码' },
+              {
+                title: '价值',
+                width: '30%',
+                render: (_, row) => row.kind === 'membership' ? (
+                  <Form.Item name="membershipPlanId" rules={[{ required: true, message: '请选择套餐' }]} style={{ marginBottom: 0 }}>
+                    <Select
+                      placeholder="选择套餐类型"
+                      style={{ width: '100%' }}
+                      options={(plansQ.data?.plans ?? []).map((plan) => ({ value: plan.id, label: `${plan.name}（${planDurationLabel(plan.durationDays)}）` }))}
+                    />
+                  </Form.Item>
+                ) : (
+                  <Form.Item name="tokensAmount" rules={[{ required: true, message: '请输入单张 Token 数量' }]} style={{ marginBottom: 0 }}>
+                    <InputNumber min={1} precision={0} placeholder="单张 Token 数量" style={{ width: '100%' }} />
+                  </Form.Item>
+                ),
               },
-            });
-            setGenerated(r.codes);
-            invalidate();
-          } catch (err) {
-            message.error(err instanceof Error ? err.message : '生成失败');
-          }
-        }}>
-          <Form.Item name="kind" initialValue="tokens" rules={[{ required: true }]}>
-            <Select
-              style={{ width: 120 }}
-              onChange={(v) => setKind(v as 'tokens' | 'membership')}
-              options={[
-                { value: 'tokens', label: '额度码' },
-                { value: 'membership', label: '订阅码' },
-              ]}
-            />
-          </Form.Item>
-          {kind === 'tokens' ? (
-            <Form.Item name="tokens" rules={[{ required: true, message: '必填' }]}>
-              <Input placeholder="每张面额(token)" style={{ width: 150 }} />
-            </Form.Item>
-          ) : (
-            <Form.Item name="planId" rules={[{ required: true, message: '必选' }]}>
-              <Select
-                placeholder="绑定套餐"
-                style={{ width: 170 }}
-                options={(plansQ.data?.plans ?? []).map((p) => ({ value: p.id, label: `${p.name}（${p.durationDays}天）` }))}
-              />
-            </Form.Item>
-          )}
-          <Form.Item name="count" rules={[{ required: true, message: '必填' }]}>
-            <Input placeholder="数量=10" style={{ width: 100 }} />
-          </Form.Item>
-          <Form.Item name="expiresInDays">
-            <Input placeholder="有效天数(可选)" style={{ width: 120 }} />
-          </Form.Item>
-          <Form.Item name="note">
-            <Input placeholder="备注" style={{ width: 140 }} />
-          </Form.Item>
-          <Button htmlType="submit" type="primary">生成</Button>
+              {
+                title: '数量',
+                width: '15%',
+                render: (_, row) => (
+                  <Form.Item
+                    name={row.kind === 'membership' ? 'membershipCount' : 'tokensCount'}
+                    rules={[{ required: true, message: '请输入张数' }]}
+                    style={{ marginBottom: 0 }}
+                  >
+                    <InputNumber min={1} precision={0} placeholder="张数" style={{ width: '100%' }} />
+                  </Form.Item>
+                ),
+              },
+              {
+                title: '备注',
+                width: '35%',
+                render: (_, row) => (
+                  <div className="aap-redeem-generator__note">
+                    <Form.Item name={row.kind === 'membership' ? 'membershipNote' : 'tokensNote'} style={{ marginBottom: 0 }}>
+                      <Input placeholder="备注（可选）" />
+                    </Form.Item>
+                    <Button size="small" type="primary" onClick={() => void generate(row.kind)}>生成</Button>
+                  </div>
+                ),
+              },
+            ]}
+          />
         </Form>
 
         {generated ? (
@@ -2812,7 +2880,7 @@ function RedeemCard(): ReactNode {
               dataSource={(codesQ.data?.codes ?? []).filter((c) => c.status !== 'disabled')}
               scroll={{ x: 'max-content' }}
               columns={[
-                { title: '码', dataIndex: 'code', render: (v: string) => <Typography.Text copyable code>{v}</Typography.Text> },
+                { title: '卡券码', dataIndex: 'code', render: (v: string) => <Typography.Text copyable code>{v}</Typography.Text> },
                 { title: '状态', width: 100, render: (_, r) => (r.status === 'unused' ? <Tag color="green">未用</Tag> : r.status === 'used' ? <Tag>已用</Tag> : <Tag color="red">作废</Tag>) },
                 { title: '使用者', dataIndex: 'usedBy', width: 90 },
                 {

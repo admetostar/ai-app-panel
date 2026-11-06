@@ -4004,6 +4004,36 @@ body {
   color: #aeb6c4;
 }
 
+.aap-admin-settings-form .ant-form-item-label {
+  flex: 0 0 15em;
+}
+
+.aap-redeem-generator__note {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+
+@media (max-width: 767px) {
+  .aap-admin-settings-form .ant-form-item-row {
+    flex-direction: column;
+  }
+
+  .aap-admin-settings-form .ant-form-item-label {
+    flex: none;
+    text-align: left;
+  }
+
+  .aap-admin-settings-form .ant-form-item-control {
+    width: 100%;
+  }
+
+  .aap-redeem-generator__note {
+    grid-template-columns: 1fr;
+  }
+}
+
 .aap-user-sidebar__toggle.ant-btn {
   display: inline-flex;
   width: 34px;
