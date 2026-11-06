@@ -18,6 +18,7 @@ import { writeHtmlApp } from '../gateway/staticApp.js';
 let gw: Server;
 let gwPort = 0;
 let dir: string;
+const iconFilename = 'icon-0123456789abcdef0123456789abcdef.png';
 
 const USER_HTML = '<!doctype html><html><body><h1>USERRAW-INDEX</h1><script>localStorage.setItem("album-token","persist")</script></body></html>';
 const ADMIN_HTML = '<!doctype html><html><body><h1>ADMINRAW-INDEX</h1></body></html>';
@@ -38,7 +39,8 @@ beforeAll(async () => {
 
   writeHtmlApp('usrhtml', USER_HTML);
   await getDb().insert(apps).values({
-    id: 'usrhtml', name: '用户HTML', visibility: 'public', upstream: '', kind: 'html',
+    id: 'usrhtml', name: '用户 & HTML <应用>', description: '分享 "预览"', icon: `/api/apps/usrhtml/icon/${iconFilename}`,
+    visibility: 'public', upstream: '', kind: 'html',
     ownerUserId: uploaderId, createdAt: now, updatedAt: now,
   });
 
@@ -90,6 +92,9 @@ describe('用户应用独立子域名', () => {
     expect(html).toContain('USERRAW-INDEX');
     expect(html).toContain('localStorage.setItem');
     expect(html).not.toContain('<iframe sandbox');
+    expect(html).toContain('<meta property="og:title" content="用户 &amp; HTML &lt;应用&gt;">');
+    expect(html).toContain('<meta property="og:description" content="分享 &quot;预览&quot;">');
+    expect(html).toContain(`property="og:image" content="http://localhost:${gwPort}/api/apps/usrhtml/icon/${iconFilename}"`);
 
     const appApi = await fetchApp('/api/portal/bootstrap');
     expect(appApi.status).toBe(200);
@@ -101,6 +106,7 @@ describe('用户应用独立子域名', () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('<iframe data-aap-app-frame sandbox=');
+    expect(html).toContain('<meta property="og:title"');
     expect(html).not.toContain('USERRAW-INDEX');
   });
 
@@ -124,7 +130,9 @@ describe('用户应用独立子域名', () => {
     const res = await fetch(`http://127.0.0.1:${gwPort}/app/usrhtml/raw/index.html`, { redirect: 'manual' });
     expect(res.status).toBe(200);
     expect(res.headers.get('content-security-policy')).toContain('sandbox');
-    expect(await res.text()).toContain('USERRAW-INDEX');
+    const html = await res.text();
+    expect(html).toContain('USERRAW-INDEX');
+    expect(html).not.toContain('og:title');
   });
 
 });

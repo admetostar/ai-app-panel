@@ -339,6 +339,7 @@ export function PortalLayout() {
                       siteName={branding?.siteName ?? 'ai-app-panel'}
                       logo={branding?.logo ?? null}
                       userName={me.user.name}
+                      verificationChannel={data?.registration.verificationChannel ?? null}
                       theme={activeUserPageTheme}
                     />
                   </div>
@@ -473,6 +474,7 @@ export function PortalLayout() {
                     siteName={branding?.siteName ?? 'ai-app-panel'}
                     logo={branding?.logo ?? null}
                     userName={me.user.name}
+                    verificationChannel={data?.registration.verificationChannel ?? null}
                     theme={activeUserPageTheme}
                   />
                 </div>

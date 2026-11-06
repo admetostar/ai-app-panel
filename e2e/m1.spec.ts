@@ -372,15 +372,21 @@ test('订阅详情使用 T 形账单并突出数字', async ({ page }) => {
 
 test('用户菜单内的邀请码卡片同步站点品牌', async ({ page }) => {
   await page.addInitScript(() => {
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
-    document.execCommand = () => true;
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async (text: string) => localStorage.setItem('e2e-copied-invite-link', text) },
+    });
   });
   const logo = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23f3cc6d'/%3E%3C/svg%3E";
   await page.route('**/api/portal/bootstrap', async (route) => {
     const response = await route.fetch();
-    const bootstrap = await response.json() as { branding: { siteName: string; logo: string | null } };
+    const bootstrap = await response.json() as {
+      branding: { siteName: string; logo: string | null };
+      registration: { verificationChannel: 'email' | 'phone' };
+    };
     bootstrap.branding.siteName = '邀请测试站点';
     bootstrap.branding.logo = logo;
+    bootstrap.registration.verificationChannel = 'phone';
     await route.fulfill({ response, json: bootstrap });
   });
   await page.route('**/api/auth/me', (route) => route.fulfill({
@@ -425,6 +431,8 @@ test('用户菜单内的邀请码卡片同步站点品牌', async ({ page }) => 
   await expect(card).toHaveAttribute('title', '点击复制邀请链接');
   await card.click();
   await expect(page.locator('.ant-message-notice')).toContainText('邀请注册链接已复制');
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('e2e-copied-invite-link')))
+    .toContain('/register?channel=phone&invite=E2E-INVITE-CODE');
   await page.locator('.aap-user-dropdown__theme .ant-segmented-item').filter({ hasText: '深色' }).click();
   await expect(card).toHaveClass(/aap-id-card--dark/);
   await page.locator('.aap-user-dropdown__theme .ant-segmented-item').filter({ hasText: '浅色' }).click();
@@ -438,6 +446,14 @@ test('用户菜单内的邀请码卡片同步站点品牌', async ({ page }) => 
   const png = await readFile(await download.path());
   expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
   await expect(page.locator('.ant-message-notice')).toContainText('邀请电子卡 PNG 已导出');
+
+  await page.goto('/register?channel=phone&invite=E2E-INVITE-CODE');
+  const inviteCode = page.getByLabel('邀请码（选填）');
+  await expect(inviteCode).toBeVisible();
+  await expect(inviteCode).toHaveValue('E2E-INVITE-CODE');
+
+  await page.goto('/login');
+  await expect(page.getByPlaceholder('手机号 / 用户名 / 邮箱')).toBeVisible();
 });
 
 /** M1 验收主链路①：F3 初始化——初始密码登录 → 强制改密 → 强制绑 MFA → 完成向导 */
@@ -573,20 +589,30 @@ test('操作导航文案无裸露 Markdown 且按章节展示应用示例和配�
   const guideContent = page.locator('.aap-guide-markdown');
 
   await expect(guideContent).not.toContainText('**');
+  await expect(guideContent).not.toContainText('`');
   await page.getByRole('button', { name: '下一步' }).click();
   await expect(guideContent.getByRole('heading', { name: 'WorkBuddy' })).toBeVisible();
   await expect(guideContent.getByRole('heading', { name: 'Claude' })).toBeVisible();
+  await expect(guideContent).not.toContainText('**');
+  await expect(guideContent).not.toContainText('`');
   await expect(guideContent).toContainText('使用您习惯的Agent安装awpk-app-develop.skill或awpk-app-develop.zip技能包');
-  await expect(guideContent).toContainText('专家·技能·连接器');
-  await expect(guideContent).toContainText('Customize');
-  await expect(guideContent).toContainText('你知道怎么制作并打包awpk应用吗？');
+  await expect(guideContent).toContainText('「专家·技能·连接器」的「技能」页面点击「添加技能」按钮');
+  await expect(guideContent).toContainText('自动安全检验后点击安装');
+  await expect(guideContent).toContainText('「自定义」的「Skills」页面点击「添加」按钮');
+  await expect(guideContent).toContainText('「设置」的「功能」页面打开「代码执行和文件创建」');
+  await expect(guideContent).toContainText('你知道awpk应用吗？');
   await expect(guideContent).not.toContainText('.awpk');
   await expect(guideContent).not.toContainText('指定范围');
   await page.getByRole('button', { name: '下一步' }).click();
   await expect(guideContent.getByRole('heading', { name: '告诉 Agent 你要一个什么应用' })).toBeVisible();
   await expect(
-    guideContent.getByText('帮我做一个全球时钟，显示主要城市的当前时间，并打包成 awpk。'),
+    guideContent.getByText('写一个五子棋应用打包成awpk。'),
   ).toBeVisible();
+  await expect(guideContent).not.toContainText('**');
+  await expect(guideContent).not.toContainText('`');
+  await expect(guideContent.getByText('写一个awpk应用，功能是把excel表格数据转换成json结构化数据。')).toBeVisible();
+  await expect(guideContent.getByText('写一个使用个人照片一键生成卡通形象的AWPK应用。')).toBeVisible();
+  await expect(guideContent.getByText('开发一个个人相册，打包成awpk。')).toBeVisible();
   await expect(guideContent).not.toContainText('环境变量');
   await expect(guideContent).not.toContainText('入参');
 
@@ -704,6 +730,22 @@ test('设置保存：HTTPS 跳转开关开 → 保存 → 刷新仍为开', asyn
   await page.reload();
   const switcher2 = page.locator('.ant-card', { hasText: 'HTTPS 跳转' }).locator('.ant-switch').first();
   await expect(switcher2).not.toHaveClass(/ant-switch-checked/);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const tab of ['apps', 'users', 'security', 'llm', 'ops']) {
+    await page.goto(`/admin?tab=${tab}`);
+    const tableContent = page.locator('.aap-admin-page .ant-table-content').first();
+    await expect(tableContent).toBeVisible();
+    const scroll = await tableContent.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      overflowX: getComputedStyle(element).overflowX,
+    }));
+    expect(scroll.overflowX).toBe('auto');
+    expect(scroll.scrollWidth).toBeGreaterThan(scroll.clientWidth);
+    const pageWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+    expect(pageWidth).toBeLessThanOrEqual(390);
+  }
 });
 
 /** M1 验收主链路⑤：普通用户不强制绑 MFA——初始密码改密后直达门户（曾误跳绑定页），

@@ -2041,6 +2041,20 @@ body {
   background: #f5f5f5 !important;
 }
 
+.aap-admin-page,
+.aap-admin-page .aap-admin-content,
+.aap-admin-page .ant-space-vertical,
+.aap-admin-page .ant-card,
+.aap-admin-page .ant-card-body,
+.aap-admin-page .ant-table-wrapper {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.aap-admin-page .ant-table-wrapper {
+  width: 100%;
+}
+
 .aap-owned-apps-table .ant-table-cell {
   padding-inline: 8px !important;
   overflow-wrap: anywhere;
@@ -4651,6 +4665,25 @@ body {
     grid-template-columns: 1fr;
     justify-items: center;
     gap: 22px;
+  }
+
+  .aap-admin-page .ant-card-head-wrapper {
+    flex-wrap: wrap;
+  }
+
+  .aap-admin-page .ant-card-head-title,
+  .aap-admin-page .ant-card-extra {
+    min-width: 0;
+  }
+
+  .aap-admin-page .ant-card-extra {
+    max-width: 100%;
+    margin-left: 0;
+  }
+
+  .aap-admin-page .ant-card-extra .ant-space {
+    max-width: 100%;
+    flex-wrap: wrap;
   }
 
   .aap-admin-subscriptions__legend {

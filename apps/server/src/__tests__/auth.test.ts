@@ -654,6 +654,7 @@ describe('W3 登录/会话', () => {
   });
 
   it('错误密码 → 401；正确密码 → 会话；重复登录正常', async () => {
+    await getDb().update(users).set({ phone: '13900139000' }).where(eq(users.username, 'neo'));
     const bad = await fetch(`${base}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base },
@@ -670,6 +671,15 @@ describe('W3 登录/会话', () => {
     const body = (await ok.json()) as { authState: string; mfaRequired: boolean };
     expect(body.authState).toBe('full');
     expect(body.mfaRequired).toBe(false);
+
+    for (const identifier of ['neo@example.com', '13900139000']) {
+      const byAlternateIdentifier = await fetch(`${base}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: base },
+        body: JSON.stringify({ username: identifier, password: 'Password123' }),
+      });
+      expect(byAlternateIdentifier.status).toBe(200);
+    }
   });
 
   it('改密：旧密码校验、其他会话被踢', async () => {

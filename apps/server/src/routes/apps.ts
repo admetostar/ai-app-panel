@@ -9,7 +9,7 @@ appsRouter.get('/apps', async (req, res) => {
   const user = req.user ?? null;
   const cards: AppCard[] = await Promise.all((await listApps())
     .filter((a) => a.enabled)
-    .filter((a) => isVisibleInPortal(a, user)) // private 且非归属者 → 不展示
+    .filter((a) => isVisibleInPortal(a, user)) // 克隆副本始终隐藏；private 对非归属者隐藏
     .map(async (a) => ({
       id: a.id,
       name: a.name,

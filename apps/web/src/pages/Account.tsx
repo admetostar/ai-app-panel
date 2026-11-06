@@ -231,6 +231,7 @@ export function AccountPage() {
         userName: user.name,
         code: invite.code,
         useCount: invite.useCount,
+        verificationChannel: bootstrap.registration.verificationChannel,
         theme: activeUserPageTheme,
       });
       message.success('邀请电子卡 PNG 已导出');

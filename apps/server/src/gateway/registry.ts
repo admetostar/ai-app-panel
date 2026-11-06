@@ -89,6 +89,7 @@ export async function canAccess(
 
 /** 门户卡片是否对该用户展示（private 且非归属者/管理员 → 隐藏） */
 export function isVisibleInPortal(app: AppRow, user: { id: number; role: string } | null | undefined): boolean {
+  if (app.clonedFromAppId) return false;
   if (isAdminUser(user)) return true;
   if (app.visibility === 'login') return Boolean(user && app.ownerUserId === user.id);
   if (app.visibility !== 'private') return true;

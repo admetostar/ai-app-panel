@@ -194,8 +194,8 @@ export function LoginPage() {
       ) : (
         <>
           <Form onFinish={onFinish} layout="vertical">
-            <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
-              <Input placeholder="用户名" size="large" autoFocus />
+            <Form.Item name="username" rules={[{ required: true, message: '请输入手机号、用户名或邮箱' }]}>
+              <Input placeholder="手机号 / 用户名 / 邮箱" size="large" autoFocus />
             </Form.Item>
             <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
               <Input.Password placeholder="密码" size="large" />

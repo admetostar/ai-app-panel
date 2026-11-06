@@ -360,8 +360,51 @@ export function sandboxShellHtml(appId: string, sub: string, query = ''): string
   );
 }
 
-export function serveSandboxShell(res: Response, appId: string, sub: string, query = ''): void {
-  res.type('html').send(sandboxShellHtml(appId, sub, query));
+export interface AppShareMetadata {
+  title: string;
+  description: string;
+  imageUrl: string | null;
+}
+
+function escapeMetaContent(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case '&': return '&amp;';
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '"': return '&quot;';
+      default: return '&#39;';
+    }
+  });
+}
+
+export function injectAppShareMetadata(html: string, metadata: AppShareMetadata): string {
+  const imageTags = metadata.imageUrl
+    ? `<meta property="og:image" content="${escapeMetaContent(metadata.imageUrl)}">` +
+      '<meta name="twitter:card" content="summary">' +
+      `<meta name="twitter:image" content="${escapeMetaContent(metadata.imageUrl)}">`
+    : '';
+  const tags =
+    `<meta property="og:title" content="${escapeMetaContent(metadata.title)}">` +
+    `<meta property="og:description" content="${escapeMetaContent(metadata.description)}">` +
+    '<meta property="og:type" content="website">' +
+    imageTags;
+  const head = /<head(?:\s[^>]*)?>/i;
+  if (head.test(html)) return html.replace(head, (openingTag) => `${openingTag}${tags}`);
+  const htmlTag = /<html(?:\s[^>]*)?>/i;
+  if (htmlTag.test(html)) return html.replace(htmlTag, (openingTag) => `${openingTag}<head>${tags}</head>`);
+  return `<!doctype html><html><head>${tags}</head><body>${html}</body></html>`;
+}
+
+export function serveSandboxShell(
+  res: Response,
+  appId: string,
+  sub: string,
+  query = '',
+  shareMetadata?: AppShareMetadata,
+): void {
+  const html = sandboxShellHtml(appId, sub, query);
+  res.type('html').send(shareMetadata ? injectAppShareMetadata(html, shareMetadata) : html);
 }
 
 /** 托管应用请求处理（已过门禁与限流；sub 为 /app/<id>/ 之后的路径） */
@@ -372,6 +415,7 @@ export function serveHtmlApp(
   sub: string,
   noChrome = false,
   appOrigin = false,
+  shareMetadata?: AppShareMetadata,
 ): void {
   // raw 通道（noChrome）：顶层直达 raw URL 时包代码在门户源裸奔执行（P0）——
   // 输出前覆盖全局通用 CSP，用 sandbox 指令把顶层导航也关进 opaque origin
@@ -404,7 +448,8 @@ export function serveHtmlApp(
     if (ext === '.html' || ext === '.htm') {
       // 托管 HTML 同样注入统一页面元素（沙箱 raw 通道不注入——chrome 在外壳层）
       const html = fs.readFileSync(abs, 'utf8');
-      res.send(noChrome ? injectSandboxBridge(html, app.id) : appOrigin ? html : injectChrome(html, app.id));
+      const bridged = noChrome ? injectSandboxBridge(html, app.id) : appOrigin ? html : injectChrome(html, app.id);
+      res.send(!noChrome && shareMetadata ? injectAppShareMetadata(bridged, shareMetadata) : bridged);
     } else {
       res.send(fs.readFileSync(abs));
     }
@@ -415,7 +460,8 @@ export function serveHtmlApp(
   const indexPath = path.join(appSiteDir(app.id), 'index.html');
   if (fs.existsSync(indexPath)) {
     const html = fs.readFileSync(indexPath, 'utf8');
-    res.type('html').send(noChrome ? injectSandboxBridge(html, app.id) : appOrigin ? html : injectChrome(html, app.id));
+    const bridged = noChrome ? injectSandboxBridge(html, app.id) : appOrigin ? html : injectChrome(html, app.id);
+    res.type('html').send(!noChrome && shareMetadata ? injectAppShareMetadata(bridged, shareMetadata) : bridged);
     return;
   }
   res.status(404).type('html').send('Not Found');

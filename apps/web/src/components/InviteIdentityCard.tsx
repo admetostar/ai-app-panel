@@ -3,7 +3,7 @@ import QRCode from 'qrcode';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
-import { withBase } from '../lib/base';
+import { buildInviteRegistrationUrl } from '../lib/inviteIdentityCard';
 
 interface InviteInfo {
   code: string;
@@ -15,12 +15,14 @@ export function InviteIdentityCard({
   siteName,
   logo,
   userName,
+  verificationChannel,
   theme,
 }: {
   open: boolean;
   siteName: string;
   logo: string | null;
   userName: string;
+  verificationChannel: 'email' | 'phone' | null;
   theme: 'light' | 'dark';
 }) {
   const invite = useQuery({
@@ -31,8 +33,10 @@ export function InviteIdentityCard({
   });
   const [qr, setQr] = useState<string | null>(null);
   const inviteLink = useMemo(
-    () => invite.data ? `${window.location.origin}${withBase('/register')}?channel=email&invite=${encodeURIComponent(invite.data.code)}` : '',
-    [invite.data],
+    () => invite.data && verificationChannel
+      ? buildInviteRegistrationUrl(invite.data.code, verificationChannel)
+      : '',
+    [invite.data, verificationChannel],
   );
 
   useEffect(() => {

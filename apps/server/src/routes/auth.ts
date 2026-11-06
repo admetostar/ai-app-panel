@@ -9,12 +9,12 @@
  *  - 找回密码「存在与否」响应一致，防枚举。
  */
 import { Router } from 'express';
-import { and, eq, gt, isNull, lt, ne, sql } from 'drizzle-orm';
+import { and, eq, gt, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE, type PublicUser, type SessionInfo } from '@aap/shared';
 import { getDb } from '../db/index.js';
 import { inviteCodes, localCredentials, registrations, sessions, users, userGroupMembers, verificationCodes } from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
-import { dummyVerify, hashPassword, randomToken, verifyPassword } from '../lib/passwords.js';
+import { dummyVerify, hashPassword, randomToken, sha256Hex, verifyPassword } from '../lib/passwords.js';
 import { consumePowToken, isBanned, needsPow, recordFailure, recordSuccess } from '../lib/security.js';
 import { issueChallenge, verifyPow } from '../lib/pow.js';
 import { createSession, destroySession, markStepUp, mustEnrollMfaFor } from '../lib/session.js';
@@ -107,13 +107,6 @@ async function loadUserById(id: number) {
   const row = (await getDb().select().from(users).where(eq(users.id, id)))[0];
   if (!row) throw new HttpError(404, 'USER_NOT_FOUND', '用户不存在');
   return row;
-}
-
-async function loadUserByUsername(username: string) {
-  return (await getDb()
-    .select()
-    .from(users)
-    .where(and(eq(users.username, username), eq(users.kind, 'local'))))[0];
 }
 
 // ---------- 注册（两步） ----------
@@ -348,22 +341,44 @@ authRouter.post(
       });
     }
 
-    const username = String(body.username ?? '').trim().toLowerCase();
+    const identifier = String(body.username ?? '').trim();
+    const normalizedIdentifier = identifier.toLowerCase();
     const password = String(body.password ?? '');
-    const subject = `local:${username}`;
+    const candidates = identifier.length <= 320
+      ? await getDb()
+          .select()
+          .from(users)
+          .where(and(
+            eq(users.kind, 'local'),
+            or(
+              eq(users.username, normalizedIdentifier),
+              eq(users.email, normalizedIdentifier),
+              eq(users.phone, identifier),
+            ),
+          ))
+          .orderBy(users.id)
+          .limit(3)
+      : [];
+    const subject = `local:${candidates[0]?.username ?? sha256Hex(normalizedIdentifier)}`;
 
     // 条件 PoW：IP 维度或账号维度失败超阈值（账号维度防跨 IP 分布式撞库）
     await enforcePow(req, body, false, subject);
 
-    const user = await loadUserByUsername(username);
-    const hash = user ? await getLocalPasswordHash(user.id) : null;
-    const ok = await verifyPassword(password, hash);
+    let user: (typeof candidates)[number] | null = null;
+    let ok = false;
+    for (const candidate of candidates) {
+      if (await verifyPassword(password, await getLocalPasswordHash(candidate.id))) {
+        user = candidate;
+        ok = true;
+        break;
+      }
+    }
+    if (candidates.length === 0) await verifyPassword(password, null);
     if (!user || !ok) {
-      if (!user) await dummyVerify(password);
       const fail = await recordFailure(ip, subject, 'bad-credentials');
       await audit(subject, ip, 'login.fail', { reason: 'bad-credentials', failures: fail.failures });
       // 不回 failures/banned（防攻击者探测同 IP 失败计数与封禁态控制爆破节奏）
-      throw new HttpError(401, 'BAD_CREDENTIALS', '用户名或密码错误', {
+      throw new HttpError(401, 'BAD_CREDENTIALS', '手机号、用户名或邮箱与密码不匹配', {
         ...(await needsPow(ip) ? { action: 'pow', challenge: await issueChallenge(ip) } : {}),
       });
     }

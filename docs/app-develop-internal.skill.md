@@ -1,11 +1,13 @@
 ﻿---
 name: app-develop-internal
 description: "涉及网关 / LLM 网关 / 沙箱 / 计费 / 账号安全的架构设计或 ADR 复核，或 .awpk 接口面（manifest / aap.*）契约变更时用。常规 bug 修复、UI/文案/测试改动不需要。"
-version: 2.6.3
+version: 2.6.4
 ---
 
 # ai-app-panel 开发指南
 
+> v2.6.4 变更：应用开发规范 v0.3.4 强制 LLM 调用透传成对的平台身份头，补充单线程与后台任务归因规则及 `MODEL` 选型建议。
+>
 > v2.6.3 变更：应用开发规范 v0.3.3 要求更新同一 AWPK 应用时递增 `manifest.version`，未知当前版本先询问，不得重置或猜测。
 >
 > v2.6.2 变更：应用开发规范 v0.3.2 统一规定 LLM 应用使用必填 `env.MODEL`，模型从门户目录配置并显式传入 SDK。
@@ -88,6 +90,7 @@ version: 2.6.3
 - 消费端校验：签名（timingSafeEqual）、exp、aud 与自身 id 一致
 - **验签密钥自动下发（2026-09-22）**：勾选 passUser 的 .aap 包，沙箱 env 自动注入 `AAP_SIGN_SECRET`（全局身份签名密钥；`AAP_` 保留名上传即拒声明，包不可覆盖）。轮换密钥（stopAllPersistent）或切换 passUser 开关（stopPersistentFor）自动停起 persistent 进程，下次访问以新 env 拉起。上游（external）应用无沙箱：管理后台应用表单勾选 passUser 时展示密钥供复制配置
 - passUser 同时是 **LLM 网关用户级计量的归因通道**（身份头随请求链进网关，用户级 token 归因零成本）
+- **LLM 归因契约**：persistent 应用须在 Flask 请求上下文内成对读取 `X-AAP-Identity` 与 `X-AAP-Identity-Sig`，通过 `(payload, sig)` 显式传给每次 `aap.llm.chat` / `chat_stream`。单线程调用也应显式传元组；线程池/后台任务须在请求线程内捕获并逐层传递，不能在 worker 中读取 Flask `request`，不能只传 payload，缺失身份不得匿名重试。签名身份有效期 10 分钟，不进入数据库、持久队列或日志。invoked 模式使用平台注入的 `AAP_IDENTITY_PAYLOAD` / `AAP_IDENTITY_SIG`，后台 worker 可在提交前捕获并作为 `identity=` 参数传递。
 
 ## 四、LLM 网关 + 计费（C/D 域核心设计）
 
@@ -173,7 +176,7 @@ office-tool 后台丑且交互差是已知痛点；新面板七条要求：① �
 - **存储与保密**：值一律 AES-256-GCM 加密落盘（`app_env_vars` 表），secret 只写不读（仅回尾 4 位 hint）；审计只记变量名不记值。
 - **注入与拦截**：`baseEnv()` 在 invoked/persistent 沙箱启动时统一注入（persistent 须在 mod.py 执行前挂 `builtins.aap`——顶层阻塞在 `app.run()` 后注入永不生效）；必填缺配 invoked 执行 400 ENV_MISSING / persistent 拉起 503。
 - **配套 egress**：`aap.http.fetch(url, timeout, headers)` 支持自定义请求头（逐跳与托管头剥除、上游状态码透传），与规范 §3.4 接口面同步。
-- **LLM 模型配置约定**：声明 `llm` 的新包必须声明必填 `env.MODEL`，由应用作者在门户可用模型目录中选择；新包统一使用 `MODEL`，门户兼容既有 `OCR_MODEL` / `MODEL_NAME` 等变量名。
+- **LLM 模型配置约定**：声明 `llm` 的新包必须声明必填 `env.MODEL`，由应用使用者在门户可用模型目录中选择；新包统一使用 `MODEL`，门户兼容既有 `OCR_MODEL` / `MODEL_NAME` 等变量名。开发 Agent 应按任务建议：简单短文本任务优先低延迟、低成本且指令遵循稳定的模型；长文档或多步推理选上下文与推理能力足够的模型；结构化输出选格式遵循可靠的模型，并建议用代表性输入试用。
 
 表结构 / 配置 API / 管理入口 / egress 实现细节见 `docs/DEVELOPMENT.md` §9（单一来源，勿在此重复维护）。
 

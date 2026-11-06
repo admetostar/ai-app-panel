@@ -16,11 +16,11 @@ import { Readable } from 'node:stream';
 import path from 'node:path';
 import express, { Router, type Request, type Response } from 'express';
 import { config } from '../config/index.js';
-import { canAccess, findApp, getUrlSecret, isSlug, type UrlSecret } from './registry.js';
+import { canAccess, findApp, getUrlSecret, isSlug, type AppRow, type UrlSecret } from './registry.js';
 import { signIdentity } from './identity.js';
 import { allowRequest } from './limiter.js';
 import { getSettingInt } from '../lib/settings.js';
-import { injectChrome, injectSandboxBridge, serveHtmlApp, serveSandboxShell, needsIframeSandbox, stripRawPrefix, RAW_SANDBOX_CSP } from './staticApp.js';
+import { injectAppShareMetadata, injectChrome, injectSandboxBridge, serveHtmlApp, serveSandboxShell, needsIframeSandbox, stripRawPrefix, RAW_SANDBOX_CSP, type AppShareMetadata } from './staticApp.js';
 import { ensurePersistent, touchByPort } from '../lib/sandbox.js';
 import { missingRequiredEnv } from '../lib/appEnv.js';
 import { recordAppRuntimeEvent } from '../lib/appRuntimeEvents.js';
@@ -86,6 +86,23 @@ function decodeSafe(sub: string): string {
 /** HTML 转义：错误页插入路由参数/应用名（含用户可控的 display_name）前必须转义（防反射/存储 XSS） */
 function escapeHtml(s: string): string {
   return String(s).replace(/[&<>"']/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;'));
+}
+
+function shareMetadataFor(req: Request, app: AppRow, appOrigin: boolean): AppShareMetadata | undefined {
+  if (app.visibility !== 'public') return undefined;
+  const host = appOrigin
+    ? `${appDomainRoot()}${req.get('host')?.match(/:(\d+)$/)?.[0] ?? ''}`
+    : req.get('host');
+  const iconPrefix = `/api/apps/${encodeURIComponent(app.id)}/icon/`;
+  const iconFilename = app.icon?.startsWith(iconPrefix) ? app.icon.slice(iconPrefix.length) : '';
+  const imagePath = /^icon-[a-f0-9]{32}\.(?:png|jpe?g|gif|webp)$/.test(iconFilename)
+    ? `${config.gatewayPrefix ?? ''}${app.icon}`
+    : null;
+  return {
+    title: app.name,
+    description: app.description || app.name,
+    imageUrl: host && imagePath ? `${req.protocol}://${host}${imagePath}` : null,
+  };
 }
 
 /**
@@ -250,6 +267,7 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
   }
 
   const appOrigin = appIdFromHostname(req.hostname) === id;
+  const shareMetadata = shareMetadataFor(req, app, appOrigin);
   const shouldUseAppOrigin = app.kind !== 'upstream' && await needsIframeSandbox(app);
   // 访问策略三态
   const user = req.user;
@@ -302,7 +320,7 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
     if (sandboxed && !inRaw) {
       const queryIndex = req.url.indexOf('?');
       const query = queryIndex < 0 ? '' : req.url.slice(queryIndex + 1);
-      return serveSandboxShell(res, app.id, sub0, query);
+      return serveSandboxShell(res, app.id, sub0, query, shareMetadata);
     }
 
     if (app.kind === 'package' && app.runtimeMode === 'persistent') {
@@ -324,10 +342,10 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
       if (!port) return htmlError(res, 503, '应用启动中', '请稍后重试');
       // passUser：为沙箱逐请求签名注入身份头（persistent 内 LLM 调用按浏览用户归因计费）
       const identity = app.passUser && user ? signIdentity(user, app.id) : null;
-      return proxyToSandbox(req, res, port, inRaw ? stripRawPrefix(sub0) : sub0, identity, app.id, inRaw, appOrigin);
+      return proxyToSandbox(req, res, port, inRaw ? stripRawPrefix(sub0) : sub0, identity, app.id, inRaw, appOrigin, shareMetadata);
     }
     const sub = inRaw ? stripRawPrefix(sub0) : sub0;
-    return serveHtmlApp(req, res, app, sub, inRaw, appOrigin);
+    return serveHtmlApp(req, res, app, sub, inRaw, appOrigin, shareMetadata);
   }
 
   const base = (() => {
@@ -395,7 +413,7 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
     if (ct.includes('text/html')) {
       // HTML 全量缓冲改写（超大页面有内存代价——参考实现同语义）
       let html = Buffer.from(await upstream.arrayBuffer()).toString('utf8');
-      if (appOrigin) return res.send(html);
+      if (appOrigin) return res.send(shareMetadata ? injectAppShareMetadata(html, shareMetadata) : html);
       html = rewriteHtml(html, id, prefix);
       // <base> 指向「资源在上游的真实挂载点」：query 型凭据工具的资源在根，
       // 只有 path 型凭据才取凭据目录
@@ -480,6 +498,7 @@ function proxyToSandbox(
   appId: string,
   inRaw = false,
   appOrigin = false,
+  shareMetadata?: AppShareMetadata,
 ): void {
   touchPersistentByPort(port);
   // 平台会话 Cookie 与客户端身份头不下发；应用自己的 Cookie 仅在独立应用 origin 上转发。
@@ -601,7 +620,8 @@ function proxyToSandbox(
             return;
           }
           const html = Buffer.concat(chunks).toString('utf8');
-          const injected = inRaw ? injectSandboxBridge(html, appId) : appOrigin ? html : injectChrome(html, appId);
+          const page = inRaw ? injectSandboxBridge(html, appId) : appOrigin ? html : injectChrome(html, appId);
+          const injected = !inRaw && shareMetadata ? injectAppShareMetadata(page, shareMetadata) : page;
           res.setHeader('content-length', String(Buffer.byteLength(injected)));
           res.end(injected);
         });

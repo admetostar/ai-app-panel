@@ -612,6 +612,10 @@ describe('公开可见性与发布', () => {
     expect(mine.status).toBe(200);
     expect((await mine.json() as { apps: Array<{ id: string; isClone: boolean }> }).apps)
       .toContainEqual(expect.objectContaining({ id: cloneId, isClone: true }));
+    const discovery = await fetch(`${base}/api/apps`, { headers: { cookie: otherCookie } });
+    expect(discovery.status).toBe(200);
+    expect((await discovery.json() as { apps: Array<{ id: string }> }).apps)
+      .not.toContainEqual(expect.objectContaining({ id: cloneId }));
 
     const changeVisibility = await fetch(`${base}/api/apps/${cloneId}/settings`, {
       method: 'PUT',

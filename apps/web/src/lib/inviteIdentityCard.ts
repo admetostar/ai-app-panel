@@ -7,7 +7,15 @@ export interface InviteIdentityCardData {
   userName: string;
   code: string;
   useCount: number;
+  verificationChannel: 'email' | 'phone';
   theme: 'light' | 'dark';
+}
+
+export function buildInviteRegistrationUrl(
+  code: string,
+  verificationChannel: InviteIdentityCardData['verificationChannel'],
+): string {
+  return `${window.location.origin}${withBase('/register')}?channel=${verificationChannel}&invite=${encodeURIComponent(code)}`;
 }
 
 function roundedRect(
@@ -107,7 +115,7 @@ export async function downloadInviteIdentityCard(data: InviteIdentityCardData): 
   context.font = '18px "Microsoft YaHei", sans-serif';
   context.fillText('分享邀请链接，邀请朋友加入本站', 76, 455);
 
-  const inviteUrl = `${window.location.origin}${withBase('/register')}?channel=email&invite=${encodeURIComponent(data.code)}`;
+  const inviteUrl = buildInviteRegistrationUrl(data.code, data.verificationChannel);
   const qrUrl = await QRCode.toDataURL(inviteUrl, {
     margin: 1,
     width: 280,

@@ -683,6 +683,7 @@ function AppsTab(): ReactNode {
           dataSource={appsQ.data?.apps ?? []}
           pagination={false}
           size="small"
+          scroll={{ x: 'max-content' }}
           columns={[
             { title: 'ID', dataIndex: 'id', width: 120 },
             { title: '名称', dataIndex: 'name', width: 130 },
@@ -779,7 +780,7 @@ function AppsTab(): ReactNode {
           dataSource={runtimeEventsQ.data?.events ?? []}
           loading={runtimeEventsQ.isLoading}
           pagination={{ pageSize: 20, showSizeChanger: false }}
-          scroll={{ x: 1000 }}
+          scroll={{ x: 'max-content' }}
           columns={[
             { title: '时间', width: 160, render: (_, row) => new Date(row.ts).toLocaleString() },
             { title: '应用', dataIndex: 'appId', width: 150, ellipsis: true },
@@ -1024,6 +1025,7 @@ function UsersRegTab(): ReactNode {
           dataSource={usersQ.data?.users ?? []}
           pagination={false}
           size="small"
+          scroll={{ x: 'max-content' }}
           columns={[
             { title: '用户名', dataIndex: 'username' },
             { title: '昵称', dataIndex: 'name' },
@@ -1181,6 +1183,7 @@ function UsersRegTab(): ReactNode {
           dataSource={invitesQ.data?.invites ?? []}
           loading={invitesQ.isLoading}
           pagination={{ pageSize: 10, showSizeChanger: true }}
+          scroll={{ x: 'max-content' }}
           columns={[
             { title: '邀请码', dataIndex: 'code', render: (v: string) => <Typography.Text copyable code>{v}</Typography.Text> },
             {
@@ -1334,6 +1337,7 @@ function SecurityTab(): ReactNode {
           size="small"
           dataSource={auditQ.data?.logs ?? []}
           pagination={{ pageSize: 50 }}
+          scroll={{ x: 'max-content' }}
           columns={[
             { title: '时间', width: 160, render: (_, r) => new Date(r.ts).toLocaleString() },
             { title: '操作者', dataIndex: 'actor', width: 140, ellipsis: true },
@@ -1910,6 +1914,7 @@ function LlmTab(): ReactNode {
           size="small"
           pagination={false}
           dataSource={upstreamsQ.data?.upstreams ?? []}
+          scroll={{ x: 'max-content' }}
           columns={[
             { title: '名称', dataIndex: 'name', width: 175 },
             { title: 'Base URL', dataIndex: 'baseUrl', ellipsis: true },
@@ -1966,6 +1971,7 @@ function LlmTab(): ReactNode {
           size="small"
           pagination={false}
           dataSource={routesQ.data?.routes ?? []}
+          scroll={{ x: 'max-content' }}
           columns={[
             { title: '模型名', dataIndex: 'model', width: 150 },
             { title: '上游', dataIndex: 'upstreamName', width: 140 },
@@ -2029,6 +2035,7 @@ function LlmTab(): ReactNode {
           size="small"
           pagination={false}
           dataSource={tokensQ.data?.tokens ?? []}
+          scroll={{ x: 'max-content' }}
           columns={[
             { title: '应用', dataIndex: 'appId', width: 140 },
             { title: '名称', dataIndex: 'name', width: 140, render: (_, r) => (r.auto ? <Space size={4}><Tag color="blue" style={{ fontSize: 11 }}>自动签发</Tag>{r.name}</Space> : r.name) },
@@ -2057,6 +2064,7 @@ function LlmTab(): ReactNode {
           size="small"
           dataSource={usageQ.data?.rows ?? []}
           pagination={false}
+          scroll={{ x: 'max-content' }}
           columns={[
             { title: '时间', width: 160, render: (_, r) => new Date(r.ts).toLocaleString() },
             { title: '类型', dataIndex: 'kind', width: 80 },
@@ -2115,6 +2123,7 @@ function GroupsCard(): ReactNode {
         size="small"
         pagination={false}
         dataSource={groupsQ.data?.groups ?? []}
+        scroll={{ x: 'max-content' }}
         columns={[
           { title: '分组', dataIndex: 'name', width: 180 },
           { title: '备注', dataIndex: 'note', ellipsis: true },
@@ -2354,7 +2363,7 @@ function OpsTab(): ReactNode {
           rowKey="id"
           size="small"
           pagination={false}
-          scroll={{ x: 1080 }}
+          scroll={{ x: 'max-content' }}
           dataSource={plansQ.data?.plans ?? []}
           columns={[
             { title: '计划名称', dataIndex: 'name', width: 150 },
@@ -2542,6 +2551,7 @@ function OpsTab(): ReactNode {
           size="small"
           pagination={false}
           dataSource={ordersQ.data?.orders ?? []}
+          scroll={{ x: 'max-content' }}
           columns={[
             { title: '订单号', dataIndex: 'id', width: 170 },
             { title: '用户', dataIndex: 'userId', width: 70 },
@@ -2776,6 +2786,7 @@ function RedeemCard(): ReactNode {
           size="small"
           pagination={false}
           dataSource={batchesQ.data?.batches ?? []}
+          scroll={{ x: 'max-content' }}
           columns={[
             { title: '批次', dataIndex: 'batchId', width: 110 },
             { title: '类型', width: 90, render: (_, r) => (r.kind === 'tokens' ? '额度码' : '订阅码') },
@@ -2799,6 +2810,7 @@ function RedeemCard(): ReactNode {
               size="small"
               pagination={false}
               dataSource={(codesQ.data?.codes ?? []).filter((c) => c.status !== 'disabled')}
+              scroll={{ x: 'max-content' }}
               columns={[
                 { title: '码', dataIndex: 'code', render: (v: string) => <Typography.Text copyable code>{v}</Typography.Text> },
                 { title: '状态', width: 100, render: (_, r) => (r.status === 'unused' ? <Tag color="green">未用</Tag> : r.status === 'used' ? <Tag>已用</Tag> : <Tag color="red">作废</Tag>) },

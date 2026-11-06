@@ -1,4 +1,4 @@
-/** 注册页（A2）：始终开放注册；两步注册（资料 → 邮箱验证码）；全程 PoW。 */
+/** 注册页（A2）：始终开放注册；两步注册（资料 → 邮箱或短信验证码）；全程 PoW。 */
 import { Alert, Button, Form, Input, Typography, message } from 'antd';
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
@@ -39,7 +39,7 @@ export function RegisterPage() {
     setStep('form');
     setStart(null);
     form.resetFields();
-    form.setFieldValue('inviteCode', registrationChannel === 'email' ? searchParams.get('invite') ?? '' : undefined);
+    form.setFieldValue('inviteCode', searchParams.get('invite') ?? '');
   }, [form, registrationChannel, searchParams]);
 
   async function onFormFinish(values: {
@@ -105,7 +105,7 @@ export function RegisterPage() {
           layout="vertical"
           onFinish={onFormFinish}
           initialValues={{
-            ...(registrationChannel === 'email' ? { inviteCode: searchParams.get('invite') ?? '' } : {}),
+            inviteCode: searchParams.get('invite') ?? '',
           }}
         >
           <Form.Item
@@ -176,15 +176,13 @@ export function RegisterPage() {
               <Input />
             </Form.Item>
           )}
-          {registrationChannel === 'email' ? (
-            <Form.Item
-              name="inviteCode"
-              label="邀请码（选填）"
-              extra="填写有效邀请码，邀请人可获得奖励积分；无效或已停用的邀请码不影响注册。"
-            >
-              <Input placeholder="xxxx-xxxx-xxxx-xxxx" maxLength={191} />
-            </Form.Item>
-          ) : null}
+          <Form.Item
+            name="inviteCode"
+            label="邀请码（选填）"
+            extra="填写有效邀请码，邀请人可获得奖励积分；无效或已停用的邀请码不影响注册。"
+          >
+            <Input placeholder="xxxx-xxxx-xxxx-xxxx" maxLength={191} />
+          </Form.Item>
           <Button type="primary" htmlType="submit" loading={loading} block>
             获取{registrationChannel === 'phone' ? '短信' : '邮箱'}验证码
           </Button>
