@@ -84,8 +84,23 @@ export function AppSettingsModal({ app, open, onClose, onSaved, theme }: {
     name: string;
     description: string;
     visibility: AppVisibility;
-  }): Promise<void> {
+  }, llmOwnerConsent = false): Promise<void> {
     if (!app) return;
+    if (
+      !llmOwnerConsent
+      && values.visibility === 'public'
+      && app.visibility !== 'public'
+      && app.capabilities.includes('llm')
+    ) {
+      Modal.confirm({
+        title: '公开大模型应用确认',
+        content: '此应用运行时可能会调用大模型，因此产生的Token消耗会记入您的账号',
+        okText: '同意并公开',
+        cancelText: '取消',
+        onOk: async () => await save(values, true),
+      });
+      return;
+    }
     setSaving(true);
     let envSaved = false;
     try {
@@ -95,7 +110,7 @@ export function AppSettingsModal({ app, open, onClose, onSaved, theme }: {
       }
       const result = await api<{ pointsAwarded: number }>(`/api/apps/${encodeURIComponent(app.id)}/settings`, {
         method: 'PUT',
-        json: values,
+        json: { ...values, llmOwnerConsent },
       });
       message.success(
         result.pointsAwarded > 0

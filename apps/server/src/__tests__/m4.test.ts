@@ -634,13 +634,13 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
 });
 
 describe('M4 安全回归（鉴权与归属校验）', () => {
-  it('匿名访问 run / submit / mine → 401（修复前为 500 或带副作用崩溃）', async () => {
+  it('匿名调用不存在的应用返回 404；上传与个人应用列表仍需登录', async () => {
     const run = await fetch(`${base}/api/apps/anyapp/run`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base },
       body: JSON.stringify({ input: {} }),
     });
-    expect(run.status).toBe(401);
+    expect(run.status).toBe(404);
     const submit = await fetch(`${base}/api/apps/submit`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base },

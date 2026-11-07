@@ -587,7 +587,7 @@ authRouter.get('/auth/oidc/callback', h(async (req, res) => {
 // ---------- 找回密码 ----------
 
 /**
- * 重置码错猜计数（单进程语义，与会话/限流桶一致）：同一邮箱 10 分钟窗口内
+ * 重置码错猜计数（单进程语义，与会话/限流桶一致）：同一邮箱或手机号 10 分钟窗口内
  * 错猜 ≥5 次即作废其全部待用重置码（此后正确码也无法通过，须重新获取）；
  * 同时接入 recordFailure → 复用登录的 IP 自动封禁（累犯倍增）。
  * 6 位码 10^6 空间 × 每码 5 次尝试 × 每日发码上限，爆破在数学上不可行。
@@ -596,14 +596,14 @@ const RESET_FAIL_LIMIT = 5;
 const RESET_FAIL_WINDOW_MS = 10 * 60_000;
 const resetFails = new Map<string, { n: number; first: number }>();
 
-function recordResetCodeFail(email: string): number {
+function recordResetCodeFail(key: string): number {
   const now = Date.now();
   if (resetFails.size > 10_000) {
     for (const [k, v] of resetFails) if (now - v.first > RESET_FAIL_WINDOW_MS) resetFails.delete(k);
   }
-  const rec = resetFails.get(email);
+  const rec = resetFails.get(key);
   if (!rec || now - rec.first > RESET_FAIL_WINDOW_MS) {
-    resetFails.set(email, { n: 1, first: now });
+    resetFails.set(key, { n: 1, first: now });
     return 1;
   }
   rec.n += 1;
@@ -614,35 +614,50 @@ authRouter.post(
   '/auth/forgot/start',
   h(async (req, res) => {
     const ip = req.clientIp ?? 'unknown';
-    const body = (req.body ?? {}) as { email?: string } & PowBody;
+    const body = (req.body ?? {}) as { channel?: VerifyChannel; target?: string; email?: string; phone?: string } & PowBody;
     await enforcePow(req, body, true);
     await enforceTurnstile(req, body);
 
-    const email = String(body.email ?? '').trim().toLowerCase();
-    if (!EMAIL_RE.test(email)) throw new HttpError(400, 'INVALID_EMAIL', '邮箱格式不正确');
+    const channel = body.channel ?? 'email';
+    if (channel !== 'email' && channel !== 'phone') {
+      throw new HttpError(400, 'INVALID_RECOVERY_CHANNEL', '找回方式无效');
+    }
+    if (channel === 'phone' && !aliyunSmsConfigured()) {
+      throw new HttpError(503, 'PHONE_RECOVERY_UNAVAILABLE', '短信服务暂未配置，暂不能通过手机号找回密码');
+    }
+    const target = channel === 'email'
+      ? String(body.target ?? body.email ?? '').trim().toLowerCase()
+      : String(body.target ?? body.phone ?? '').trim();
+    if (channel === 'email' && !EMAIL_RE.test(target)) {
+      throw new HttpError(400, 'INVALID_EMAIL', '邮箱格式不正确');
+    }
+    if (channel === 'phone' && !PHONE_RE.test(target)) {
+      throw new HttpError(400, 'INVALID_PHONE', '请输入有效的中国大陆手机号码');
+    }
+    const failKey = `${channel}:${target}`;
+    const auditTarget = channel === 'email' ? maskEmail(target) : maskPhone(target);
 
-    // 无论是否存在都返回 ok（防枚举）；存在才真正发码
-    const user = (await getDb().select({ id: users.id }).from(users).where(eq(users.email, email)))[0];
+    // 邮箱通道保持防枚举；手机号通道返回匹配结果，以便提示用户检查号码。
+    const contactCondition = channel === 'email' ? eq(users.email, target) : eq(users.phone, target);
+    const user = (await getDb().select({ id: users.id }).from(users).where(and(eq(users.kind, 'local'), contactCondition)))[0];
     if (user) {
       try {
-        await issueCode('email', email, 'reset', ip);
-        resetFails.delete(email); // 新码 = 全新尝试额度
+        await issueCode(channel, target, 'reset', ip);
+        resetFails.delete(failKey); // 新码 = 全新尝试额度
       } catch (err) {
-        // 发码限流（60s 重发 / 24h 上限）命中：对外一律与不存在的邮箱同 200 响应体
-        // （静默跳过发送），否则「存在 → 429 / 不存在 → 200」构成确定性账号枚举
-        // oracle（终审 P1-4）。内部事件留审计；发信失败等其他错误照常抛出。
+        // 发码限流命中时静默跳过发送；邮箱响应保持防枚举，手机号只返回是否匹配。
+        // 内部事件留审计；发信失败等其他错误照常抛出。
         if (err instanceof HttpError && (err.code === 'CODE_RESEND_TOO_FAST' || err.code === 'CODE_DAILY_LIMIT')) {
-          await audit(`reset:${maskEmail(email)}`, ip, 'auth.forgot.send_suppressed', { reason: err.code });
+          await audit(`reset:${auditTarget}`, ip, 'auth.forgot.send_suppressed', { reason: err.code, channel });
         } else {
           throw err;
         }
       }
     } else {
-      // 不存在的邮箱：补一次等量 scrypt（同登录路径 dummyVerify 思路），
-      // 拉齐与「存在且发码」路径的时序量级，降低计时侧信道分辨力
-      await dummyVerify(email);
+      // 不存在的账号：补一次等量 scrypt，降低计时侧信道分辨力
+      await dummyVerify(target);
     }
-    res.json({ ok: true });
+    res.json(channel === 'phone' ? { ok: true, matched: Boolean(user) } : { ok: true });
   }),
 );
 
@@ -650,40 +665,61 @@ authRouter.post(
   '/auth/forgot/verify',
   h(async (req, res) => {
     const ip = req.clientIp ?? 'unknown';
-    const body = (req.body ?? {}) as { email?: string; code?: string; newPassword?: string };
-    const email = String(body.email ?? '').trim().toLowerCase();
+    const body = (req.body ?? {}) as {
+      channel?: VerifyChannel;
+      target?: string;
+      email?: string;
+      phone?: string;
+      code?: string;
+      newPassword?: string;
+    };
+    const channel = body.channel ?? 'email';
+    if (channel !== 'email' && channel !== 'phone') {
+      throw new HttpError(400, 'INVALID_RECOVERY_CHANNEL', '找回方式无效');
+    }
+    const target = channel === 'email'
+      ? String(body.target ?? body.email ?? '').trim().toLowerCase()
+      : String(body.target ?? body.phone ?? '').trim();
+    if (channel === 'email' && !EMAIL_RE.test(target)) {
+      throw new HttpError(400, 'INVALID_EMAIL', '邮箱格式不正确');
+    }
+    if (channel === 'phone' && !PHONE_RE.test(target)) {
+      throw new HttpError(400, 'INVALID_PHONE', '请输入有效的中国大陆手机号码');
+    }
+    const failKey = `${channel}:${target}`;
     const newPassword = String(body.newPassword ?? '');
     if (!isPasswordValid(newPassword)) {
       throw new HttpError(400, 'INVALID_PASSWORD', PASSWORD_POLICY_MESSAGE);
     }
 
-    const user = (await getDb().select().from(users).where(and(eq(users.email, email), eq(users.kind, 'local'))))[0];
+    const contactCondition = channel === 'email' ? eq(users.email, target) : eq(users.phone, target);
+    const user = (await getDb().select().from(users).where(and(eq(users.kind, 'local'), contactCondition)))[0];
     // 用户不存在时也走一次码校验（时序一致）；实际不会有有效码
-    const result = await verifyCode('email', email, 'reset', String(body.code ?? '').trim());
+    const result = await verifyCode(channel, target, 'reset', String(body.code ?? '').trim());
     if (!user || !result.ok) {
       if (!result.ok) {
-        const fails = recordResetCodeFail(email);
+        const fails = recordResetCodeFail(failKey);
         if (fails >= RESET_FAIL_LIMIT) {
-          // 错猜超限：作废该邮箱全部待用重置码（防在线爆破）
+          // 错猜超限：作废该邮箱或手机号全部待用重置码（防在线爆破）
           await getDb()
             .delete(verificationCodes)
             .where(
               and(
-                eq(verificationCodes.channel, 'email'),
-                eq(verificationCodes.target, email),
+                eq(verificationCodes.channel, channel),
+                eq(verificationCodes.target, target),
                 eq(verificationCodes.purpose, 'reset'),
                 isNull(verificationCodes.consumedAt),
               ),
             );
-          await audit(`reset:${email}`, ip, 'auth.reset.code.invalidated', { fails });
+          await audit(`reset:${channel === 'email' ? maskEmail(target) : maskPhone(target)}`, ip, 'auth.reset.code.invalidated', { fails, channel });
           throw new HttpError(400, 'CODE_TOO_MANY_ATTEMPTS', '验证码错误次数过多，请重新获取', { invalidated: true });
         }
         // 错猜计入登录失败队列（超阈值触发 PoW / IP 自动封禁）
-        await recordFailure(ip, `reset:${email}`, 'reset-code-mismatch');
+        await recordFailure(ip, `reset:${failKey}`, 'reset-code-mismatch');
       }
       throw new HttpError(400, result.ok ? 'RESET_FAILED' : result.error, '重置失败：验证码错误或已过期');
     }
-    resetFails.delete(email);
+    resetFails.delete(failKey);
 
     await writeLocalCredentials(user.id, newPassword);
     await getDb().update(users).set({ mustChangePassword: false }).where(eq(users.id, user.id));

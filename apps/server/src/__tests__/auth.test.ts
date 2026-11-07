@@ -738,6 +738,84 @@ describe('W3 登录/会话', () => {
 });
 
 describe('W3 找回密码（防枚举）', () => {
+  it('未匹配手机号不发码并提示，已关联手机号可用短信验证码重置密码', async () => {
+    const { writeLocalCredentials } = await import('../lib/bootstrap.js');
+    aliyunSmsMock.send.mockReset().mockResolvedValue({ body: { success: true, code: 'OK' } });
+    aliyunSmsMock.check.mockReset().mockResolvedValue({
+      body: { success: true, code: 'OK', model: { verifyResult: 'PASS' } },
+    });
+    await setSetting('ALIYUN_ACCESS_KEY_ID', 'test-access-key-id');
+    await setSetting('ALIYUN_ACCESS_KEY_SECRET', 'test-access-key-secret');
+    await setSetting('ALIYUN_SMS_SIGN_NAME', 'Test Sign');
+    await setSetting('ALIYUN_SMS_TEMPLATE_CODE', 'SMS_TEST_CODE');
+    await setSetting('ALIYUN_SMS_TEMPLATE_PARAM', '{"code":"##code##"}');
+
+    const [user] = await getDb()
+      .insert(users)
+      .values({ kind: 'local', username: 'phone-reset', phone: '13800000011', name: 'phone-reset', createdAt: Date.now() })
+      .returning({ id: users.id });
+    if (!user) throw new Error('Failed to create phone recovery test user');
+    await writeLocalCredentials(user.id, 'originalPassword1');
+    await getDb().insert(users).values({
+      kind: 'local',
+      username: 'phone-reset-disabled',
+      phone: '13800000013',
+      name: 'phone-reset-disabled',
+      status: 'disabled',
+      createdAt: Date.now(),
+    });
+
+    const ghost = await fetch(`${base}/api/auth/forgot/start`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({ channel: 'phone', target: '13800000012', powToken: await solvePow() }),
+    });
+    expect(ghost.status).toBe(200);
+    expect(await ghost.json()).toEqual({ ok: true, matched: false });
+    expect(aliyunSmsMock.send).not.toHaveBeenCalled();
+
+    const start = await fetch(`${base}/api/auth/forgot/start`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({ channel: 'phone', target: '13800000011', powToken: await solvePow() }),
+    });
+    expect(start.status).toBe(200);
+    expect(await start.json()).toEqual({ ok: true, matched: true });
+    expect(aliyunSmsMock.send).toHaveBeenCalledOnce();
+
+    const verify = await fetch(`${base}/api/auth/forgot/verify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({
+        channel: 'phone',
+        target: '13800000011',
+        code: '123456',
+        newPassword: 'resetPhonePassword123',
+      }),
+    });
+    expect(verify.status).toBe(200);
+    expect(aliyunSmsMock.check).toHaveBeenCalledOnce();
+    expect(aliyunSmsMock.check.mock.calls[0]?.[0]).toMatchObject({
+      phoneNumber: '13800000011',
+      verifyCode: '123456',
+    });
+    const relogin = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({ username: 'phone-reset', password: 'resetPhonePassword123' }),
+    });
+    expect(relogin.status).toBe(200);
+
+    const disabledStart = await fetch(`${base}/api/auth/forgot/start`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({ channel: 'phone', target: '13800000013', powToken: await solvePow() }),
+    });
+    expect(disabledStart.status).toBe(200);
+    expect(await disabledStart.json()).toEqual({ ok: true, matched: true });
+    expect(aliyunSmsMock.send).toHaveBeenCalledTimes(2);
+  });
+
   it('不存在的邮箱也返回 ok；存在的邮箱走码重置', async () => {
     // 专用用户（直插 DB，避免与注册流程的限流/占用相互纠缠）
     const { writeLocalCredentials } = await import('../lib/bootstrap.js');

@@ -12,7 +12,7 @@ import { getDb } from '../db/index.js';
 import { appRuntimeEvents, apps, llmAppTokens } from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
 import { requireAdmin } from '../lib/auth.js';
-import { isSlug, idConflictsWithGatewayPrefix, listApps, findApp } from '../gateway/registry.js';
+import { appHasLlmCapability, isSlug, idConflictsWithGatewayPrefix, listApps, findApp } from '../gateway/registry.js';
 import { writeHtmlApp, storePackageFiles, validateManifest, appSiteDir, isAwpkFilename } from '../gateway/staticApp.js';
 import { ensureAutoProvisionedToken } from '../lib/llm.js';
 import { encryptSecret } from '../lib/cryptoSecrets.js';
@@ -70,6 +70,7 @@ interface AppPayload {
   kind?: string;
   /** kind=html 编辑页面内容（PUT 时生效） */
   html?: string;
+  llmOwnerConsent?: boolean;
 }
 
 const VISIBILITIES = new Set(['public', 'login', 'private']);
@@ -126,6 +127,7 @@ adminAppsRouter.get(
           upstream: a.upstream,
           kind: a.kind,
           ownerUserId: a.ownerUserId,
+          llmCapability: appHasLlmCapability(a),
           hasUrlSecret: Boolean(a.urlSecretEnc),
           enabled: a.enabled,
           sort: a.sort,
@@ -200,6 +202,14 @@ adminAppsRouter.put(
     const existing = await findApp(id);
     if (!existing) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
     const body = (req.body ?? {}) as AppPayload;
+    if (body.visibility === 'public' && existing.visibility !== 'public' && appHasLlmCapability(existing)) {
+      if (existing.ownerUserId == null) {
+        throw new HttpError(409, 'LLM_OWNER_REQUIRED', '公开的大模型应用必须关联有效的属主账号');
+      }
+      if (body.llmOwnerConsent !== true) {
+        throw new HttpError(409, 'LLM_PUBLICATION_CONSENT_REQUIRED', '公开此应用前，请确认大模型 Token 消耗将记入属主账号');
+      }
+    }
 
     // HTML 页面内容更新（保存即生效；仅 kind=html）
     if (body.html !== undefined) {
@@ -238,7 +248,14 @@ adminAppsRouter.put(
     if (body.sort !== undefined) patch.sort = body.sort;
 
     await getDb().update(apps).set(patch).where(eq(apps.id, id));
-    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'app.update', { id });
+    await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'app.update', {
+      id,
+      llmOwnerConsentAccepted:
+        body.visibility === 'public'
+        && existing.visibility !== 'public'
+        && appHasLlmCapability(existing)
+        && body.llmOwnerConsent === true,
+    });
     void probeAll();
     res.json({ ok: true });
   }),
@@ -387,7 +404,14 @@ adminAppsRouter.post(
   '/admin/apps/package',
   express.json({ limit: '15mb' }),
   h(async (req: express.Request, res: express.Response) => {
-    const body = (req.body ?? {}) as { filename?: string; dataBase64?: string; visibility?: string; passUser?: boolean; urlSecret?: string };
+    const body = (req.body ?? {}) as {
+      filename?: string;
+      dataBase64?: string;
+      visibility?: string;
+      passUser?: boolean;
+      urlSecret?: string;
+      llmOwnerConsent?: boolean;
+    };
     if (!isAwpkFilename(body.filename)) {
       throw new HttpError(400, 'INVALID_PACKAGE_EXT', '应用包文件必须使用 .awpk 扩展名');
     }
@@ -403,10 +427,15 @@ adminAppsRouter.post(
     const tmpDir = `upload_tmp_${randomBytes(8).toString('hex')}`;
     let manifest: ReturnType<typeof validateManifest>;
     let rawManifest: Record<string, unknown> = {};
+    const visibility = body.visibility ?? 'private';
+    if (!VISIBILITIES.has(visibility)) throw new HttpError(400, 'INVALID_VISIBILITY', '可见范围非法');
     try {
       const r = storePackageFiles(tmpDir, zipBuf);
       rawManifest = r.manifest;
       manifest = validateManifest(r.manifest);
+      if (visibility === 'public' && manifest.capabilities.includes('llm') && body.llmOwnerConsent !== true) {
+        throw new HttpError(409, 'LLM_PUBLICATION_CONSENT_REQUIRED', '公开此应用前，请确认大模型 Token 消耗将记入属主账号');
+      }
       if (await findApp(manifest.name)) {
         throw new HttpError(409, 'APP_EXISTS', '同名应用已存在（包版本更新请删除后重传，或直接覆盖文件目录）');
       }
@@ -421,9 +450,6 @@ adminAppsRouter.post(
       if (err instanceof HttpError) throw err;
       throw new HttpError(400, 'PACKAGE_INVALID', err instanceof Error ? err.message : '包校验失败');
     }
-    const visibility = body.visibility ?? 'private';
-    if (!VISIBILITIES.has(visibility)) throw new HttpError(400, 'INVALID_VISIBILITY', '可见范围非法');
-
     const now = Date.now();
     const isHtml = manifest.type === 'html';
     await getDb()
@@ -457,6 +483,7 @@ adminAppsRouter.post(
       version: manifest.version,
       capabilities: manifest.capabilities,
       network: manifest.network,
+      llmOwnerConsentAccepted: visibility === 'public' && manifest.capabilities.includes('llm') && body.llmOwnerConsent === true,
     });
     res.json({
       ok: true,

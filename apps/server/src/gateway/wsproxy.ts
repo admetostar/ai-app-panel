@@ -9,8 +9,8 @@ import https from 'node:https';
 import type { Duplex } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { IDENTITY_TTL_MS } from '@aap/shared';
-import { canAccess, findApp, getUrlSecret, type AppRow, type UrlSecret } from './registry.js';
-import { signIdentity } from './identity.js';
+import { canAccess, findApp, getUrlSecret, requiresOwnerIdentity, type AppRow, type UrlSecret } from './registry.js';
+import { signAppIdentity } from './identity.js';
 import { allowRequest } from './limiter.js';
 import { loadSessionByToken } from '../lib/session.js';
 import { ensurePersistent, touchByPort } from '../lib/sandbox.js';
@@ -122,7 +122,9 @@ async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Prom
     return reject(socket, user ? 403 : 401, user ? 'Forbidden' : 'Unauthorized');
   }
 
-  const userKey = user ? `${user.kind}:${user.id}` : null;
+  const userKey = requiresOwnerIdentity(app) && app.ownerUserId !== null
+    ? `owner:${app.ownerUserId}`
+    : user ? `${user.kind}:${user.id}` : null;
   const ip = upgradeClientIp(req);
   if (!allowRequest(userKey, ip)) return reject(socket, 429, 'Too Many Requests');
 
@@ -185,7 +187,8 @@ async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Prom
     return reject(socket, 404, 'Not Found');
   }
 
-  const identity = app.passUser && user ? signIdentity(user, app.id) : null;
+  const identity = await signAppIdentity(app, user);
+  if (requiresOwnerIdentity(app) && !identity) return reject(socket, 503, 'Service Unavailable');
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(req.headers)) {
     if (REQ_SKIP.has(k.toLowerCase())) continue;

@@ -16,6 +16,7 @@ import { config } from '../config/index.js';
 import { getDb } from '../db/index.js';
 import { apps, users } from '../db/schema.js';
 import { appSiteDir } from '../gateway/staticApp.js';
+import { appHasLlmCapability } from '../gateway/registry.js';
 import { signIdentity } from '../gateway/identity.js';
 import type { SessionUser } from '../types.js';
 import { getAppLlmProvision } from './llm.js';
@@ -133,10 +134,20 @@ export async function baseEnv(appId: string, extra: Record<string, string> = {})
  * runner 经 AAP_IDENTITY_PAYLOAD/SIG 回传 x-aap-identity*，/api/aap/llm/chat
  * 验签归因 → 网关预检按用户余额拦截与扣费。invoked：归因到发起执行的用户
  * （10 分钟 TTL 覆盖 30s 执行窗口绰绰有余）；persistent 为多用户长驻，
- * 归因走代理逐请求注入的身份头（见 proxyToSandbox），不放进程环境。
+ * 归因走代理逐请求注入的身份头（见 proxyToSandbox），不放进程环境；公开 LLM 应用的
+ * invoked 身份固定为属主。
  */
 export async function identityEnv(appId: string, userId: number | null): Promise<Record<string, string>> {
   if (userId === null) return {};
+  const app = (await getDb()
+    .select({
+      passUser: apps.passUser,
+      visibility: apps.visibility,
+      manifestJson: apps.manifestJson,
+    })
+    .from(apps)
+    .where(eq(apps.id, appId)))[0];
+  if (!app || (!app.passUser && !(app.visibility === 'public' && appHasLlmCapability(app)))) return {};
   const u = (await getDb().select().from(users).where(eq(users.id, userId)))[0];
   if (!u) return {};
   const su: SessionUser = {

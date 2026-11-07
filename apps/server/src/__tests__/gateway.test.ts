@@ -6,6 +6,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import http from 'node:http';
+import { randomBytes } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import type { IncomingMessage, Server } from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -16,7 +17,7 @@ import { seedSettings, setSetting, getSetting } from '../lib/settings.js';
 import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
 import { handleUpgrade, upgradeClientIp } from '../gateway/wsproxy.js';
-import { users } from '../db/schema.js';
+import { appRuns, apps, users } from '../db/schema.js';
 import { writeLocalCredentials } from '../lib/bootstrap.js';
 import { verifyIdentity } from '../gateway/identity.js';
 
@@ -26,6 +27,10 @@ let up: Server; // mock 上游
 let upPort = 0;
 let dir: string;
 let adminCookie = '';
+let appOwnerId = 0;
+let lastUpstreamIdentity = '';
+let lastUpstreamIdentitySig = '';
+const publicRunAppId = `public-run-${randomBytes(4).toString('hex')}`;
 
 const PAGE_HTML = `<!doctype html><html><head><title>up</title></head><body>
 <link rel="stylesheet" href="/assets/style.css">
@@ -94,6 +99,8 @@ beforeAll(async () => {
   });
   const wss = new WebSocketServer({ noServer: true });
   up.on('upgrade', (req, socket, head) => {
+    lastUpstreamIdentity = String(req.headers['x-aap-identity'] ?? '');
+    lastUpstreamIdentitySig = String(req.headers['x-aap-identity-sig'] ?? '');
     wss.handleUpgrade(req, socket, head, (ws) => {
       ws.on('message', (data) => ws.send(`echo:${data.toString()}`));
     });
@@ -113,6 +120,7 @@ beforeAll(async () => {
   const [info] = await getDb()
     .insert(users)
     .values({ kind: 'local', username: 'admin', name: '管理员', role: 'admin', mfaEnabled: true, createdAt: Date.now() }).returning({ id: users.id });
+  appOwnerId = Number(info!.id);
   adminCookie = await sessionCookieFor(Number(info!.id));
 
   // 普通用户（plan=free）
@@ -139,6 +147,65 @@ beforeAll(async () => {
     visibility: 'public',
     urlSecret: 'token=SECRET123',
   });
+  await getDb().insert(apps).values({
+    id: 'public-llm-owner',
+    name: '公开大模型应用',
+    visibility: 'public',
+    kind: 'upstream',
+    ownerUserId: appOwnerId,
+    manifestJson: JSON.stringify({ capabilities: ['llm'] }),
+    upstream: `http://127.0.0.1:${upPort}`,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  await getDb().insert(apps).values([
+    {
+      id: publicRunAppId,
+      name: '公开执行应用',
+      visibility: 'public',
+      kind: 'package',
+      runtimeMode: 'invoked',
+      ownerUserId: appOwnerId,
+      manifestJson: JSON.stringify({ entry: 'main.py', capabilities: [] }),
+      upstream: '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+    {
+      id: 'private-run',
+      name: '私有执行应用',
+      visibility: 'private',
+      kind: 'package',
+      runtimeMode: 'invoked',
+      ownerUserId: appOwnerId,
+      manifestJson: JSON.stringify({ entry: 'main.py', capabilities: [] }),
+      upstream: '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+    {
+      id: 'llm-publish',
+      name: '待发布大模型应用',
+      visibility: 'private',
+      kind: 'package',
+      runtimeMode: 'invoked',
+      ownerUserId: appOwnerId,
+      manifestJson: JSON.stringify({ entry: 'main.py', capabilities: ['llm'] }),
+      upstream: '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+    {
+      id: 'ownerless-public-llm',
+      name: '无归属的大模型应用',
+      visibility: 'public',
+      kind: 'upstream',
+      manifestJson: JSON.stringify({ capabilities: ['llm'] }),
+      upstream: `http://127.0.0.1:${upPort}`,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+  ]);
 }, 30_000);
 
 afterAll(async () => {
@@ -241,6 +308,110 @@ describe('W5 访问策略（B4 三态）', () => {
     const priv = await fetch(`http://127.0.0.1:${gwPort}/app/priv/`);
     expect(priv.status).toBe(403);
     expect(await priv.text()).toContain('需要登录');
+  });
+
+  it('应用执行页匿名打开私有应用时明确提示先登录', async () => {
+    const res = await fetch(`http://127.0.0.1:${gwPort}/api/apps/private-run/meta`);
+    expect(res.status).toBe(401);
+    expect(await res.text()).toContain('请先登录平台账号');
+
+    const run = await fetch(`http://127.0.0.1:${gwPort}/api/apps/private-run/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: `http://127.0.0.1:${gwPort}` },
+      body: JSON.stringify({ input: {} }),
+    });
+    expect(run.status).toBe(401);
+  });
+
+  it('公开 invoked 应用允许匿名调用；执行记录不伪造访客账号', async () => {
+    const res = await fetch(`http://127.0.0.1:${gwPort}/api/apps/${publicRunAppId}/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: `http://127.0.0.1:${gwPort}` },
+      body: JSON.stringify({ input: { echo: 'guest' } }),
+    });
+    expect(res.status).toBe(200);
+    const result = await res.json() as { status: string };
+    expect(result.status).toBe('error');
+    const [run] = await getDb().select().from(appRuns).where(eq(appRuns.appId, publicRunAppId));
+    expect(run?.userId).toBeNull();
+  });
+
+  it('公开大模型应用始终注入属主身份，而不是访客身份', async () => {
+    const base = `http://127.0.0.1:${gwPort}`;
+    const anon = await fetch(`${base}/app/public-llm-owner/up`);
+    const anonBody = (await anon.json()) as { headers: Record<string, string> };
+    const anonPayload = JSON.parse(Buffer.from(anonBody.headers['x-aap-identity']!, 'base64url').toString('utf8')) as { uid: string };
+    expect(anonPayload.uid).toBe(String(appOwnerId));
+    const anonVerification = verifyIdentity(
+      anonBody.headers['x-aap-identity']!,
+      anonBody.headers['x-aap-identity-sig']!,
+      getSetting('AAP_SIGN_SECRET')!,
+      'public-llm-owner',
+    );
+    expect(anonVerification.ok).toBe(true);
+
+    const login = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({ username: 'freeuser', password: 'free-password' }),
+    });
+    const viewerCookie = cookieOf(login);
+    const viewer = await fetch(`${base}/app/public-llm-owner/up`, { headers: { cookie: viewerCookie } });
+    const viewerBody = (await viewer.json()) as { headers: Record<string, string> };
+    const viewerPayload = JSON.parse(Buffer.from(viewerBody.headers['x-aap-identity']!, 'base64url').toString('utf8')) as { uid: string };
+    expect(viewerPayload.uid).toBe(String(appOwnerId));
+  });
+
+  it('公开大模型应用的 WebSocket 也由服务端签发属主身份', async () => {
+    lastUpstreamIdentity = '';
+    lastUpstreamIdentitySig = '';
+    const ws = new WebSocket(`ws://127.0.0.1:${gwPort}/app/public-llm-owner/echo`);
+    const received = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timeout')), 5000);
+      ws.on('open', () => ws.send('owner'));
+      ws.on('message', (data) => {
+        clearTimeout(timer);
+        resolve(data.toString());
+      });
+      ws.on('error', reject);
+    });
+    expect(received).toBe('echo:owner');
+    const verified = verifyIdentity(
+      lastUpstreamIdentity,
+      lastUpstreamIdentitySig,
+      getSetting('AAP_SIGN_SECRET')!,
+      'public-llm-owner',
+    );
+    expect(verified.ok).toBe(true);
+    if (verified.ok) expect(verified.payload.uid).toBe(String(appOwnerId));
+    ws.close();
+  });
+
+  it('没有属主的大模型应用不会以匿名方式公开运行', async () => {
+    const res = await fetch(`http://127.0.0.1:${gwPort}/app/ownerless-public-llm/up`);
+    expect(res.status).toBe(503);
+  });
+
+  it('发布大模型应用必须明确确认 Token 由属主账号承担', async () => {
+    const base = `http://127.0.0.1:${gwPort}`;
+    const request = (llmOwnerConsent?: boolean) => fetch(`${base}/api/apps/llm-publish/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
+      body: JSON.stringify({
+        name: '待发布大模型应用',
+        description: '',
+        visibility: 'public',
+        ...(llmOwnerConsent === undefined ? {} : { llmOwnerConsent }),
+      }),
+    });
+    const unconfirmed = await request();
+    expect(unconfirmed.status).toBe(409);
+    expect(await unconfirmed.text()).toContain('请确认大模型 Token 消耗');
+
+    const confirmed = await request(true);
+    expect(confirmed.status).toBe(200);
+    const app = (await getDb().select().from(apps).where(eq(apps.id, 'llm-publish')))[0];
+    expect(app?.visibility).toBe('public');
   });
 
   it('登录用户不能直接打开其他账号的站内应用', async () => {

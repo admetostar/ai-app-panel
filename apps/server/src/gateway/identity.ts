@@ -7,16 +7,23 @@
  * 隔离账号数据——uid 单调即全局唯一，契约保留 kind 以兼容外部实现）。
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { eq } from 'drizzle-orm';
 import { IDENTITY_HEADER, IDENTITY_SIG_HEADER, IDENTITY_TTL_MS } from '@aap/shared';
+import { getDb } from '../db/index.js';
+import { users } from '../db/schema.js';
 import type { SessionUser } from '../types.js';
 import { getSetting } from '../lib/settings.js';
+import { requiresOwnerIdentity, type AppRow } from './registry.js';
 
 export interface SignedIdentity {
   payload: string;
   sig: string;
 }
 
-export function signIdentity(user: SessionUser, appId: string): SignedIdentity | null {
+export function signIdentity(
+  user: Pick<SessionUser, 'id' | 'subject' | 'name' | 'email' | 'kind'> & Partial<SessionUser>,
+  appId: string,
+): SignedIdentity | null {
   const secret = getSetting('AAP_SIGN_SECRET');
   if (!secret || !user?.id) return null;
   const payload = {
@@ -33,6 +40,35 @@ export function signIdentity(user: SessionUser, appId: string): SignedIdentity |
   const b64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const sig = createHmac('sha256', secret).update(b64).digest('hex');
   return { payload: b64, sig };
+}
+
+export async function signAppIdentity(
+  app: Pick<AppRow, 'id' | 'passUser' | 'ownerUserId' | 'visibility' | 'manifestJson'>,
+  user: SessionUser | null | undefined,
+): Promise<SignedIdentity | null> {
+  if (requiresOwnerIdentity(app)) {
+    if (app.ownerUserId == null) return null;
+    const owner = (await getDb()
+      .select({
+        id: users.id,
+        kind: users.kind,
+        username: users.username,
+        email: users.email,
+        name: users.name,
+      })
+      .from(users)
+      .where(eq(users.id, app.ownerUserId)))[0];
+    if (!owner) return null;
+    return signIdentity({
+      id: owner.id,
+      kind: owner.kind === 'oidc' ? 'oidc' : 'local',
+      subject: owner.kind === 'oidc' ? `oidc:${owner.email ?? owner.id}` : `local:${owner.username ?? owner.id}`,
+      name: owner.name || owner.username || `用户${owner.id}`,
+      username: owner.username,
+      email: owner.email,
+    }, app.id);
+  }
+  return app.passUser && user ? signIdentity(user, app.id) : null;
 }
 
 /** 应用侧验签（供自研应用后端参考实现；平台测试用）。

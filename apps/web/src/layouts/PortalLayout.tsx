@@ -95,7 +95,7 @@ export function PortalLayout() {
 
   const isHome = location.pathname === '/';
   const isMembershipSelectionPage = location.pathname === '/membership-selection';
-  const isAuthPage = ['/login', '/register'].includes(location.pathname);
+  const isAuthPage = ['/login', '/register', '/forgot'].includes(location.pathname);
   const isRegisterPage = location.pathname === '/register';
   const isGuidePage = location.pathname === '/guide';
   const isAccountPage = location.pathname === '/account';

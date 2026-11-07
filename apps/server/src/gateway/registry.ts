@@ -13,6 +13,20 @@ export type AppRow = typeof apps.$inferSelect;
 
 export const PATH_SECRET_KEY = '__path__';
 
+export function appHasLlmCapability(app: Pick<AppRow, 'manifestJson'>): boolean {
+  if (!app.manifestJson) return false;
+  try {
+    const manifest = JSON.parse(app.manifestJson) as { capabilities?: unknown };
+    return Array.isArray(manifest.capabilities) && manifest.capabilities.includes('llm');
+  } catch {
+    return false;
+  }
+}
+
+export function requiresOwnerIdentity(app: Pick<AppRow, 'visibility' | 'manifestJson'>): boolean {
+  return app.visibility === 'public' && appHasLlmCapability(app);
+}
+
 export interface UrlSecret {
   /** query 型：参数名；path 型：null */
   name: string | null;

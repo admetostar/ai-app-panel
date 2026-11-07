@@ -51,6 +51,7 @@ interface AdminApp {
   upstream: string;
   kind: 'upstream' | 'html' | 'package';
   ownerUserId: number | null;
+  llmCapability: boolean;
   hasUrlSecret: boolean;
   enabled: boolean;
   sort: number;
@@ -367,6 +368,7 @@ function SettingsForm({
       form={form}
       layout="horizontal"
       className="aap-admin-settings-form"
+      colon
       labelCol={{ flex: '15em' }}
       wrapperCol={{ flex: 1 }}
     >
@@ -683,15 +685,29 @@ function AppsTab(): ReactNode {
     }
   }
 
-  async function uploadPackage(): Promise<void> {
+  async function uploadPackage(llmOwnerConsent = false): Promise<void> {
     if (packageSubmitting) return;
     if (!pkgFile) {
       message.warning('请先选择 .awpk 包文件');
       return;
     }
+    const values = form.getFieldsValue() as { passUser?: boolean; urlSecret?: string; visibility?: string };
+    if (
+      !llmOwnerConsent
+      && values.visibility === 'public'
+      && pkgPreview?.capabilities.includes('llm')
+    ) {
+      Modal.confirm({
+        title: '公开大模型应用确认',
+        content: '此应用运行时可能会调用大模型，因此产生的Token消耗会记入您的账号',
+        okText: '同意并公开',
+        cancelText: '取消',
+        onOk: async () => await uploadPackage(true),
+      });
+      return;
+    }
     setPackageSubmitting(true);
     try {
-      const values = form.getFieldsValue() as { passUser?: boolean; urlSecret?: string; visibility?: string };
       const r = await api<{ app: Record<string, unknown>; llmProvisioned: boolean }>('/api/admin/apps/package', {
         method: 'POST',
         json: {
@@ -700,6 +716,7 @@ function AppsTab(): ReactNode {
           visibility: values.visibility ?? 'private',
           passUser: values.passUser ?? false,
           urlSecret: values.urlSecret || undefined,
+          llmOwnerConsent,
         },
       });
       setPkgPreview(null);
@@ -737,8 +754,23 @@ function AppsTab(): ReactNode {
     }
   }
 
-  async function saveEdit(values: Record<string, unknown>): Promise<void> {
+  async function saveEdit(values: Record<string, unknown>, llmOwnerConsent = false): Promise<void> {
     if (!editing) return;
+    if (
+      !llmOwnerConsent
+      && values.visibility === 'public'
+      && editing.visibility !== 'public'
+      && editing.llmCapability
+    ) {
+      Modal.confirm({
+        title: '公开大模型应用确认',
+        content: '此应用运行时可能会调用大模型，因此产生的Token消耗会记入您的账号',
+        okText: '同意并公开',
+        cancelText: '取消',
+        onOk: async () => await saveEdit(values, true),
+      });
+      return;
+    }
     try {
       await api(`/api/admin/apps/${editing.id}`, {
         method: 'PUT',
@@ -746,6 +778,7 @@ function AppsTab(): ReactNode {
           name: values.name,
           description: values.description,
           visibility: values.visibility,
+          llmOwnerConsent,
           passUser: values.passUser,
           ...(values.urlSecret ? { urlSecret: values.urlSecret } : {}),
           ...(editing.kind === 'upstream' ? { upstream: values.upstream } : {}),
@@ -906,7 +939,7 @@ function AppsTab(): ReactNode {
         destroyOnClose
         maskClosable={!packageSubmitting}
       >
-        <Form form={form} layout="vertical" onFinish={creating === 'package' ? uploadPackage : editing ? saveEdit : saveApp}>
+        <Form form={form} layout="vertical" onFinish={creating === 'package' ? () => uploadPackage() : editing ? saveEdit : saveApp}>
           {!editing && creating !== 'package' ? (
             <Form.Item
               name="id"
@@ -1798,29 +1831,45 @@ function TlsTab(): ReactNode {
           {!st?.dnsConfigured ? (
             <Alert type="warning" showIcon className="aap-tls-form-alert" message="请先完成左侧 Cloudflare 配置并保存" />
           ) : null}
-          <Form form={acmeForm} layout="vertical" onFinish={async (v) => {
-            try {
-              await api('/api/admin/tls/acme', {
-                method: 'POST',
-                json: { domain: v.domain, email: v.email },
-              });
-              message.info('正式证书签发已启动，系统将显示实时阶段进度');
-              void qc.invalidateQueries({ queryKey: ['admin-tls'] });
-            } catch (err) {
-              message.error(err instanceof Error ? err.message : '启动失败');
-            }
-          }}>
-            <Form.Item
-              name="domain"
-              label="根域名"
-              extra="例如 example.com；系统会同时申请 example.com 和 *.example.com。"
-              rules={[{ required: true, message: '请输入根域名' }]}
-            >
-              <Input placeholder="example.com" />
-            </Form.Item>
-            <Form.Item name="email" label="证书通知邮箱" rules={[{ required: true, message: '请输入邮箱' }, { type: 'email' }]}>
-              <Input placeholder="you@example.com" />
-            </Form.Item>
+          <Form
+            form={acmeForm}
+            layout="horizontal"
+            className="aap-admin-settings-form"
+            labelCol={{ flex: '15em' }}
+            wrapperCol={{ flex: 1 }}
+            onFinish={async (v) => {
+              try {
+                await api('/api/admin/tls/acme', {
+                  method: 'POST',
+                  json: { domain: v.domain, email: v.email },
+                });
+                message.info('正式证书签发已启动，系统将显示实时阶段进度');
+                void qc.invalidateQueries({ queryKey: ['admin-tls'] });
+              } catch (err) {
+                message.error(err instanceof Error ? err.message : '启动失败');
+              }
+            }}
+          >
+            <Card size="small" title="域名信息" style={{ marginBottom: 16 }}>
+              <Form.Item
+                name="domain"
+                label="根域名"
+                tooltip="输入要签发证书的根域名；系统会同时申请根域名和一级通配符证书。"
+                required={false}
+                rules={[{ required: true, message: '请输入根域名' }]}
+              >
+                <Input placeholder="example.com" />
+              </Form.Item>
+              <Form.Item
+                name="email"
+                label="证书通知邮箱"
+                tooltip="用于接收证书签发账户的通知邮件。"
+                required={false}
+                rules={[{ required: true, message: '请输入邮箱' }, { type: 'email' }]}
+              >
+                <Input placeholder="you@example.com" />
+              </Form.Item>
+            </Card>
             <Button
               type="primary"
               htmlType="submit"

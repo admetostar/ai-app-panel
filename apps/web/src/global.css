@@ -4575,16 +4575,31 @@ body {
 }
 
 .aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table,
+.aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-wrapper,
 .aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-container,
 .aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-content,
+.aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-body,
+.aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-footer,
+.aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-summary,
+.aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-cell-scrollbar,
 .aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-tbody > tr > td,
 .aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-cell-fix-left,
 .aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-cell-fix-right,
 .aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-placeholder,
-.aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-pagination {
+.aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-pagination,
+.aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-sticky-scroll {
   border-color: #343a46 !important;
   background: #1d2129 !important;
   color: #e6e8ec !important;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-body::-webkit-scrollbar-track,
+.aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-content::-webkit-scrollbar-track {
+  background: #1d2129;
+}
+
+.aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-sticky-scroll-bar {
+  background: #4a5260;
 }
 
 .aap-user-page-shell[data-user-theme='dark'] .aap-admin-page .ant-table-thead > tr > th {
@@ -4747,9 +4762,13 @@ body {
 }
 
 .aap-admin-page .aap-admin-settings-form .ant-form-item-label > label {
-  font-weight: 600;
+  font-weight: 400;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+
+.aap-admin-page .aap-admin-settings-group > .ant-alert {
+  margin-bottom: 16px;
 }
 
 .aap-admin-page .aap-admin-settings-form .ant-form-item-control,

@@ -1,6 +1,6 @@
 /**
  * .awpk 运行与发布（M4，G3/G4/G5）：
- *  - POST /api/apps/:id/run            invoked 执行（requireAuth + 可见性门禁；运行记录入 app_runs + 审计）
+ *  - POST /api/apps/:id/run            invoked 执行（可见性门禁；公开应用允许匿名，运行记录入 app_runs + 审计）
  *  - GET  /api/apps/:id/meta           执行页元数据（入参 schema 等；匿名按可见性门禁可读公开应用）
  *  - POST /api/apps/submit             用户上传 .awpk（requireAuth；默认私有可见，归属=上传者；
  *                                      正式目录写入一律在归属校验之后，防止同名包清空他人应用）
@@ -25,7 +25,8 @@ import {
 } from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
 import { requireAuth, requireStepUp } from '../lib/auth.js';
-import { canAccess, isVisibleInPortal } from '../gateway/registry.js';
+import { appHasLlmCapability, canAccess, isVisibleInPortal } from '../gateway/registry.js';
+import { allowRequest } from '../gateway/limiter.js';
 import { appSiteDir, isAwpkFilename } from '../gateway/staticApp.js';
 import { loopbackPlatformPort, runInvoked } from '../lib/sandbox.js';
 import { ensureAutoProvisionedToken, modelCatalog } from '../lib/llm.js';
@@ -196,7 +197,13 @@ appsRunRouter.get(
   '/apps/:id/meta',
   h(async (req, res) => {
     const app = await loadApp(String(req.params.id));
-    if (!app || !app.enabled || !await canAccess(app, req.user ?? null)) {
+    if (!app || !app.enabled) {
+      throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在或不可访问');
+    }
+    if (!await canAccess(app, req.user ?? null)) {
+      if (!req.user && app.visibility !== 'public') {
+        throw new HttpError(401, 'LOGIN_REQUIRED', '请先登录平台账号后访问此应用');
+      }
       throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在或不可访问');
     }
     let inputSchema: unknown = null;
@@ -222,13 +229,15 @@ appsRunRouter.get(
 
 appsRunRouter.post(
   '/apps/:id/run',
-  requireAuth,
   h(async (req, res) => {
     const app = await loadApp(String(req.params.id));
     if (!app || !app.enabled || app.kind !== 'package') {
       throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在或不是可执行包');
     }
     if (!await canAccess(app, req.user ?? null)) {
+      if (!req.user && app.visibility !== 'public') {
+        throw new HttpError(401, 'LOGIN_REQUIRED', '请先登录平台账号后访问此应用');
+      }
       throw new HttpError(403, 'FORBIDDEN', '无权访问该应用');
     }
     if (app.runtimeMode !== 'invoked') {
@@ -242,7 +251,28 @@ appsRunRouter.post(
     }
     const entry = manifest.entry || 'mod.py';
     const input = (req.body ?? {}) as { input?: unknown };
-    const userId = req.user!.id;
+    const publicLlmApp = app.visibility === 'public' && appHasLlmCapability(app);
+    let executionUserId: number | null;
+    if (publicLlmApp) {
+      const ownerId = app.ownerUserId;
+      if (
+        ownerId == null
+        || !(await getDb().select({ id: users.id }).from(users).where(eq(users.id, ownerId)))[0]
+      ) {
+        throw new HttpError(503, 'APP_OWNER_UNAVAILABLE', '无法确认公开应用的归属账号，暂时无法运行');
+      }
+      executionUserId = ownerId;
+    } else {
+      executionUserId = req.user?.authState === 'full' ? req.user.id : null;
+    }
+    const auditUserId = req.user?.authState === 'full' ? req.user.id : null;
+    const limiterUserId = publicLlmApp ? executionUserId : auditUserId;
+    const userKey = limiterUserId == null
+      ? null
+      : publicLlmApp ? `owner:${limiterUserId}` : `${req.user!.kind}:${limiterUserId}`;
+    if (!allowRequest(userKey, req.clientIp ?? 'unknown')) {
+      throw new HttpError(429, 'RATE_LIMITED', '请求过于频繁，请稍后再试');
+    }
 
     // 必填环境变量未配置 → 明确报错（而不是让包在运行时莫名拿不到配置）
     const missing = await missingRequiredEnv(app.id);
@@ -255,20 +285,20 @@ appsRunRouter.post(
     // loopbackPlatformPort）。绝不能用请求 Host——那会注入沙箱的净网守卫
     // 放行面，也是 AAP_TOKEN 的外泄目标（渗透测试 P1-8 关联项）
     const platformBase = `http://127.0.0.1:${loopbackPlatformPort(req.socket.localPort, config)}`;
-    const result = await runInvoked(app.id, entry, input.input ?? {}, { userId, timeoutMs: 30_000, platformBase });
+    const result = await runInvoked(app.id, entry, input.input ?? {}, { userId: executionUserId, timeoutMs: 30_000, platformBase });
 
     await getDb()
       .insert(appRuns)
       .values({
         appId: app.id,
-        userId,
+        userId: auditUserId,
         ts: Date.now(),
         durationMs: result.durationMs,
         status: result.status,
         error: result.error ?? null,
         logs: result.logs ?? null,
       });
-    await audit(`user:${userId}`, req.clientIp ?? null, 'app.run', {
+    await audit(auditUserId === null ? 'anonymous' : `user:${auditUserId}`, req.clientIp ?? null, 'app.run', {
       appId: app.id,
       status: result.status,
       durationMs: result.durationMs,
@@ -306,12 +336,21 @@ async function updateOwnedAppVisibility(
   userId: number,
   visibility: 'public' | 'login' | 'private',
   options: { name?: string; description?: string; enable?: boolean } = {},
+  llmOwnerConsent = false,
 ): Promise<number> {
   return getDb().transaction(async (tx) => {
     const app = (await tx.select().from(apps).where(eq(apps.id, appId)).for('update'))[0];
     if (!app) throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在');
     if (app.ownerUserId !== userId) throw new HttpError(403, 'FORBIDDEN', '只有应用归属者可以修改应用设置');
     if (app.kind === 'upstream') throw new HttpError(400, 'NOT_PACKAGE', '仅托管应用可以修改可见范围');
+    if (visibility === 'public' && appHasLlmCapability(app)) {
+      if (app.ownerUserId == null) {
+        throw new HttpError(409, 'LLM_OWNER_REQUIRED', '公开的大模型应用必须关联有效的属主账号');
+      }
+      if (app.visibility !== 'public' && !llmOwnerConsent) {
+        throw new HttpError(409, 'LLM_PUBLICATION_CONSENT_REQUIRED', '公开此应用前，请确认大模型 Token 消耗将记入您的账号');
+      }
+    }
     if (app.clonedFromAppId && visibility !== 'private') {
       throw new HttpError(403, 'CLONED_APP_PRIVATE', '站内应用克隆只能保持仅自己可见');
     }
@@ -375,7 +414,7 @@ appsRunRouter.put(
     if (app.ownerUserId !== req.user!.id) throw new HttpError(403, 'FORBIDDEN', '只有应用归属者可以修改应用设置');
     if (app.kind === 'upstream') throw new HttpError(400, 'NOT_PACKAGE', '仅托管应用可以修改这些设置');
 
-    const body = (req.body ?? {}) as { name?: unknown; description?: unknown; visibility?: unknown };
+    const body = (req.body ?? {}) as { name?: unknown; description?: unknown; visibility?: unknown; llmOwnerConsent?: unknown };
     if (typeof body.name !== 'string' || !body.name.trim() || body.name.trim().length > 191) {
       throw new HttpError(400, 'INVALID_NAME', '应用名称不能为空且不能超过 191 个字符');
     }
@@ -392,11 +431,14 @@ appsRunRouter.put(
       description: body.description.trim(),
       visibility,
     };
-    const pointsAwarded = await updateOwnedAppVisibility(app.id, req.user!.id, visibility, values);
+    const llmOwnerConsent = body.llmOwnerConsent === true;
+    const pointsAwarded = await updateOwnedAppVisibility(app.id, req.user!.id, visibility, values, llmOwnerConsent);
     await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'app.settings.update', {
       appId: app.id,
       visibility: values.visibility,
       pointsAwarded,
+      llmOwnerConsentAccepted:
+        visibility === 'public' && app.visibility !== 'public' && appHasLlmCapability(app) && llmOwnerConsent,
     });
     res.json({ ok: true, pointsAwarded });
   }),
@@ -988,7 +1030,7 @@ appsRunRouter.post(
   '/apps/:id/publish',
   requireAuth,
   h(async (req, res) => {
-    const body = (req.body ?? {}) as { visibility?: unknown };
+    const body = (req.body ?? {}) as { visibility?: unknown; llmOwnerConsent?: unknown };
     const visibility = body.visibility ?? 'public';
     if (visibility !== 'public' && visibility !== 'login' && visibility !== 'private') {
       throw new HttpError(400, 'INVALID_VISIBILITY', '可见范围必须是公开、站内或仅自己');
@@ -999,12 +1041,25 @@ appsRunRouter.post(
       throw new HttpError(403, 'FORBIDDEN', '只有应用归属者可以发布');
     }
     if (app.kind === 'upstream') throw new HttpError(400, 'NOT_PACKAGE', '仅托管应用包可以发布');
-    const pointsAwarded = await updateOwnedAppVisibility(app.id, req.user!.id, visibility, { enable: true });
+    const llmOwnerConsent = body.llmOwnerConsent === true;
+    const pointsAwarded = await updateOwnedAppVisibility(
+      app.id,
+      req.user!.id,
+      visibility,
+      { enable: true },
+      llmOwnerConsent,
+    );
     await audit(
       `user:${req.user!.id}`,
       req.clientIp ?? null,
       visibility === 'public' ? 'app.publish.public' : 'app.visibility.update',
-      { appId: String(req.params.id), visibility, pointsAwarded },
+      {
+        appId: String(req.params.id),
+        visibility,
+        pointsAwarded,
+        llmOwnerConsentAccepted:
+          visibility === 'public' && app.visibility !== 'public' && appHasLlmCapability(app) && llmOwnerConsent,
+      },
     );
     res.json({ ok: true, visibility, pointsAwarded });
   }),

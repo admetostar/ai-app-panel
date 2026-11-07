@@ -11,6 +11,7 @@ import { llmAppTokens, llmBalanceCache, llmLedger, llmRoutes, llmUpstreams, apps
 import { decryptSecret, encryptSecret } from './cryptoSecrets.js';
 import { HttpError } from './httpError.js';
 import { getSetting, getSettingInt } from './settings.js';
+import { appHasLlmCapability } from '../gateway/registry.js';
 
 // ---------- 网关凭据（C2） ----------
 
@@ -88,12 +89,7 @@ export async function appLlmAllowed(appId: string): Promise<boolean> {
   // 已上传应用）沿用旧行为放行；已删除应用的凭据随删除路由连带吊销，不会走到这
   if (!row) return true;
   if (!row.manifestJson) return true;
-  try {
-    const m = JSON.parse(row.manifestJson) as { capabilities?: unknown };
-    return Array.isArray(m.capabilities) && m.capabilities.map(String).includes('llm');
-  } catch {
-    return false;
-  }
+  return appHasLlmCapability(row);
 }
 
 /** 自动签发运行时凭据（幂等；重复上传复用）。对全部包签发（AAP_TOKEN 同时

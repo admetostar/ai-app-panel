@@ -16,8 +16,8 @@ import { Readable } from 'node:stream';
 import path from 'node:path';
 import express, { Router, type Request, type Response } from 'express';
 import { config } from '../config/index.js';
-import { canAccess, findApp, getUrlSecret, isSlug, type AppRow, type UrlSecret } from './registry.js';
-import { signIdentity } from './identity.js';
+import { canAccess, findApp, getUrlSecret, isSlug, requiresOwnerIdentity, type AppRow, type UrlSecret } from './registry.js';
+import { signAppIdentity } from './identity.js';
 import { allowRequest } from './limiter.js';
 import { getSettingInt } from '../lib/settings.js';
 import { injectAppShareMetadata, injectChrome, injectSandboxBridge, serveHtmlApp, serveSandboxShell, needsIframeSandbox, stripRawPrefix, RAW_SANDBOX_CSP, type AppShareMetadata } from './staticApp.js';
@@ -290,7 +290,9 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
   }
 
   // 双维度限流
-  const userKey = user ? `${user.kind}:${user.id}` : null;
+  const userKey = requiresOwnerIdentity(app) && app.ownerUserId !== null
+    ? `owner:${app.ownerUserId}`
+    : user ? `${user.kind}:${user.id}` : null;
   if (!allowRequest(userKey, req.clientIp ?? 'unknown')) {
     return htmlError(res, 429, '请求过于频繁', '请稍后再试');
   }
@@ -340,8 +342,11 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
         return htmlError(res, 503, '应用配置非法', err instanceof Error ? err.message : '应用配置非法');
       }
       if (!port) return htmlError(res, 503, '应用启动中', '请稍后重试');
-      // passUser：为沙箱逐请求签名注入身份头（persistent 内 LLM 调用按浏览用户归因计费）
-      const identity = app.passUser && user ? signIdentity(user, app.id) : null;
+      // 公开 LLM 应用固定使用属主身份；其他 passUser 应用沿用当前登录用户。
+      const identity = await signAppIdentity(app, user);
+      if (requiresOwnerIdentity(app) && !identity) {
+        return htmlError(res, 503, '应用暂不可用', '无法确认公开应用的归属账号，暂时无法运行');
+      }
       return proxyToSandbox(req, res, port, inRaw ? stripRawPrefix(sub0) : sub0, identity, app.id, inRaw, appOrigin, shareMetadata);
     }
     const sub = inRaw ? stripRawPrefix(sub0) : sub0;
@@ -365,8 +370,11 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
   }
   const prefix = appOrigin ? '' : `/app/${encodeURIComponent(id)}`;
 
-  // passUser：注入签名身份头（未登录/未配置密钥时不注入）
-  const identity = app.passUser && user ? signIdentity(user, app.id) : null;
+  // 公开 LLM 应用固定使用属主身份；其他 passUser 应用沿用当前登录用户。
+  const identity = await signAppIdentity(app, user);
+  if (requiresOwnerIdentity(app) && !identity) {
+    return htmlError(res, 503, '应用暂不可用', '无法确认公开应用的归属账号，暂时无法运行');
+  }
   const headers = filterRequestHeaders(req, base, identity, appOrigin);
 
   const timeoutSec = getSettingInt('PROXY_TIMEOUT', config.proxyTimeoutSec);
