@@ -1,5 +1,6 @@
 /** 管理后台页面与设置面板。 */
-import type { ChangeEvent, ReactNode } from 'react';
+import type { ChangeEvent, ReactElement, ReactNode } from 'react';
+import { isValidElement } from 'react';
 import { withBase } from '../lib/base';
 import {
   Alert,
@@ -19,10 +20,11 @@ import {
   Space,
   Steps,
   Switch,
-  Table,
+  Table as AntTable,
   Tag,
   Typography,
   message,
+  type TableProps,
 } from 'antd';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '@aap/shared';
 import { useEffect, useRef, useState } from 'react';
@@ -134,6 +136,84 @@ function dot(state: string): ReactNode {
   const color = state === 'ok' || state === 'green' ? '#52c41a' : state === 'down' ? '#ff4d4f' : '#faad14';
   const label = state === 'ok' || state === 'green' ? '正常' : state === 'down' ? '异常' : '未知';
   return <Badge color={color} text={label} />;
+}
+
+function tableNodeText(node: unknown): string {
+  if (typeof node === 'string' || typeof node === 'number' || typeof node === 'bigint') return String(node);
+  if (Array.isArray(node)) return node.map(tableNodeText).join('');
+  if (isValidElement<{ children?: ReactNode }>(node)) return tableNodeText(node.props.children);
+  if (node !== null && typeof node === 'object' && 'children' in node) {
+    return tableNodeText(node.children);
+  }
+  return '';
+}
+
+function tableNodeHasControl(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(tableNodeHasControl);
+  if (!isValidElement<{ children?: ReactNode }>(node)) {
+    return node !== null && typeof node === 'object' && 'children' in node
+      ? tableNodeHasControl(node.children)
+      : false;
+  }
+  const type = node.type;
+  const name = typeof type === 'string'
+    ? type
+    : typeof type === 'function'
+      ? type.name
+      : String((type as { displayName?: string }).displayName ?? '');
+  if (/^(button|input|select|textarea|Button|Input|InputNumber|Select|Switch|Checkbox|Radio|DatePicker|TimePicker|Cascader|TreeSelect|Slider|Rate|Upload)/i.test(name)) {
+    return true;
+  }
+  return tableNodeHasControl(node.props.children);
+}
+
+function tableColumnValue(record: unknown, dataIndex: unknown): unknown {
+  if (typeof dataIndex !== 'string' && typeof dataIndex !== 'number' && !Array.isArray(dataIndex)) return undefined;
+  const path = Array.isArray(dataIndex) ? dataIndex : [dataIndex];
+  return path.reduce<unknown>((value, key) => {
+    if (value === null || typeof value !== 'object') return undefined;
+    return (value as Record<string | number, unknown>)[key as string | number];
+  }, record);
+}
+
+function tableTitleLength(title: unknown): number {
+  if (typeof title === 'function') return 0;
+  return tableNodeText(title).trim().length;
+}
+
+function isNumericTableContent(text: string): boolean {
+  return /^[+-]?\d[\d,]*(?:\.\d+)?(?:\s*[+\-x×*/÷]\s*[+-]?\d[\d,]*(?:\.\d+)?)*$/.test(text.trim());
+}
+
+function Table<RecordType extends object>(props: TableProps<RecordType>): ReactElement {
+  const rows = props.dataSource ?? [];
+  const columns = (props.columns ?? []).map((column) => {
+    if ('children' in column) return column;
+
+    let hasNumericContent = false;
+    let hasOtherContent = false;
+    let hasControl = false;
+    rows.forEach((record, index) => {
+      const value = tableColumnValue(record, column.dataIndex);
+      const content = column.render ? column.render(value, record, index) : value as ReactNode;
+      hasControl ||= tableNodeHasControl(content);
+      const text = tableNodeText(content).trim();
+      if (!text || ['—', '-', '默认'].includes(text)) return;
+      if (isNumericTableContent(text)) hasNumericContent = true;
+      else hasOtherContent = true;
+    });
+
+    const fixedWidth = hasControl || (hasNumericContent && !hasOtherContent);
+    if (!fixedWidth) return { ...column, width: undefined };
+    return {
+      ...column,
+      className: [column.className, 'aap-admin-fixed-width-column'].filter(Boolean).join(' '),
+      width: `${Math.max(10, tableTitleLength(column.title))}em`,
+      align: 'center' as const,
+    };
+  });
+
+  return <AntTable<RecordType> {...props} columns={columns} />;
 }
 
 // ---------- 通用：分组配置表单（③一句话说明 + 默认值标注；⑦保存即生效） ----------
@@ -694,8 +774,8 @@ function AppsTab(): ReactNode {
           size="small"
           tableLayout="fixed"
           columns={[
-            { title: '应用ID', dataIndex: 'id', width: '20%', ellipsis: true, onCell: () => ({ style: { whiteSpace: 'nowrap' } }) },
             { title: '名称', dataIndex: 'name', width: '20%', ellipsis: true, onCell: () => ({ style: { whiteSpace: 'nowrap' } }) },
+            { title: '应用ID', dataIndex: 'id', width: '20%', ellipsis: true, onCell: () => ({ style: { whiteSpace: 'nowrap' } }) },
             { title: '形态', width: '8%', render: (_, r) => <Tag>{KIND_LABEL[r.kind] ?? r.kind}</Tag> },
             { title: '用户', width: '14%', ellipsis: true, render: (_, r) => r.ownerUserId == null ? '—' : usernameById.get(r.ownerUserId) ?? `用户 ${r.ownerUserId}` },
             {
@@ -1474,7 +1554,7 @@ function MailTab(): ReactNode {
                 { value: 'smtp', label: 'SMTP 服务器' },
                 { value: 'resend', label: 'Resend API' },
               ]}
-              style={{ width: 220 }}
+              style={{ width: '100%' }}
             />
           </Form.Item>
 
@@ -2660,7 +2740,7 @@ function OpsTab(): ReactNode {
       </Card>
 
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(320px, 100%), 1fr))', gap: 12 }}>
         <Card size="small" title="余额排行">
           {(ops?.balanceTop ?? []).map((r, i) => (
             <div key={r.userId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '2px 0' }}>
@@ -2809,12 +2889,15 @@ function RedeemCard(): ReactNode {
                 title: '备注',
                 width: '35%',
                 render: (_, row) => (
-                  <div className="aap-redeem-generator__note">
-                    <Form.Item name={row.kind === 'membership' ? 'membershipNote' : 'tokensNote'} style={{ marginBottom: 0 }}>
-                      <Input placeholder="备注（可选）" />
-                    </Form.Item>
-                    <Button size="small" type="primary" onClick={() => void generate(row.kind)}>生成</Button>
-                  </div>
+                  <Form.Item name={row.kind === 'membership' ? 'membershipNote' : 'tokensNote'} style={{ marginBottom: 0 }}>
+                    <Input placeholder="备注（可选）" />
+                  </Form.Item>
+                ),
+              },
+              {
+                title: '操作',
+                render: (_, row) => (
+                  <Button size="small" type="primary" onClick={() => void generate(row.kind)}>生成</Button>
                 ),
               },
             ]}

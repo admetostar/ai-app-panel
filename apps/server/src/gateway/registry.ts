@@ -21,7 +21,7 @@ export interface UrlSecret {
 }
 
 export function isSlug(id: string): boolean {
-  return /^[a-z0-9][a-z0-9-]{0,63}$/.test(id);
+  return /^[a-z0-9][a-z0-9-]{0,63}$/.test(id) || /^clone_[0-9a-f]{8}$/.test(id);
 }
 
 /**

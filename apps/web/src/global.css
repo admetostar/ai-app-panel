@@ -4004,33 +4004,9 @@ body {
   color: #aeb6c4;
 }
 
-.aap-admin-settings-form .ant-form-item-label {
-  flex: 0 0 15em;
-}
-
-.aap-redeem-generator__note {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 8px;
-}
-
 @media (max-width: 767px) {
-  .aap-admin-settings-form .ant-form-item-row {
-    flex-direction: column;
-  }
-
   .aap-admin-settings-form .ant-form-item-label {
-    flex: none;
     text-align: left;
-  }
-
-  .aap-admin-settings-form .ant-form-item-control {
-    width: 100%;
-  }
-
-  .aap-redeem-generator__note {
-    grid-template-columns: 1fr;
   }
 }
 
@@ -4751,4 +4727,85 @@ body {
   .aap-user-page-shell--sidebar-collapsed .aap-footer {
     margin-left: 0;
   }
+}
+
+.aap-admin-page .aap-admin-settings-form .ant-form-item {
+  margin-bottom: 16px;
+}
+
+.aap-admin-page .aap-admin-settings-form .ant-form-item-row {
+  display: grid;
+  grid-template-columns: minmax(0, 15em) minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: center;
+}
+
+.aap-admin-page .aap-admin-settings-form .ant-form-item-label {
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.aap-admin-page .aap-admin-settings-form .ant-form-item-label > label {
+  font-weight: 600;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.aap-admin-page .aap-admin-settings-form .ant-form-item-control,
+.aap-admin-page .aap-admin-settings-form .ant-form-item-control-input,
+.aap-admin-page .aap-admin-settings-form .ant-form-item-control-input-content {
+  width: 100%;
+  min-width: 0;
+}
+
+.aap-admin-page .aap-admin-settings-form .ant-form-item-control-input-content > .ant-input,
+.aap-admin-page .aap-admin-settings-form .ant-form-item-control-input-content > .ant-input-affix-wrapper,
+.aap-admin-page .aap-admin-settings-form .ant-form-item-control-input-content > .ant-input-number,
+.aap-admin-page .aap-admin-settings-form .ant-form-item-control-input-content > .ant-select,
+.aap-admin-page .aap-admin-settings-form .ant-form-item-control-input-content > .ant-space-compact {
+  width: 100%;
+}
+
+@media (max-width: 767px) {
+  .aap-admin-page .aap-admin-settings-form .ant-form-item-row {
+    grid-template-columns: minmax(0, 40%) minmax(0, 1fr);
+    column-gap: 8px;
+    align-items: start;
+  }
+}
+
+.aap-admin-page .ant-table-content {
+  overflow-x: auto !important;
+}
+
+.aap-admin-page .ant-table-content > table {
+  width: max-content !important;
+  min-width: 100%;
+  table-layout: auto !important;
+}
+
+.aap-admin-page .ant-table-cell,
+.aap-admin-page .ant-table-cell-ellipsis {
+  max-width: 26rem;
+  white-space: normal !important;
+  overflow: visible !important;
+  overflow-wrap: anywhere;
+  text-overflow: clip !important;
+  vertical-align: top;
+}
+
+.aap-admin-page .ant-table-cell.aap-admin-fixed-width-column {
+  max-width: none;
+}
+
+.aap-admin-page .ant-table-cell .ant-btn {
+  min-width: 28px;
+  min-height: 28px;
+  height: auto;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.25;
+  white-space: nowrap;
 }

@@ -271,7 +271,9 @@ export function validateManifest(m: Record<string, unknown>): {
 } {
   const name = String(m.name ?? '');
   const type = String(m.type ?? '');
-  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(name)) throw new Error('manifest.name 需为小写字母/数字/连字符');
+  if (!/^(?:[a-z0-9][a-z0-9-]{0,63}|clone_[0-9a-f]{8})$/.test(name)) {
+    throw new Error('manifest.name 需为小写字母/数字/连字符，克隆 ID 可使用 clone_ 前缀');
+  }
   if (type !== 'html' && type !== 'python') throw new Error('manifest.type 必须是 html 或 python');
   const entry = String(m.entry ?? (type === 'html' ? 'index.html' : ''));
   if (type === 'python' && !entry) throw new Error('python 包必须声明 entry');

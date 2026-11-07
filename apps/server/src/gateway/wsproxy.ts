@@ -92,7 +92,7 @@ async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Prom
   const url = new URL(req.url ?? '/', 'http://internal.invalid');
   const host = (req.headers.host ?? '').split(':')[0]?.replace(/^\[|\]$/g, '') ?? '';
   const hostAppId = appIdFromHostname(host);
-  const m = url.pathname.match(/^\/app\/([a-z0-9][a-z0-9-]*)(\/.*)?$/);
+  const m = url.pathname.match(/^\/app\/((?:[a-z0-9][a-z0-9-]{0,63}|clone_[0-9a-f]{8}))(\/.*)?$/);
   if (!m && hostAppId === null) return reject(socket, 404, 'Not Found');
   if (hostAppId === '') return reject(socket, 404, 'Not Found');
 

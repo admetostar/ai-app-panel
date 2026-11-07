@@ -205,7 +205,7 @@ export const inviteCodes = pgTable('invite_codes', {
 // ---------- B4：应用注册 ----------
 
 export const apps = pgTable('apps', {
-  id: varchar('id', { length: 512 }).primaryKey(), // [a-z0-9][a-z0-9-]*，即 /app/<id>/ 前缀
+  id: varchar('id', { length: 512 }).primaryKey(), // 应用 slug；克隆使用 clone_ + 8 位十六进制
   name: varchar('name', { length: 191 }).notNull(),
   description: text('description').notNull().default(''),
   icon: text('icon'),

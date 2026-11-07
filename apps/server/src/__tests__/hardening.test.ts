@@ -597,6 +597,12 @@ describe('公开可见性与发布', () => {
     const first = await clone();
     expect(first.status).toBe(201);
     const cloneId = first.id!;
+    expect(cloneId).toMatch(/^clone_[0-9a-f]{8}$/);
+    const cloneOfClone = await fetch(`${base}/api/apps/${cloneId}/clone`, {
+      method: 'POST',
+      headers: { origin: base, cookie: otherCookie },
+    });
+    expect(cloneOfClone.status).toBe(404);
     const cloneRow = (await getDb().select().from(apps).where(eq(apps.id, cloneId)))[0];
     expect(cloneRow).toMatchObject({
       ownerUserId: otherId,

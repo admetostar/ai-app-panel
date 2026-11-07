@@ -801,7 +801,7 @@ appsRunRouter.post(
   requireAuth,
   h(async (req, res) => {
     const sourceId = String(req.params.id);
-    const cloneId = `clone-${randomBytes(16).toString('hex')}`;
+    let cloneId = '';
     const now = Date.now();
     let cloneIcon: string | null = null;
     let createdOnDisk = false;
@@ -810,12 +810,21 @@ appsRunRouter.post(
     try {
       await getDb().transaction(async (tx) => {
         const source = (await tx.select().from(apps).where(eq(apps.id, sourceId)).for('update'))[0];
-        if (!source || !source.enabled || source.kind === 'upstream' || source.visibility !== 'login') {
+        if (!source || source.clonedFromAppId !== null || !source.enabled || source.kind === 'upstream' || source.visibility !== 'login') {
           throw new HttpError(404, 'SITE_APP_NOT_FOUND', '站内共享应用不存在或已不可克隆');
         }
         if (source.ownerUserId === req.user!.id) {
           throw new HttpError(409, 'APP_ALREADY_OWNED', '不能克隆自己拥有的应用');
         }
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          const candidate = `clone_${randomBytes(4).readUInt32BE(0).toString(16).padStart(8, '0')}`;
+          const existing = (await tx.select({ id: apps.id }).from(apps).where(eq(apps.id, candidate)).limit(1))[0];
+          if (!existing) {
+            cloneId = candidate;
+            break;
+          }
+        }
+        if (!cloneId) throw new HttpError(503, 'CLONE_ID_UNAVAILABLE', '暂时无法生成唯一的克隆应用 ID，请重试');
 
         const user = (await tx
           .select({ membershipPlanId: users.membershipPlanId, membershipExpiresAt: users.membershipExpiresAt })
