@@ -127,14 +127,18 @@ adminLlmRouter.get(
 adminLlmRouter.post(
   '/admin/llm/routes',
   h(async (req, res) => {
-    const body = (req.body ?? {}) as { model?: string; upstreamId?: number; upstreamModel?: string; multiplier?: number; priority?: number; weight?: number };
+    const body = (req.body ?? {}) as { model?: string; upstreamId?: number; upstreamModel?: string; mediaAdapter?: string; multiplier?: number; priority?: number; weight?: number };
     if (!body.model?.trim() || !body.upstreamId || !body.upstreamModel?.trim()) {
       throw new HttpError(400, 'INVALID_INPUT', 'model、upstreamId、upstreamModel 必填');
+    }
+    if (body.mediaAdapter !== undefined && body.mediaAdapter !== 'image_url' && body.mediaAdapter !== 'video_url') {
+      throw new HttpError(400, 'INVALID_INPUT', 'mediaAdapter 仅支持 image_url 或 video_url');
     }
     await createRoute({
       model: body.model,
       upstreamId: body.upstreamId,
       upstreamModel: body.upstreamModel,
+      mediaAdapter: body.mediaAdapter,
       multiplier: body.multiplier,
       priority: body.priority,
       weight: body.weight,
@@ -148,13 +152,19 @@ adminLlmRouter.put(
   '/admin/llm/routes/:id',
   h(async (req, res) => {
     const id = Number(req.params.id);
-    const body = (req.body ?? {}) as { multiplier?: number; costPer1k?: number; priority?: number; weight?: number; enabled?: boolean };
-    const set: Record<string, number | boolean> = {};
+    const body = (req.body ?? {}) as { multiplier?: number; costPer1k?: number; priority?: number; weight?: number; enabled?: boolean; mediaAdapter?: string };
+    const set: Partial<typeof llmRoutes.$inferInsert> = {};
     if (body.multiplier !== undefined) set.multiplier = Math.max(1, Math.round(body.multiplier));
     if (body.costPer1k !== undefined) set.costPer1k = Math.max(0, Math.round(body.costPer1k));
     if (body.priority !== undefined) set.priority = Math.round(body.priority);
     if (body.weight !== undefined) set.weight = Math.max(1, Math.round(body.weight));
     if (body.enabled !== undefined) set.enabled = body.enabled;
+    if (body.mediaAdapter !== undefined) {
+      if (body.mediaAdapter !== 'image_url' && body.mediaAdapter !== 'video_url') {
+        throw new HttpError(400, 'INVALID_INPUT', 'mediaAdapter 仅支持 image_url 或 video_url');
+      }
+      set.mediaAdapter = body.mediaAdapter;
+    }
     if (Object.keys(set).length > 0) {
       await getDb().update(llmRoutes).set(set).where(eq(llmRoutes.id, id));
     }

@@ -81,8 +81,8 @@ function isAdminUser(user: { role: string } | null | undefined): boolean {
 /**
  * 可见性模型（P）：
  *  - public：全员（含匿名）
- *  - login：站内共享，仅归属者与管理员可直接访问；其他用户从「站内共享」克隆
- *  - private：仅归属者（用户自建应用默认）
+ *  - login：站内共享，仅归属者与管理员可直接访问；其他用户只能克隆
+ *  - private：门户中仅归属者可见；分享链接需要登录后访问
  */
 export async function canAccess(
   app: AppRow,
@@ -95,7 +95,7 @@ export async function canAccess(
     case 'login':
       return Boolean(user && user.authState === 'full' && app.ownerUserId === user.id);
     case 'private':
-      return Boolean(user && user.authState === 'full' && app.ownerUserId === user.id);
+      return Boolean(user && user.authState === 'full');
     default:
       return false;
   }

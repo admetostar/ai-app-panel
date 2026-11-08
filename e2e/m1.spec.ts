@@ -292,6 +292,7 @@ test('站内共享只提供克隆入口，不显示无效访问二维码', async
   await expect(page.locator('.aap-home-category').filter({ hasText: '站内共享应用' }).first()).toContainText('只能克隆后访问');
   const card = page.locator('.aap-app-card').filter({ hasText: '站内共享应用' });
   await expect(card.locator('.aap-app-card__qr-drawer')).toHaveCount(0);
+  await expect(card.locator('a.aap-app-card-link')).toHaveCount(0);
   const cloneButton = card.getByRole('button', { name: /^克\s*隆$/ });
   await cloneButton.click();
   await expect.poll(() => cloneRequested).toBe(true);
@@ -690,7 +691,11 @@ test('设置保存：HTTPS 跳转开关开 → 保存 → 刷新仍为开', asyn
   await page.locator('.aap-admin-page .ant-select').first().click();
   const visibilityOptions = page.locator('.ant-select-dropdown:visible .ant-select-item-option');
   await expect(visibilityOptions).toHaveCount(3);
-  await expect(visibilityOptions).toContainText(['公开（免登录）', '站内（其他用户可克隆，不可直接访问）', '仅自己（私有）']);
+  await expect(visibilityOptions).toContainText([
+    '公开（免登录）',
+    '站内（仅自己和管理员可打开；其他用户只能克隆）',
+    '仅自己（门户仅自己可见；分享链接需登录）',
+  ]);
   await page.keyboard.press('Escape');
   await page.locator('.ant-modal-close').click();
   await page.evaluate(() => {

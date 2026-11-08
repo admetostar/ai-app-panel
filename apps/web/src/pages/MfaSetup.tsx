@@ -12,6 +12,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useSession } from '../state/session';
 import { useStepUp, withStepUp } from '../components/StepUpModal';
 import { registerNewPasskey } from '../lib/mfaClient';
+import { safeReturnTo } from '../lib/base';
 
 interface MfaStatusView {
   totpConfirmed: boolean;
@@ -22,7 +23,7 @@ export function MfaSetupPage() {
   const navigate = useNavigate();
   const { activeUserPageTheme } = useOutletContext<{ activeUserPageTheme: 'light' | 'dark' }>();
   const [searchParams] = useSearchParams();
-  const afterAuth = searchParams.get('returnTo') === '/account' ? '/account' : '/';
+  const afterAuth = safeReturnTo(searchParams.get('returnTo')) ?? '/';
   const qc = useQueryClient();
   const { me } = useSession();
   const [stepUpModal, ensureStepUp] = useStepUp(activeUserPageTheme);

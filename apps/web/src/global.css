@@ -101,6 +101,25 @@ body {
   margin-top: 10px;
 }
 
+.aap-app-upload-dropzone {
+  display: flex;
+  min-height: 112px;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 18px;
+  border: 1px dashed var(--aap-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--aap-bg-layout) 55%, transparent);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.aap-app-upload-dropzone--active {
+  border-color: var(--aap-primary);
+  background: color-mix(in srgb, var(--aap-primary) 8%, var(--aap-bg-container));
+}
+
 .aap-app-upload-progress__track {
   position: relative;
   width: 100%;
@@ -3176,29 +3195,7 @@ body {
 }
 
 .membership-current-plan__summary {
-  padding: 16px;
-  border: 1px solid var(--aap-border);
-  border-radius: 8px;
-  background-color: var(--aap-bg-layout);
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.78)),
-    url('../../server/assets/home-background.png');
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: cover;
-}
-
-.aap-account-shell[data-user-theme='dark'] .membership-current-plan__summary {
-  background-image:
-    linear-gradient(rgba(20, 23, 28, 0.76), rgba(20, 23, 28, 0.76)),
-    url('../../server/assets/home-background.png');
-}
-
-.membership-current-plan__eyebrow {
-  margin-bottom: 12px;
-  color: var(--aap-text-secondary);
-  font-size: 12px;
-  font-weight: 600;
+  width: 50%;
 }
 
 .membership-current-plan__grid {
@@ -3620,10 +3617,54 @@ body {
 }
 
 @media (max-width: 520px) {
+  .membership-current-plan__summary {
+    width: 100%;
+  }
+
   .membership-current-plan__grid {
     grid-template-columns: 1fr;
     gap: 12px;
   }
+}
+
+@media (min-width: 521px) and (max-width: 900px) {
+  .membership-current-plan__summary {
+    width: 100%;
+  }
+}
+
+.aap-account-modal--light.aap-step-up-modal .ant-modal-content {
+  border-radius: 12px;
+}
+
+.aap-account-modal--light.aap-step-up-modal .ant-modal-header {
+  border-radius: 12px 12px 0 0;
+}
+
+.aap-account-modal--light.aap-step-up-modal .ant-input,
+.aap-account-modal--light.aap-step-up-modal .ant-input-affix-wrapper {
+  border-radius: 8px;
+}
+
+.aap-account-modal--light.aap-step-up-modal .ant-btn {
+  border-radius: 8px;
+}
+
+.aap-account-modal--dark.aap-step-up-modal .ant-modal-content {
+  border-radius: 12px;
+}
+
+.aap-account-modal--dark.aap-step-up-modal .ant-modal-header {
+  border-radius: 12px 12px 0 0;
+}
+
+.aap-account-modal--dark.aap-step-up-modal .ant-input,
+.aap-account-modal--dark.aap-step-up-modal .ant-input-affix-wrapper {
+  border-radius: 8px;
+}
+
+.aap-account-modal--dark.aap-step-up-modal .ant-btn {
+  border-radius: 8px;
 }
 
 .aap-account-page {

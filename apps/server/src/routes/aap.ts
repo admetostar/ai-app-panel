@@ -6,15 +6,19 @@
  * 白名单执行点在平台代理侧，沙箱进程无法绕过（防 DNS rebinding/直连 IP）。
  */
 import { Router, type Request, type Response, type NextFunction } from 'express';
+import { mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import dns from 'node:dns';
 import net from 'node:net';
-import { eq } from 'drizzle-orm';
+import { eq, inArray, lt } from 'drizzle-orm';
 import { getDb } from '../db/index.js';
-import { apps, users } from '../db/schema.js';
+import { apps, llmChatJobs, llmMediaFiles, users } from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
-import { appLlmAllowed, resolveAppToken, resolveDefaultModel, type AppTokenRow } from '../lib/llm.js';
+import { appLlmAllowed, resolveAppToken, resolveDefaultModel, resolveRouteCandidates, type AppTokenRow } from '../lib/llm.js';
 import { loopbackPlatformPort } from '../lib/sandbox.js';
 import { signIdentity, verifyIdentity } from '../gateway/identity.js';
+import { IDENTITY_TTL_MS } from '@aap/shared';
 import { config } from '../config/index.js';
 import { getSetting, getSettingInt } from '../lib/settings.js';
 
@@ -45,6 +49,443 @@ declare global {
     }
   }
 }
+
+const IMAGE_LIMIT = 5 * 1024 * 1024;
+const VIDEO_LIMIT = 50 * 1024 * 1024;
+const CHAT_MEDIA_LIMIT = 50 * 1024 * 1024;
+const MEDIA_TTL_MS = 60 * 60 * 1000;
+const MAX_MEDIA_PER_CHAT = 20;
+const activeChatJobs = new Set<string>();
+const CHAT_JOB_CONCURRENCY = 2;
+let runningChatJobs = 0;
+const queuedChatJobs: Array<() => void> = [];
+
+async function acquireChatJobSlot(): Promise<void> {
+  if (runningChatJobs < CHAT_JOB_CONCURRENCY) {
+    runningChatJobs += 1;
+    return;
+  }
+  await new Promise<void>((resolve) => queuedChatJobs.push(resolve));
+}
+
+function releaseChatJobSlot(): void {
+  const next = queuedChatJobs.shift();
+  if (next) next();
+  else runningChatJobs = Math.max(0, runningChatJobs - 1);
+}
+
+const MEDIA_TYPES: Record<string, { kind: 'image' | 'video'; extensions: string[]; limit: number }> = {
+  'image/jpeg': { kind: 'image', extensions: ['.jpg', '.jpeg'], limit: IMAGE_LIMIT },
+  'image/png': { kind: 'image', extensions: ['.png'], limit: IMAGE_LIMIT },
+  'image/webp': { kind: 'image', extensions: ['.webp'], limit: IMAGE_LIMIT },
+  'image/gif': { kind: 'image', extensions: ['.gif'], limit: IMAGE_LIMIT },
+  'video/mp4': { kind: 'video', extensions: ['.mp4'], limit: VIDEO_LIMIT },
+  'video/webm': { kind: 'video', extensions: ['.webm'], limit: VIDEO_LIMIT },
+  'video/quicktime': { kind: 'video', extensions: ['.mov'], limit: VIDEO_LIMIT },
+};
+
+interface MediaReference {
+  id: string;
+}
+
+function mediaDirectory(): string {
+  return path.join(config.dataDir, 'llm-media');
+}
+
+function mediaFilePath(id: string): string {
+  return path.join(mediaDirectory(), id);
+}
+
+function chatFilePath(id: string): string {
+  return path.join(mediaDirectory(), 'jobs', `${id}.json`);
+}
+
+function mediaUserId(req: Request, appId: string): number | null {
+  const payload = req.headers['x-aap-identity'];
+  const sig = req.headers['x-aap-identity-sig'];
+  if (typeof payload !== 'string' || typeof sig !== 'string') return null;
+  const secret = getSetting('AAP_SIGN_SECRET');
+  if (!secret) return null;
+  const identity = verifyIdentity(payload, sig, secret, appId, { allowReplay: true });
+  if (!identity.ok) return null;
+  const userId = Number(identity.payload.uid);
+  return Number.isInteger(userId) && userId > 0 ? userId : null;
+}
+
+function mediaJobUserId(req: Request, appId: string, createdAt: number): number | null {
+  const payload = req.headers['x-aap-identity'];
+  const sig = req.headers['x-aap-identity-sig'];
+  if (typeof payload !== 'string' || typeof sig !== 'string') return null;
+  const secret = getSetting('AAP_SIGN_SECRET');
+  if (!secret) return null;
+  const identity = verifyIdentity(payload, sig, secret, appId, { allowReplay: true, allowExpired: true });
+  if (!identity.ok) return null;
+  const issuedAt = Number(identity.payload.iat);
+  const expiresAt = Number(identity.payload.exp);
+  if (!Number.isSafeInteger(issuedAt) || !Number.isSafeInteger(expiresAt)
+    || issuedAt > createdAt || expiresAt < createdAt || expiresAt - issuedAt > IDENTITY_TTL_MS) return null;
+  const userId = Number(identity.payload.uid);
+  return Number.isInteger(userId) && userId > 0 ? userId : null;
+}
+
+async function cleanupExpiredMedia(now = Date.now()): Promise<void> {
+  const db = getDb();
+  const expiredMedia = await db.delete(llmMediaFiles).where(lt(llmMediaFiles.expiresAt, now)).returning({ id: llmMediaFiles.id });
+  await Promise.all(expiredMedia.map(({ id }) => rm(mediaFilePath(id), { force: true })));
+  const expiredJobs = await db.delete(llmChatJobs).where(lt(llmChatJobs.expiresAt, now)).returning({ id: llmChatJobs.id });
+  await Promise.all(expiredJobs.map(({ id }) => rm(chatFilePath(id), { force: true })));
+}
+
+const mediaCleanupTimer = setInterval(() => {
+  void cleanupExpiredMedia().catch((err) => console.error('[llm-media-cleanup] Cleanup failed', err));
+}, 10 * 60 * 1000);
+mediaCleanupTimer.unref();
+
+// ---------- 大文件媒体上传与异步 chat 任务 ----------
+
+aapRouter.post(
+  '/llm/media',
+  h(async (req: Request, res: Response) => {
+    const token = req.aapToken!;
+    if (!await appLlmAllowed(token.appId)) throw new HttpError(403, 'CAPABILITY_NOT_DECLARED', '该应用 manifest 未声明 llm 能力');
+    await cleanupExpiredMedia();
+
+    const contentType = String(req.headers['content-type'] ?? '').split(';', 1)[0]!.toLowerCase();
+    const mediaType = MEDIA_TYPES[contentType];
+    if (!mediaType) throw new HttpError(415, 'UNSUPPORTED_MEDIA_TYPE', '仅支持 JPEG、PNG、WebP、GIF 图片及 MP4、WebM、MOV 视频');
+
+    const contentLength = Number(req.headers['content-length']);
+    if (!Number.isSafeInteger(contentLength) || contentLength <= 0) {
+      throw new HttpError(411, 'CONTENT_LENGTH_REQUIRED', '媒体上传必须提供有效的 Content-Length');
+    }
+    if (contentLength > mediaType.limit) {
+      throw new HttpError(413, 'MEDIA_TOO_LARGE', `单个${mediaType.kind === 'image' ? '图片' : '视频'}最大支持 ${Math.floor(mediaType.limit / 1024 / 1024)} MB`);
+    }
+
+    let filename = '';
+    try {
+      filename = decodeURIComponent(String(req.headers['x-aap-media-name'] ?? ''));
+    } catch {
+      throw new HttpError(400, 'INVALID_FILENAME', '文件名编码无效');
+    }
+    filename = path.basename(filename).replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 255);
+    if (!filename || !mediaType.extensions.includes(path.extname(filename).toLowerCase())) {
+      throw new HttpError(415, 'MEDIA_TYPE_MISMATCH', '文件扩展名与媒体类型不匹配');
+    }
+
+    const id = randomUUID();
+    const filePath = mediaFilePath(id);
+    const startedAt = Date.now();
+    await mkdir(mediaDirectory(), { recursive: true });
+    const file = await open(filePath, 'wx', 0o600);
+    let size = 0;
+    let header = Buffer.alloc(0);
+    try {
+      for await (const chunk of req) {
+        const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        size += data.length;
+        if (size > mediaType.limit || size > contentLength) {
+          throw new HttpError(413, 'MEDIA_TOO_LARGE', '媒体文件超过声明大小或单文件限制');
+        }
+        if (header.length < 16) header = Buffer.concat([header, data.subarray(0, 16 - header.length)]);
+        let offset = 0;
+        while (offset < data.length) {
+          const written = await file.write(data, offset, data.length - offset);
+          if (written.bytesWritten <= 0) throw new Error('Failed to write uploaded media');
+          offset += written.bytesWritten;
+        }
+      }
+      if (size !== contentLength || !isValidMediaHeader(contentType, header)) {
+        throw new HttpError(400, 'INVALID_MEDIA_FILE', '文件内容与声明的媒体类型不匹配或上传不完整');
+      }
+    } catch (err) {
+      await file.close();
+      await rm(filePath, { force: true });
+      throw err;
+    }
+    await file.close();
+
+    const now = Date.now();
+    const userId = mediaUserId(req, token.appId);
+    try {
+      await getDb().insert(llmMediaFiles).values({
+        id,
+        appId: token.appId,
+        userId,
+        filename,
+        mimeType: contentType,
+        size,
+        uploadMs: now - startedAt,
+        createdAt: now,
+        expiresAt: now + MEDIA_TTL_MS,
+      });
+    } catch (err) {
+      await rm(filePath, { force: true });
+      throw err;
+    }
+    res.status(201).json({ id, type: mediaType.kind, mimeType: contentType, filename, size, uploadMs: now - startedAt, expiresAt: now + MEDIA_TTL_MS });
+  }),
+);
+
+function isValidMediaHeader(mimeType: string, header: Buffer): boolean {
+  if (mimeType === 'image/jpeg') return header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
+  if (mimeType === 'image/png') return header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  if (mimeType === 'image/webp') return header.toString('ascii', 0, 4) === 'RIFF' && header.toString('ascii', 8, 12) === 'WEBP';
+  if (mimeType === 'image/gif') return ['GIF87a', 'GIF89a'].includes(header.toString('ascii', 0, 6));
+  if (mimeType === 'video/mp4' || mimeType === 'video/quicktime') return header.toString('ascii', 4, 8) === 'ftyp';
+  if (mimeType === 'video/webm') return header.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+  return false;
+}
+
+aapRouter.post(
+  '/llm/chat/jobs',
+  h(async (req: Request, res: Response) => {
+    const token = req.aapToken!;
+    const body = (req.body ?? {}) as { messages?: unknown; media?: unknown; model?: unknown; max_tokens?: unknown; temperature?: unknown };
+    if (!Array.isArray(body.messages) || !body.messages.length) throw new HttpError(400, 'INVALID_INPUT', 'messages 必须是非空数组');
+    if (!await appLlmAllowed(token.appId)) throw new HttpError(403, 'CAPABILITY_NOT_DECLARED', '该应用 manifest 未声明 llm 能力');
+
+    const model = typeof body.model === 'string' ? body.model.trim() : await resolveDefaultModel() ?? '';
+    if (!model) throw new HttpError(400, 'INVALID_INPUT', '未指定 model，且网关模型目录为空');
+    if (!Array.isArray(body.media)) throw new HttpError(400, 'INVALID_INPUT', 'media 必须是已上传媒体引用数组');
+    const references: MediaReference[] = body.media.map((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) throw new HttpError(400, 'INVALID_INPUT', 'media 中包含无效引用');
+      const id = (item as Record<string, unknown>).id;
+      if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) throw new HttpError(400, 'INVALID_INPUT', 'media 中包含无效媒体 ID');
+      return { id };
+    });
+    if (references.length === 0 || references.length > MAX_MEDIA_PER_CHAT) {
+      throw new HttpError(400, 'INVALID_INPUT', `media 必须包含 1-${MAX_MEDIA_PER_CHAT} 个已上传媒体文件`);
+    }
+    const uniqueIds = [...new Set(references.map((item) => item?.id))];
+    if (uniqueIds.length !== references.length) {
+      throw new HttpError(400, 'INVALID_INPUT', 'media 中包含无效或重复的媒体 ID');
+    }
+    if (activeChatJobs.size >= 100) throw new HttpError(429, 'MEDIA_JOB_QUEUE_FULL', '媒体任务队列已满，请稍后重试');
+    const mediaRows = await getDb().select().from(llmMediaFiles).where(inArray(llmMediaFiles.id, uniqueIds));
+    const userId = mediaUserId(req, token.appId);
+    if (mediaRows.length !== references.length || mediaRows.some((item) => item.appId !== token.appId || item.userId !== userId || item.expiresAt <= Date.now())) {
+      throw new HttpError(404, 'MEDIA_NOT_FOUND', '媒体不存在、已过期或不属于当前应用/用户');
+    }
+    const totalBytes = mediaRows.reduce((total, item) => total + item.size, 0);
+    if (totalBytes > CHAT_MEDIA_LIMIT) throw new HttpError(413, 'MEDIA_BATCH_TOO_LARGE', '单次 chat 的媒体文件总量不能超过 50 MB');
+
+    const userMessages = body.messages.filter((message): message is Record<string, unknown> => (
+      Boolean(message) && typeof message === 'object' && !Array.isArray(message) && (message as Record<string, unknown>).role === 'user'
+    ));
+    const lastUser = userMessages.at(-1);
+    if (!lastUser) throw new HttpError(400, 'INVALID_INPUT', 'messages 至少需要一条 user 消息用于附加媒体');
+    const currentContent = lastUser.content;
+    const content = typeof currentContent === 'string'
+      ? [{ type: 'text', text: currentContent }]
+      : Array.isArray(currentContent) ? [...currentContent] : [];
+    for (const reference of references) content.push({ type: 'aap_media', media_id: reference.id });
+    lastUser.content = content;
+
+    const mediaTypes = [...new Set(mediaRows.map((item) => MEDIA_TYPES[item.mimeType]?.kind).filter((kind): kind is 'image' | 'video' => kind !== undefined))];
+    const candidates = await resolveRouteCandidates(model, mediaTypes);
+    if (candidates.length === 0) throw new HttpError(404, 'MODEL_OR_MEDIA_ROUTE_NOT_FOUND', '没有可处理该媒体类型的启用模型路由');
+
+    const now = Date.now();
+    const id = randomUUID();
+    const jobFile = chatFilePath(id);
+    await mkdir(path.dirname(jobFile), { recursive: true });
+    await writeFile(jobFile, JSON.stringify({
+      model,
+      messages: body.messages,
+      mediaIds: mediaRows.map(({ id: mediaId }) => mediaId),
+      mediaTypes,
+      max_tokens: typeof body.max_tokens === 'number' && body.max_tokens > 0 ? Math.floor(body.max_tokens) : undefined,
+      temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
+      uploadMs: mediaRows.reduce((total, item) => total + item.uploadMs, 0),
+    }), { mode: 0o600 });
+    if (activeChatJobs.size >= 100) {
+      await rm(jobFile, { force: true });
+      throw new HttpError(429, 'MEDIA_JOB_QUEUE_FULL', '媒体任务队列已满，请稍后重试');
+    }
+    try {
+      await getDb().insert(llmChatJobs).values({
+        id,
+        appId: token.appId,
+        userId,
+        model,
+        status: 'queued',
+        stage: 'queued',
+        createdAt: now,
+        updatedAt: now,
+        expiresAt: now + MEDIA_TTL_MS,
+      });
+    } catch (err) {
+      await rm(jobFile, { force: true });
+      throw err;
+    }
+    res.status(202).json({ id, status: 'queued', stage: 'queued', createdAt: now, expiresAt: now + MEDIA_TTL_MS });
+    activeChatJobs.add(id);
+    const bearer = String(req.headers['x-aap-token'] ?? '');
+    const identityHeaders = {
+      ...(typeof req.headers['x-aap-identity'] === 'string' ? { 'x-aap-identity': req.headers['x-aap-identity'] } : {}),
+      ...(typeof req.headers['x-aap-identity-sig'] === 'string' ? { 'x-aap-identity-sig': req.headers['x-aap-identity-sig'] } : {}),
+    };
+    const platformPort = loopbackPlatformPort(req.socket.localPort, config);
+    void processChatJob(id, bearer, platformPort, identityHeaders).catch((err) => {
+      console.error('[llm-media-job] Unhandled job failure', id, err);
+    });
+  }),
+);
+
+async function processChatJob(
+  id: string,
+  bearer: string,
+  platformPort: number,
+  identityHeaders: Record<string, string>,
+): Promise<void> {
+  await acquireChatJobSlot();
+  let db: ReturnType<typeof getDb>;
+  let job: typeof llmChatJobs.$inferSelect | undefined;
+  try {
+    db = getDb();
+    job = (await db.select().from(llmChatJobs).where(eq(llmChatJobs.id, id)))[0];
+  } catch (err) {
+    try {
+      await rm(chatFilePath(id), { force: true });
+    } catch (cleanupError) {
+      console.error('[llm-media-job] Failed to remove request file after DB read error', id, cleanupError);
+    }
+    activeChatJobs.delete(id);
+    releaseChatJobSlot();
+    throw err;
+  }
+  if (!job) {
+    try {
+      await rm(chatFilePath(id), { force: true });
+    } catch (cleanupError) {
+      console.error('[llm-media-job] Failed to remove orphaned request file', id, cleanupError);
+    }
+    activeChatJobs.delete(id);
+    releaseChatJobSlot();
+    return;
+  }
+  const started = Date.now();
+  const updateStage = async (stage: string): Promise<void> => {
+    await db.update(llmChatJobs).set({ status: 'processing', stage, updatedAt: Date.now() }).where(eq(llmChatJobs.id, id));
+  };
+  try {
+    await updateStage('preparing');
+    const payload = JSON.parse(await readFile(chatFilePath(id), 'utf8')) as {
+      model: string;
+      messages: Array<Record<string, unknown>>;
+      mediaIds: string[];
+      mediaTypes: Array<'image' | 'video'>;
+      max_tokens?: number;
+      temperature?: number;
+      uploadMs: number;
+    };
+    await updateStage('routing');
+    const upstreamStarted = Date.now();
+    const response = await fetch(`http://127.0.0.1:${platformPort}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${bearer}`,
+        'x-aap-job-id': id,
+        ...identityHeaders,
+      },
+      body: JSON.stringify({
+        model: payload.model,
+        messages: payload.messages,
+        _aap_media_ids: payload.mediaIds,
+        ...(payload.max_tokens ? { max_tokens: payload.max_tokens } : {}),
+        ...(payload.temperature !== undefined ? { temperature: payload.temperature } : {}),
+        _aap_media_types: payload.mediaTypes,
+      }),
+      signal: AbortSignal.timeout(Math.max(30_000, getSettingInt('LLM_MEDIA_TIMEOUT_SECONDS', 600) * 1000)),
+    });
+    const responseText = await response.text();
+    const requestId = response.headers.get('x-aap-request-id');
+    const now = Date.now();
+    const timings = {
+      uploadMs: payload.uploadMs,
+      queueMs: Math.max(0, started - job.createdAt),
+      prepareMs: Math.max(0, upstreamStarted - started),
+      gatewayMs: Math.max(0, now - upstreamStarted),
+      totalMs: Math.max(0, now - job.createdAt),
+    };
+    if (!response.ok) {
+      const error = responseText.slice(0, 2000);
+      await db.update(llmChatJobs).set({
+        status: 'failed',
+        stage: 'failed',
+        error,
+        timingsJson: JSON.stringify({ ...timings, requestId }),
+        updatedAt: now,
+      }).where(eq(llmChatJobs.id, id));
+      return;
+    }
+    await db.update(llmChatJobs).set({
+      status: 'completed',
+      stage: 'completed',
+      resultJson: responseText,
+      timingsJson: JSON.stringify({ ...timings, requestId }),
+      updatedAt: now,
+    }).where(eq(llmChatJobs.id, id));
+  } catch (err) {
+    const now = Date.now();
+    await db.update(llmChatJobs).set({
+      status: 'failed',
+      stage: 'failed',
+      error: err instanceof Error ? err.message.slice(0, 2000) : String(err).slice(0, 2000),
+      timingsJson: JSON.stringify({ totalMs: Math.max(0, now - job.createdAt) }),
+      updatedAt: now,
+    }).where(eq(llmChatJobs.id, id));
+  } finally {
+    try {
+      await rm(chatFilePath(id), { force: true });
+    } catch (cleanupError) {
+      console.error('[llm-media-job] Failed to remove request file', id, cleanupError);
+    } finally {
+      activeChatJobs.delete(id);
+      releaseChatJobSlot();
+    }
+  }
+}
+
+aapRouter.get(
+  '/llm/chat/jobs/:id',
+  h(async (req: Request, res: Response) => {
+    const token = req.aapToken!;
+    const id = String(req.params.id);
+    const row = (await getDb().select().from(llmChatJobs).where(eq(llmChatJobs.id, id)))[0];
+    if (!row || row.appId !== token.appId || row.userId !== mediaJobUserId(req, token.appId, row.createdAt) || row.expiresAt <= Date.now()) {
+      throw new HttpError(404, 'JOB_NOT_FOUND', '任务不存在或已过期');
+    }
+    if ((row.status === 'queued' || row.status === 'processing') && row.stage !== 'completed') {
+      const runtimeJob = activeChatJobs.has(id);
+      if (!runtimeJob) {
+        await getDb().update(llmChatJobs).set({
+          status: 'failed',
+          stage: 'failed',
+          error: '服务器重启导致任务中断，请重新提交。',
+          updatedAt: Date.now(),
+        }).where(eq(llmChatJobs.id, id));
+        row.status = 'failed';
+        row.stage = 'failed';
+        row.error = '服务器重启导致任务中断，请重新提交。';
+      }
+    }
+    res.json({
+      id: row.id,
+      status: row.status,
+      stage: row.stage,
+      model: row.model,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      expiresAt: row.expiresAt,
+      timings: JSON.parse(row.timingsJson),
+      ...(row.resultJson ? { result: JSON.parse(row.resultJson) } : {}),
+      ...(row.error ? { error: row.error } : {}),
+    });
+  }),
+);
 
 // ---------- aap.llm.chat 平台代理（签名归因 → 网关） ----------
 

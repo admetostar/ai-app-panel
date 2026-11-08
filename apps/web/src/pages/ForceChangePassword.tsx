@@ -8,10 +8,11 @@ import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { usePostAuthRedirect, useSession } from '../state/session';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '@aap/shared';
+import { safeReturnTo } from '../lib/base';
 
 export function ForceChangePasswordPage() {
   const [searchParams] = useSearchParams();
-  const returnTo = searchParams.get('returnTo') === '/account' ? '/account' : '/';
+  const returnTo = safeReturnTo(searchParams.get('returnTo')) ?? '/';
   const redirect = usePostAuthRedirect(returnTo);
   const { refetch } = useSession();
   const [loading, setLoading] = useState(false);

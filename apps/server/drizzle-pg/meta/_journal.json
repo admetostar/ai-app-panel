@@ -29,6 +29,13 @@
       "when": 1793720000000,
       "tag": "0003_public_llm_apps_private",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794130515149,
+      "tag": "0004_bumpy_midnight",
+      "breakpoints": true
     }
   ]
 }

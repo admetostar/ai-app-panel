@@ -1,12 +1,14 @@
 ﻿---
 name: app-develop-internal
 description: "涉及网关 / LLM 网关 / 沙箱 / 计费 / 账号安全的架构设计或 ADR 复核，或 .awpk 接口面（manifest / aap.*）契约变更时用。常规 bug 修复、UI/文案/测试改动不需要。"
-version: 2.6.4
+version: 2.7.0
 ---
 
 # ai-app-panel 开发指南
 
 > v2.6.4 变更：应用开发规范 v0.3.4 强制 LLM 调用透传成对的平台身份头，补充单线程与后台任务归因规则及 `MODEL` 选型建议。
+>
+> v2.7.0 变更：AWPK 契约升级至 v0.3.5，新增图片/视频分块上传、异步任务状态及媒体路由；`/v1` 网关在上游前读取暂存文件，避免媒体 Base64 经应用平台代理的第二次大 JSON 请求。
 >
 > v2.6.3 变更：应用开发规范 v0.3.3 要求更新同一 AWPK 应用时递增 `manifest.version`，未知当前版本先询问，不得重置或猜测。
 >
@@ -75,7 +77,7 @@ version: 2.6.4
 
 ### AWPK 能力与资源边界（与用户技能 v0.3.1 同步）
 
-- 允许的 SDK 面：`aap.llm.chat`、`aap.db.execute/query`、`aap.storage.put/get/delete/list`、`aap.http.fetch`、`aap.log`。`llm` 未声明时平台网关强制拒绝；`db`/`storage` 当前没有逐项运行时能力闸，但开发契约要求仍须按需最小声明。
+- 允许的 SDK 面：`aap.llm.chat`、`aap.llm.upload_media/chat_async/get_chat_job`、`aap.db.execute/query`、`aap.storage.put/get/delete/list`、`aap.http.fetch`、`aap.log`。`llm` 未声明时平台网关强制拒绝；`db`/`storage` 当前没有逐项运行时能力闸，但开发契约要求仍须按需最小声明。
 - 上传 JSON body ≤15 MiB；ZIP 解压最多 2,000 条目且总量 ≤100 MiB；requirements ≤32 且只安装 wheel；env ≤16 项，value ≤8,192 字符、default ≤4,096、pattern ≤200。
 - invoked 单次 30 秒、全局并发默认 8、排队最多 64；stdout/stderr 捕获各 512 KiB。persistent 默认最多 12 个进程、空闲回收 300 秒（最小 30 秒）、崩溃重启最多 3 次。storage 默认每应用 10 MiB；SQLite 当前无硬容量配额。
 - egress 仅 HTTP(S) GET，经代理逐跳校验白名单与 DNS/IP；超时 15 秒、最多 5 次重定向、响应正文最多 500,000 字符、自定义头最多 16 项。管理员 `EGRESS_INTRANET_ALLOWLIST` 可放行精确主机/CIDR，链路本地仍拒绝。
@@ -100,6 +102,10 @@ version: 2.6.4
 - 凭据分层：真实上游 key 只存网关侧，管理员统一维护/轮换；应用凭据可吊销可限额
 - 模型目录：聚合多上游出统一 `/v1/models`；应用 `model` 字段选模型，网关按模型路由
 - 路由：同模型多上游 failover（超时/5xx/限流切换）+ 健康检查 + 轮询/加权；SSE 零缓冲
+- **媒体链路（AWPK v0.3.5）**：`upload_media` 以分块原始字节写入短期 DATA_DIR 文件；单图 ≤5 MiB、单视频 ≤50 MiB、单 chat 合计 ≤50 MiB、最多 20 个引用，媒体/任务 1 小时 TTL。`chat_async` 只将引用与小型 JSON 放入进程内任务队列；内部 `/v1` 请求仍只传引用，网关依据 `appId + userId` 校验归属后，在上游边界加载文件并生成媒体内容块，避免 Base64 大 JSON 在 `/api` 代理与 `/v1` 内部再往返/解析。暂存文件不通过公开 URL 暴露。上游 OpenAI-compatible 请求仍需序列化媒体内容，不能声称全程零拷贝。
+- 媒体路由字段 `llm_routes.media_adapter` 默认 `image_url`；含视频时只匹配 `video_url` 路由。图片使用 `image_url`，视频以 `video_url` + data URI 发送；此视频格式为供应商扩展，只有管理员确认实际上游支持后才可配置，不能因 OpenAI-compatible 名称推定其通用兼容性。
+- 媒体任务状态：`queued → preparing → routing → preparing_media → upstream_processing → settling → completed/failed`；状态接口仅向同应用、同用户开放。默认媒体非流式超时 600 秒（`LLM_MEDIA_TIMEOUT_SECONDS`），独立于文本 `LLM_TOTAL_TIMEOUT_SECONDS`。身份签名 TTL 仍为 10 分钟，队列只在内存；身份过期后模型调用失败并要求重新提交，禁止刷新或匿名回退。原始签名身份仅可在任务 TTL 内查询此前已提交任务；验签仍强制 aud、uid、签名及创建时 exp 有效，该特例不能授权上传、提交或新的 LLM 调用。
+- 媒体 token 计量优先采用上游 usage；usage 缺失时 fallback 只估算文本，明确排除 Base64 媒体字节（无法跨供应商可靠推断媒体 token，不能按编码长度扣费）。
 - **C/D 边界：账本只有一份**——C 的用量流水（append-only，只记不判）；**余额只有一处**——D 读流水结算。C 在请求路径上（记录者+预检者），D 在请求路径外（结算者）
 - **额度拦截两道闸**：① C 预检缓存（按模型倍率原子递减预估成本，无余额直接 402，请求不出网关）；② D 结算引擎异步消费流水校正余额，打穿 → 欠费态 + **主动失效 C 缓存**。漏账上限 = 并发在途请求预估成本（可控，非账目错误）
 - **缓存同步三触发**：扣款（欠费）、充值到账、管理员手动调额，都必须失效 C 预检缓存（否则「充了值还被拒」灵异事件）；单机用进程内事件总线

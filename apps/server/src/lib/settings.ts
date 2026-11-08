@@ -307,6 +307,9 @@ export const SETTING_DEFS: Record<string, SettingDef> = {
   LLM_TOTAL_TIMEOUT_SECONDS: {
     label: 'LLM 整体超时（秒）',
     group: '应用网关', type: 'int', desc: '非流式请求的整体时长上限。最小 10', initial: () => '120', defaultsWork: true, advanced: true },
+  LLM_MEDIA_TIMEOUT_SECONDS: {
+    label: 'LLM 媒体请求超时（秒）',
+    group: '应用网关', type: 'int', desc: '含图片或视频的异步 chat 等待上游处理的时长上限。最小 30，默认 600', initial: () => '600', defaultsWork: true, advanced: true },
   EGRESS_INTRANET_ALLOWLIST: {
     label: '内网出站白名单',
     group: '应用网关', type: 'string',

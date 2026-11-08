@@ -16,3 +16,14 @@ export const APP_BASE = RAW_BASE === '/' ? '' : RAW_BASE.replace(/\/+$/, '');
 export function withBase(p: string): string {
   return `${APP_BASE}${p}`;
 }
+
+/** Accept only same-origin path redirects and remove the deployment basename for router navigation. */
+export function safeReturnTo(raw: string | null): string | null {
+  if (!raw?.startsWith('/') || raw.startsWith('//')) return null;
+  const url = new URL(raw, window.location.origin);
+  if (url.origin !== window.location.origin) return null;
+  const pathname = APP_BASE && (url.pathname === APP_BASE || url.pathname.startsWith(`${APP_BASE}/`))
+    ? url.pathname.slice(APP_BASE.length) || '/'
+    : url.pathname;
+  return `${pathname}${url.search}${url.hash}`;
+}

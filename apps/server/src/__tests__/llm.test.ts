@@ -5,13 +5,15 @@
  */
 import http from 'node:http';
 import type { AddressInfo, Server } from 'node:net';
+import path from 'node:path';
+import { rm } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { setupTestDb, teardownTestDb } from './testkit.js';
 import { closeDb, getDb } from '../db/index.js';
 import { seedSettings, setSetting } from '../lib/settings.js';
 import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
-import { apps, llmBalanceCache, llmLedger, users } from '../db/schema.js';
+import { apps, llmBalanceCache, llmLedger, llmMediaFiles, users } from '../db/schema.js';
 import { and, eq } from 'drizzle-orm';
 import {
   createAppToken,
@@ -24,6 +26,7 @@ import {
 } from '../lib/llm.js';
 import { signIdentity } from '../gateway/identity.js';
 import { getSetting } from '../lib/settings.js';
+import { config } from '../config/index.js';
 
 /** 生成合法的 passUser 身份头（模拟门户代理注入、应用转发） */
 function identityHeaders(uid: number, appId = 'demo'): Record<string, string> {
@@ -50,7 +53,7 @@ function identityHeaders(uid: number, appId = 'demo'): Record<string, string> {
 
 let gw: Server;
 let gwPort = 0;
-let dir: string;
+let dir = '';
 const okUpstreams: Server[] = [];
 const AUTH = { authorization: '' };
 
@@ -124,10 +127,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await new Promise<void>((r) => gw.close(() => r()));
+  if (gw) await new Promise<void>((r) => gw.close(() => r()));
   for (const s of okUpstreams) await new Promise<void>((r) => s.close(() => r()));
   await closeDb();
-  await teardownTestDb(dir);
+  if (dir) await teardownTestDb(dir);
 });
 
 async function balanceOf(userId: number): Promise<number> {
@@ -383,6 +386,7 @@ describe('aap 代理：沙箱 max_tokens 注入策略（LLM_SANDBOX_MAX_TOKENS�
   // 固定端口的独立实例（其他测试文件均 listen(0)，不冲突）
   const AAP_PORT = 18117;
   let aapGw: Server;
+  let llmCapAuth: Record<string, string> = {};
 
   it('包未指定：0=不注入、正数=注入；包显式指定优先于设置', async () => {
     const cfg = { ...loadConfig({ PORT: String(AAP_PORT) }), webDist: null };
@@ -410,7 +414,7 @@ describe('aap 代理：沙箱 max_tokens 注入策略（LLM_SANDBOX_MAX_TOKENS�
     const uid = await (await getDb().select({ id: users.id }).from(users).where(eq(users.username, 'u600')))[0]!.id;
     const token = await createAppToken('llmcapapp', 'test', null);
     await grantTokens(uid, 100_000, 'cap-test', 1);
-    const auth = { 'x-aap-token': token, ...identityHeaders(uid, 'llmcapapp') };
+    llmCapAuth = { 'x-aap-token': token, ...identityHeaders(uid, 'llmcapapp') };
 
     let last: Record<string, unknown> | null = null;
     const cap = await upServer((q, res, body) => {
@@ -424,7 +428,7 @@ describe('aap 代理：沙箱 max_tokens 注入策略（LLM_SANDBOX_MAX_TOKENS�
     const call = async (extra: Record<string, unknown> = {}): Promise<void> => {
       const res = await fetch(`${aapBase}/api/aap/llm/chat`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', ...auth },
+        headers: { 'content-type': 'application/json', ...llmCapAuth },
         body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }], ...extra }),
       });
       const text = await res.text();
@@ -446,6 +450,69 @@ describe('aap 代理：沙箱 max_tokens 注入策略（LLM_SANDBOX_MAX_TOKENS�
     expect(last && (last as { max_tokens?: number }).max_tokens).toBe(77);
 
     await setSetting('LLM_SANDBOX_MAX_TOKENS', '0');
+  });
+
+  it('暂存视频以异步任务转成 video_url，并提供阶段和耗时状态', async () => {
+    const originalDataDir = config.dataDir;
+    config.dataDir = path.join(dir, 'llm-media-test');
+    const forwarded: { value?: Record<string, unknown> } = {};
+    const videoUpstream = await upServer((_q, res, body) => {
+      forwarded.value = JSON.parse(body || '{}') as Record<string, unknown>;
+      res.writeHead(200, { 'content-type': 'application/json' }).end(OK_BODY);
+    });
+    okUpstreams.push(videoUpstream.server);
+    try {
+      await createRoute({
+        model: 'cap-video-model',
+        upstreamId: (await createUpstream('视频捕获上游', videoUpstream.baseUrl, 'sk-video')),
+        upstreamModel: 'cap-video-up',
+        mediaAdapter: 'video_url',
+      });
+      const video = Buffer.from([0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32]);
+      const uploaded = await fetch(`http://127.0.0.1:${AAP_PORT}/api/aap/llm/media`, {
+        method: 'POST',
+        headers: {
+          ...llmCapAuth,
+          'content-type': 'video/mp4',
+          'x-aap-media-name': 'clip.mp4',
+        },
+        body: video,
+      });
+      expect(uploaded.status).toBe(201);
+      const media = await uploaded.json() as { id: string; size: number; uploadMs: number };
+      expect(media.size).toBe(video.length);
+
+      const created = await fetch(`http://127.0.0.1:${AAP_PORT}/api/aap/llm/chat/jobs`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...llmCapAuth },
+        body: JSON.stringify({
+          model: 'cap-video-model',
+          messages: [{ role: 'user', content: '请总结视频内容' }],
+          media: [{ id: media.id }],
+        }),
+      });
+      expect(created.status).toBe(202);
+      const { id } = await created.json() as { id: string };
+      let job: { status: string; stage: string; result?: { choices?: unknown[] }; timings?: Record<string, number> } | undefined;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const status = await fetch(`http://127.0.0.1:${AAP_PORT}/api/aap/llm/chat/jobs/${id}`, { headers: llmCapAuth });
+        job = await status.json() as typeof job;
+        if (job?.status === 'completed' || job?.status === 'failed') break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(job?.status).toBe('completed');
+      expect(job?.stage).toBe('completed');
+      expect(job?.result?.choices).toHaveLength(1);
+      expect(job?.timings?.uploadMs).toBeGreaterThanOrEqual(0);
+      expect(job?.timings?.gatewayMs).toBeGreaterThanOrEqual(0);
+      const content = ((forwarded.value?.messages as Array<{ content: Array<Record<string, unknown>> }> | undefined)?.[0]?.content ?? []);
+      expect(content[1]?.type).toBe('video_url');
+      expect(String((content[1]?.video_url as { url?: string })?.url)).toMatch(/^data:video\/mp4;base64,/);
+    } finally {
+      config.dataDir = originalDataDir;
+      await getDb().delete(llmMediaFiles).where(eq(llmMediaFiles.appId, 'llmcapapp'));
+      await rm(path.join(dir, 'llm-media-test'), { recursive: true, force: true });
+    }
   });
 
   afterAll(async () => {

@@ -6,7 +6,9 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
 # app-develop.skill.md
 
 > ai-app-panel 应用开发规范 · 供开发 Agent 使用
-> 版本 v0.3.4（2026-11）· 配套平台 PRD v0.3+
+> 版本 v0.3.5（2026-11）· 配套平台 PRD v0.3+
+>
+> **v0.3.5 变更**：新增大文件媒体异步 LLM 契约：`upload_media`、`chat_async`、`get_chat_job`，明确图片/视频限制、状态阶段、媒体路由格式及 10 分钟身份有效期边界。
 >
 > **v0.3.4 变更**：强化 LLM 用户身份归因要求，补充单线程与后台线程/线程池的身份头捕获和传递方法；增加按任务类型选择 `MODEL` 的建议。
 >
@@ -280,6 +282,40 @@ def create_job():
 ```
 
 不要把示例中的身份元组保存到任务表或长期队列；如任务可能排队超过身份有效期，应在有效期内执行模型调用或要求用户重新提交任务。禁止用捕获 `TypeError`、空身份或无归因策略作为自动回退。
+
+### 3.1.1 `aap.llm` 媒体上传与异步 chat
+
+图片/视频使用独立原始字节上传，随后以短期引用提交异步任务；不要把大文件 Base64 塞进普通 `aap.llm.chat`。单个图片最多 5 MiB，单个视频最多 50 MiB；每次 chat 的媒体合计最多 50 MiB、最多 20 个文件。支持 JPEG、PNG、WebP、GIF、MP4、WebM、MOV。上传引用绑定当前应用及平台用户，1 小时过期。
+
+```python
+import os
+import time
+
+media = aap.llm.upload_media("/tmp/receipt.jpg")
+job = aap.llm.chat_async(
+    messages=[{"role": "user", "content": "请识别图片中的内容"}],
+    media=[media],
+    model=os.environ["MODEL"],
+    max_tokens=1200,
+)
+
+while True:
+    job = aap.llm.get_chat_job(job["id"])
+    if job["status"] in ("completed", "failed"):
+        break
+    time.sleep(1)
+
+if job["status"] == "failed":
+    raise RuntimeError(job["error"])
+result = job["result"]
+```
+
+- `upload_media(file_path, content_type=None, progress=None, identity=None)` 通过 1 MiB 分块发送原始文件字节；上传回调参数是 `(已发送字节数, 文件总字节数)`，返回值含 `id`、`type`、`mimeType`、`size`、`uploadMs` 与 `expiresAt`。身份优先级沿用 `aap.llm.chat`；长期任务不得保存身份元组。
+- `chat_async(messages, media, model=None, temperature=None, max_tokens=None, identity=None)` 返回 `id/status/stage`，平台把媒体引用附加到最后一条 user 消息；messages 应包含至少一条 user 消息。`get_chat_job(job_id, identity=None)` 返回任务状态，完成时含 OpenAI 兼容的 `result`，失败时含 `error`，并在 `timings` 提供 `uploadMs`、`queueMs`、`prepareMs`、`gatewayMs`、`totalMs` 与 `requestId`。
+- 阶段包括 `queued`、`preparing`、`routing`、`preparing_media`、`upstream_processing`、`settling`、`completed`、`failed`。应用应轮询并向用户展示当前阶段；网络故障、模型路由不支持或上游失败均可能导致 `failed`。
+- 有效身份签名 10 分钟过期。平台只在进程内排队身份，不会持久化；排队过久导致身份过期时，模型任务会失败，需由用户重新提交。仅为查询已提交任务，平台允许用原始签名身份在任务有效期内读取该任务状态/结果；该过期身份不能用于上传媒体、提交任务或新的 LLM 调用。任务状态与媒体引用最长保留 1 小时。
+- 管理员须在模型路由中配置媒体格式：`image_url` 适用于图片；`video_url` 适用于图片和视频。`video_url` 是上游扩展格式，平台以 `data:video/...;base64,...` 发送，不属于所有 OpenAI-compatible 服务的通用约定；只有确认上游支持时才能启用。视频请求只选择 `video_url` 路由，不会降级为图片格式。
+- 含图片或视频的异步 chat 默认最多等待上游 600 秒，可由管理员通过 `LLM_MEDIA_TIMEOUT_SECONDS` 调整。媒体计量以上游返回的 usage 为准；上游不返回 usage 时，平台估算会排除 Base64 媒体字节，不把文件大小误算成文本 token。
 
 ### 3.2 `aap.db` — 数据库（每包独立 SQLite，支持 SQL）
 

@@ -23,7 +23,7 @@ import {
   message,
 } from 'antd';
 import { DeleteOutlined, SettingOutlined } from '@ant-design/icons';
-import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useOutletContext, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
@@ -1006,7 +1006,6 @@ function MembershipTopupTab({ section, theme }: {
         }
       >
         <div className="membership-current-plan__summary">
-          <div className="membership-current-plan__eyebrow">权益概览</div>
           <div className="membership-current-plan__grid">
             <div className="membership-current-plan__item">
               <Typography.Text type="secondary">到期时间</Typography.Text>
@@ -1312,14 +1311,17 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
     enabled: active,
   });
   const [uploading, setUploading] = useState(false);
+  const [uploadDragActive, setUploadDragActive] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [settingsApp, setSettingsApp] = useState<MyAppRow | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  async function onFile(e: React.ChangeEvent<HTMLInputElement>): Promise<void> {
+  async function uploadFile(f: File): Promise<void> {
     if (uploading) return;
-    const f = e.target.files?.[0];
-    if (!f) return;
+    if (!f.name.toLowerCase().endsWith('.awpk')) {
+      setLastError('仅支持上传 .awpk 应用包');
+      return;
+    }
     setUploading(true);
     setLastError(null);
     try {
@@ -1331,8 +1333,28 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
       setLastError(err instanceof Error ? err.message : '上传失败');
     } finally {
       setUploading(false);
-      e.target.value = '';
     }
+  }
+
+  function onFile(e: ChangeEvent<HTMLInputElement>): void {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) void uploadFile(file);
+  }
+
+  function onUploadDragOver(e: DragEvent<HTMLDivElement>): void {
+    e.preventDefault();
+    if (!uploading) {
+      e.dataTransfer.dropEffect = 'copy';
+      setUploadDragActive(true);
+    }
+  }
+
+  function onUploadDrop(e: DragEvent<HTMLDivElement>): void {
+    e.preventDefault();
+    setUploadDragActive(false);
+    const file = e.dataTransfer.files[0];
+    if (file) void uploadFile(file);
   }
 
   return (
@@ -1341,9 +1363,22 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
         <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
           平台按当前权益包限制可创建应用数量（通过上传应用包创建）；创建后默认仅自己可见，发布为公开不再受数量限制。
         </Typography.Paragraph>
-        <Button danger disabled={uploading} onClick={() => fileInputRef.current?.click()}>
-          选择文件
-        </Button>
+        <div
+          className={`aap-app-upload-dropzone${uploadDragActive ? ' aap-app-upload-dropzone--active' : ''}`}
+          onDragEnter={onUploadDragOver}
+          onDragOver={onUploadDragOver}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setUploadDragActive(false);
+          }}
+          onDrop={onUploadDrop}
+          aria-label="应用包拖拽上传区域"
+        >
+          <Typography.Text strong>将 .awpk 文件拖拽到此处</Typography.Text>
+          <Typography.Text type="secondary">或</Typography.Text>
+          <Button danger disabled={uploading} onClick={() => fileInputRef.current?.click()}>
+            选择文件
+          </Button>
+        </div>
         <input
           ref={fileInputRef}
           type="file"

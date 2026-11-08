@@ -89,7 +89,6 @@ function escapeHtml(s: string): string {
 }
 
 function shareMetadataFor(req: Request, app: AppRow, appOrigin: boolean): AppShareMetadata | undefined {
-  if (app.visibility !== 'public') return undefined;
   const host = appOrigin
     ? `${appDomainRoot()}${req.get('host')?.match(/:(\d+)$/)?.[0] ?? ''}`
     : req.get('host');
@@ -103,6 +102,18 @@ function shareMetadataFor(req: Request, app: AppRow, appOrigin: boolean): AppSha
     description: app.description || app.name,
     imageUrl: host && imagePath ? `${req.protocol}://${host}${imagePath}` : null,
   };
+}
+
+function htmlLoginRedirect(res: Response, metadata: AppShareMetadata | undefined, loginHref: string): void {
+  const safeLoginHref = escapeHtml(loginHref);
+  const scriptHref = JSON.stringify(loginHref).replace(/</g, '\\u003c');
+  const page =
+    '<!doctype html><html><head><meta charset="utf-8">' +
+    `<meta http-equiv="refresh" content="0;url=${safeLoginHref}">` +
+    '</head><body><p>此应用需要登录后访问，正在跳转…' +
+    `<a href="${safeLoginHref}">前往登录</a></p>` +
+    `<script>window.location.replace(${scriptHref})</script></body></html>`;
+  res.type('html').send(metadata ? injectAppShareMetadata(page, metadata) : page);
 }
 
 /**
@@ -275,16 +286,20 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
     if (!user) {
       const portalHost = appOrigin ? appDomainRoot() : '';
       const port = appOrigin ? req.get('host')?.match(/:(\d+)$/)?.[1] : undefined;
+      const loginPath = `${config.gatewayPrefix ?? ''}/login`;
+      const returnPath = `${config.gatewayPrefix ?? ''}/my-apps`;
+      const search = new URLSearchParams({ next: returnPath, nonPublicApp: '1' });
+      const loginPathWithQuery = `${loginPath}?${search.toString()}`;
       const loginHref = appOrigin
-        ? `${req.protocol}://${portalHost}${port ? `:${port}` : ''}/login`
-        : '/login';
-      return htmlError(res, 403, '需要登录', `应用「%%」需要登录后访问，<a href="${loginHref}">去登录</a>`, app.name);
-    }
-    if (app.visibility === 'login') {
-      return htmlError(res, 403, '站内共享', '此应用不可直接访问，请前往“我的应用”克隆后使用');
+        ? `${req.protocol}://${portalHost}${port ? `:${port}` : ''}${loginPathWithQuery}`
+        : loginPathWithQuery;
+      return htmlLoginRedirect(res, shareMetadata, loginHref);
     }
     if (user.authState !== 'full') {
       return htmlError(res, 403, '需要完成验证', '请先完成多因子认证');
+    }
+    if (app.visibility === 'login') {
+      return htmlError(res, 403, '站内共享', '此应用仅可由归属者或管理员直接访问；请前往“我的应用 → 站内共享”克隆后使用');
     }
     return htmlError(res, 403, '无权访问', '当前应用不可供该账号访问');
   }
@@ -297,7 +312,7 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
     return htmlError(res, 429, '请求过于频繁', '请稍后再试');
   }
 
-  if (!appOrigin && app.visibility === 'public' && shouldUseAppOrigin && appDomainRoot() !== 'localhost') {
+  if (!appOrigin && shouldUseAppOrigin && appDomainRoot() !== 'localhost') {
     const root = appDomainRoot();
     const port = req.get('host')?.match(/:(\d+)$/)?.[1];
     const targetHost = `${id}.${root}${port ? `:${port}` : ''}`;

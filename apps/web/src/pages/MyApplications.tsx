@@ -114,7 +114,7 @@ export function MyApplicationsPage() {
                 <section key={category} className="aap-home-category">
                   {category !== '用户提交' ? <h4>{category}</h4> : null}
                   <div className="aap-home-app-grid">
-                    {apps.map((app) => <PortalAppCard key={app.id} app={app} unavailableHref={null} showVisibilityBadge />)}
+                    {apps.map((app) => <PortalAppCard key={app.id} app={app} showVisibilityBadge />)}
                   </div>
                 </section>
               ))}
@@ -135,7 +135,7 @@ export function MyApplicationsPage() {
                 <section key={category} className="aap-home-category">
                   {category !== '用户提交' ? <h4>{category}</h4> : null}
                   <div className="aap-home-app-grid">
-                    {apps.map((app) => <PortalAppCard key={app.id} app={app} unavailableHref={null} showVisibilityBadge />)}
+                    {apps.map((app) => <PortalAppCard key={app.id} app={app} showVisibilityBadge />)}
                   </div>
                 </section>
               ))}
@@ -172,7 +172,6 @@ export function MyApplicationsPage() {
                       <PortalAppCard
                         key={app.id}
                         app={app}
-                        unavailableHref={null}
                         hideQr
                         showVisibilityBadge
                         footerAction={(

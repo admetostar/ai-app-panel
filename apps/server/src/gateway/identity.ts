@@ -92,7 +92,7 @@ export function verifyIdentity(
   sigHex: string,
   secret: string,
   expectAud: string,
-  opts?: { allowReplay?: boolean },
+  opts?: { allowReplay?: boolean; allowExpired?: boolean },
 ): { ok: true; payload: Record<string, unknown> } | { ok: false; error: string } {
   const expect = createHmac('sha256', secret).update(payloadB64).digest('hex');
   const a = Buffer.from(sigHex, 'hex');
@@ -104,7 +104,7 @@ export function verifyIdentity(
   } catch {
     return { ok: false, error: 'BAD_PAYLOAD' };
   }
-  if (typeof payload.exp !== 'number' || payload.exp < Date.now()) return { ok: false, error: 'EXPIRED' };
+  if (typeof payload.exp !== 'number' || (!opts?.allowExpired && payload.exp < Date.now())) return { ok: false, error: 'EXPIRED' };
   if (payload.aud !== expectAud) return { ok: false, error: 'AUD_MISMATCH' };
   if (typeof payload.jti !== 'string' || !payload.jti) return { ok: false, error: 'BAD_JTI' };
   if (!opts?.allowReplay && !jtiNotReplayed(payload.jti, payload.exp)) return { ok: false, error: 'JTI_REPLAYED' };

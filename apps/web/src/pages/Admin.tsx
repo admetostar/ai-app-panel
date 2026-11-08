@@ -663,8 +663,8 @@ function AppsTab(): ReactNode {
 
   const VIS_OPTIONS = [
     { value: 'public', label: '公开（免登录）' },
-    { value: 'login', label: '站内（其他用户可克隆，不可直接访问）' },
-    { value: 'private', label: '仅自己（私有）' },
+    { value: 'login', label: '站内（仅自己和管理员可打开；其他用户只能克隆）' },
+    { value: 'private', label: '仅自己（门户仅自己可见；分享链接需登录）' },
   ];
 
   async function saveApp(values: Record<string, unknown>): Promise<void> {
@@ -1955,6 +1955,7 @@ interface LlmRoute {
   upstreamId: number;
   upstreamName: string;
   upstreamModel: string;
+  mediaAdapter: 'image_url' | 'video_url';
   multiplier: number;
   priority: number;
   weight: number;
@@ -2026,6 +2027,7 @@ function LlmTab(): ReactNode {
     upstreamId: 0,
     upstreamName: '',
     upstreamModel: '',
+    mediaAdapter: 'image_url',
     multiplier: 100,
     priority: 100,
     weight: 100,
@@ -2154,7 +2156,7 @@ function LlmTab(): ReactNode {
             columns={[
               {
                 title: '模型名',
-                width: '17%',
+                width: '15%',
                 render: (_, r) => r.id === 0 ? (
                   <Form.Item name="model" rules={[{ required: true, message: '必填' }]} style={{ marginBottom: 0 }}>
                     <Input placeholder="公开模型名" />
@@ -2163,7 +2165,7 @@ function LlmTab(): ReactNode {
               },
               {
                 title: '上游',
-                width: '15%',
+                width: '14%',
                 render: (_, r) => r.id === 0 ? (
                   <Form.Item name="upstreamId" rules={[{ required: true, message: '必选' }]} style={{ marginBottom: 0 }}>
                     <Select placeholder="上游" options={upstreamOptions} />
@@ -2172,7 +2174,7 @@ function LlmTab(): ReactNode {
               },
               {
                 title: '上游模型',
-                width: '17%',
+                width: '15%',
                 ellipsis: true,
                 render: (_, r) => r.id === 0 ? (
                   <Form.Item name="upstreamModel" rules={[{ required: true, message: '必填' }]} style={{ marginBottom: 0 }}>
@@ -2181,8 +2183,39 @@ function LlmTab(): ReactNode {
                 ) : r.upstreamModel,
               },
               {
+                title: '媒体格式',
+                width: '18%',
+                render: (_, r) => r.id === 0 ? (
+                  <Form.Item name="mediaAdapter" initialValue="image_url" style={{ marginBottom: 0 }}>
+                    <Select
+                      options={[
+                        { value: 'image_url', label: '图片' },
+                        { value: 'video_url', label: '图片 + 视频 URL' },
+                      ]}
+                    />
+                  </Form.Item>
+                ) : (
+                  <Select
+                    size="small"
+                    value={r.mediaAdapter}
+                    options={[
+                      { value: 'image_url', label: '图片' },
+                      { value: 'video_url', label: '图片 + 视频 URL' },
+                    ]}
+                    onChange={async (mediaAdapter: LlmRoute['mediaAdapter']) => {
+                      try {
+                        await api(`/api/admin/llm/routes/${r.id}`, { method: 'PUT', json: { mediaAdapter } });
+                        invalidate();
+                      } catch (err) {
+                        message.error(err instanceof Error ? err.message : '媒体格式更新失败');
+                      }
+                    }}
+                  />
+                ),
+              },
+              {
                 title: '倍率‰',
-                width: '12%',
+                width: '10%',
                 render: (_, r) => r.id === 0 ? (
                   <Form.Item name="multiplier" initialValue={100} style={{ marginBottom: 0 }}>
                     <Input placeholder="100" />
@@ -2191,7 +2224,7 @@ function LlmTab(): ReactNode {
               },
               {
                 title: '优先级',
-                width: '12%',
+                width: '8%',
                 render: (_, r) => r.id === 0 ? (
                   <Form.Item name="priority" initialValue={100} style={{ marginBottom: 0 }}>
                     <Input placeholder="100" />
@@ -2200,7 +2233,7 @@ function LlmTab(): ReactNode {
               },
               {
                 title: '权重',
-                width: '12%',
+                width: '8%',
                 render: (_, r) => r.id === 0 ? (
                   <Form.Item name="weight" initialValue={100} style={{ marginBottom: 0 }}>
                     <Input placeholder="100" />
@@ -2209,7 +2242,7 @@ function LlmTab(): ReactNode {
               },
               {
                 title: '',
-                width: '15%',
+                width: '12%',
                 render: (_, r) => r.id === 0 ? (
                   <Button size="small" type="primary" htmlType="submit">添加路由</Button>
                 ) : (

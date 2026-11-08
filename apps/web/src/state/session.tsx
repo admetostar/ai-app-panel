@@ -42,7 +42,7 @@ export function usePostAuthRedirect(destination = '/'): (r: {
       return;
     }
     if (r.membershipSelectionRequired ?? r.user?.membershipSelectionRequired) {
-      navigate('/membership-selection', { replace: true });
+      navigate(`/membership-selection?returnTo=${encodeURIComponent(destination)}`, { replace: true });
       return;
     }
 

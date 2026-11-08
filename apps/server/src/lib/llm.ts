@@ -192,13 +192,14 @@ export async function listRoutes(): Promise<RouteRow[]> {
   return await getDb().select().from(llmRoutes);
 }
 
-export async function createRoute(r: { model: string; upstreamId: number; upstreamModel: string; multiplier?: number; priority?: number; weight?: number }): Promise<void> {
+export async function createRoute(r: { model: string; upstreamId: number; upstreamModel: string; mediaAdapter?: 'image_url' | 'video_url'; multiplier?: number; priority?: number; weight?: number }): Promise<void> {
   await getDb()
     .insert(llmRoutes)
     .values({
       model: r.model.trim(),
       upstreamId: r.upstreamId,
       upstreamModel: r.upstreamModel.trim(),
+      mediaAdapter: r.mediaAdapter ?? 'image_url',
       multiplier: r.multiplier ?? 100,
       priority: r.priority ?? 100,
       weight: r.weight ?? 100,
@@ -232,13 +233,14 @@ export async function modelCatalog(): Promise<string[]> {
 }
 
 /** 按模型解析 failover 候选：priority 升序，同优先级按 weight 加权随机 */
-export async function resolveRouteCandidates(model: string): Promise<Array<{ upstreamId: number; upstreamModel: string; multiplier: number; upstreamBaseUrl: string; apiKey: string }>> {
+export async function resolveRouteCandidates(model: string, mediaTypes: Array<'image' | 'video'> = []): Promise<Array<{ upstreamId: number; upstreamModel: string; mediaAdapter: 'image_url' | 'video_url'; multiplier: number; upstreamBaseUrl: string; apiKey: string }>> {
   const rows = await getDb()
     .select({
       id: llmRoutes.id,
       model: llmRoutes.model,
       upstreamId: llmRoutes.upstreamId,
       upstreamModel: llmRoutes.upstreamModel,
+      mediaAdapter: llmRoutes.mediaAdapter,
       multiplier: llmRoutes.multiplier,
       priority: llmRoutes.priority,
       weight: llmRoutes.weight,
@@ -249,7 +251,7 @@ export async function resolveRouteCandidates(model: string): Promise<Array<{ ups
     .innerJoin(llmUpstreams, eq(llmRoutes.upstreamId, llmUpstreams.id))
     .where(and(eq(llmRoutes.model, model), eq(llmRoutes.enabled, true)));
 
-  const live = rows.filter((r) => r.upstreamEnabled);
+  const live = rows.filter((r) => r.upstreamEnabled && (!mediaTypes.includes('video') || r.mediaAdapter === 'video_url'));
   if (live.length === 0) return [];
 
   const byPriority = new Map<number, typeof live>();
@@ -258,7 +260,7 @@ export async function resolveRouteCandidates(model: string): Promise<Array<{ ups
     list.push(r);
     byPriority.set(r.priority, list);
   }
-  const candidates: Array<{ upstreamId: number; upstreamModel: string; multiplier: number; upstreamBaseUrl: string; apiKey: string }> = [];
+  const candidates: Array<{ upstreamId: number; upstreamModel: string; mediaAdapter: 'image_url' | 'video_url'; multiplier: number; upstreamBaseUrl: string; apiKey: string }> = [];
   for (const priority of [...byPriority.keys()].sort((a, b) => a - b)) {
     const list = byPriority.get(priority)!;
     // 同优先级：weight 加权随机抽一个作为该层代表（简单加权轮换语义）
@@ -275,6 +277,7 @@ export async function resolveRouteCandidates(model: string): Promise<Array<{ ups
     candidates.push({
       upstreamId: chosen.upstreamId,
       upstreamModel: chosen.upstreamModel,
+      mediaAdapter: chosen.mediaAdapter === 'video_url' ? 'video_url' : 'image_url',
       multiplier: chosen.multiplier,
       upstreamBaseUrl: chosen.baseUrl,
       apiKey: await upstreamApiKey(chosen.upstreamId),

@@ -210,7 +210,7 @@ export const apps = pgTable('apps', {
   description: text('description').notNull().default(''),
   icon: text('icon'),
   category: text('category').notNull().default('未分类'),
-  /** 'public' 公开 | 'login' 站内共享（他人可克隆，不可直访） | 'private' 仅归属者 */
+  /** 'public' 公开 | 'login' 站内共享（仅归属者/管理员可直访） | 'private' 分享链接需登录 */
   visibility: text('visibility').notNull().default('login'),
   /** 应用形态：upstream 反代上游 | html 门户托管的静态页（简单 HTML / .awpk html 包） */
   kind: text('kind').notNull().default('upstream'),
@@ -376,6 +376,7 @@ export const llmRoutes = pgTable(
       .notNull()
       .references(() => llmUpstreams.id, { onDelete: 'cascade' }),
     upstreamModel: text('upstream_model').notNull(), // 上游侧真实模型名
+    mediaAdapter: text('media_adapter').notNull().default('image_url'), // image_url | video_url
     multiplier: integer('multiplier').notNull().default(100), // 计费倍率（千分比，100 = 1:1），M3 定价沿用
     /** 上游成本价（每 1k token 的成本，单位=分；毛利 = 收入倍率 − 成本价） */
     costPer1k: integer('cost_per_1k').notNull().default(0),
@@ -385,6 +386,49 @@ export const llmRoutes = pgTable(
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   },
   (t) => [index('llm_routes_model_idx').on(t.model)],
+);
+
+/** 短期暂存的 LLM 媒体文件；文件内容保存在 DATA_DIR/llm-media，不进入数据库。 */
+export const llmMediaFiles = pgTable(
+  'llm_media_files',
+  {
+    id: varchar('id', { length: 64 }).primaryKey(),
+    appId: varchar('app_id', { length: 191 }).notNull().references(() => apps.id, { onDelete: 'cascade' }),
+    userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+    filename: text('filename').notNull(),
+    mimeType: varchar('mime_type', { length: 127 }).notNull(),
+    size: bigint('size', { mode: 'number' }).notNull(),
+    uploadMs: integer('upload_ms').notNull(),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+  },
+  (t) => [
+    index('llm_media_app_expiry_idx').on(t.appId, t.expiresAt),
+    index('llm_media_user_idx').on(t.userId, t.createdAt),
+  ],
+);
+
+/** 异步媒体 chat 任务状态；请求正文只暂存于 DATA_DIR，过期后自动清理。 */
+export const llmChatJobs = pgTable(
+  'llm_chat_jobs',
+  {
+    id: varchar('id', { length: 64 }).primaryKey(),
+    appId: varchar('app_id', { length: 191 }).notNull().references(() => apps.id, { onDelete: 'cascade' }),
+    userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+    model: varchar('model', { length: 191 }).notNull(),
+    status: varchar('status', { length: 24 }).notNull(),
+    stage: varchar('stage', { length: 32 }).notNull(),
+    resultJson: text('result_json'),
+    error: text('error'),
+    timingsJson: text('timings_json').notNull().default('{}'),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+    expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+  },
+  (t) => [
+    index('llm_chat_jobs_app_expiry_idx').on(t.appId, t.expiresAt),
+    index('llm_chat_jobs_user_idx').on(t.userId, t.createdAt),
+  ],
 );
 
 /** 网关凭据（应用级；只存 SHA-256，明文仅创建时展示一次；可吊销可限额） */

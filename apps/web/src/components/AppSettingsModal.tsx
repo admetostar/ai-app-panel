@@ -217,8 +217,8 @@ export function AppSettingsModal({ app, open, onClose, onSaved, theme }: {
                         popupClassName={`aap-account-modal-select-dropdown aap-account-modal-select-dropdown--${theme}`}
                         options={[
                           { value: 'public', label: '公开 — 所有人都可以发现并访问' },
-                          { value: 'login', label: '站内 — 他人可克隆，不可直接访问' },
-                          { value: 'private', label: '仅自己 — 只有你可以发现并访问' },
+                          { value: 'login', label: '站内 — 仅自己和管理员可打开；他人只能克隆' },
+                          { value: 'private', label: '仅自己 — 门户仅自己可见；分享链接需登录' },
                         ]}
                       />
                     </Form.Item>

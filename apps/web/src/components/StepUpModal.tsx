@@ -73,7 +73,7 @@ export function useStepUp(theme: 'light' | 'dark' = 'light'): [ReactNode, (optio
       onCancel={() => close(false)}
       footer={null}
       destroyOnClose
-      rootClassName={`aap-account-modal aap-account-modal--${theme}`}
+      rootClassName={`aap-account-modal aap-account-modal--${theme} aap-step-up-modal`}
       afterOpenChange={(visible) => {
         if (visible || closeResultRef.current === null) return;
         resolveRef.current?.(closeResultRef.current);

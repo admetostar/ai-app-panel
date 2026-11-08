@@ -121,6 +121,7 @@ export function createApp(cfg: AapConfig = config): Express {
   ]);
   app.use('/api', (req, res, next) => {
     const p = (req.originalUrl ?? req.url).split('?')[0]!;
+    if (p === '/api/aap/llm/media') return next();
     if (/^\/api\/apps\/[^/]+\/icon$/.test(p)) return next();
     if (LARGE_BODY_PATHS.has(p)) return next();
     express.json({ limit: '1mb' })(req, res, next);
@@ -160,7 +161,7 @@ export function createApp(cfg: AapConfig = config): Express {
   });
 
   // LLM 网关（M2，C1）：/v1/* OpenAI 兼容端点，独立于 /api（SDK 直连，无 cookie/CSRF）
-  app.use('/v1', express.json({ limit: '2mb' }));
+  app.use('/v1', express.json({ limit: '75mb' }));
   app.use(llmGatewayRouter);
 
   // 未知 API 一律 JSON 404（避免 SPA 兜底吞掉打错的接口）

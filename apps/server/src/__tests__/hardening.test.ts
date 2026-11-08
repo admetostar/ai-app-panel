@@ -993,6 +993,11 @@ describe('身份头验签（P3-16：exp 强制 + jti 一次性）', () => {
     // exp 必须存在且未过期：篡改过期 payload（重新签名）→ EXPIRED
     const parsed = JSON.parse(Buffer.from(idn.payload, 'base64url').toString('utf8')) as Record<string, unknown>;
     parsed.exp = Date.now() - 1000;
+    const expiredPayload = Buffer.from(JSON.stringify(parsed)).toString('base64url');
+    const expiredSig = createHmac('sha256', secret).update(expiredPayload).digest('hex');
+    expect(verifyIdentity(expiredPayload, expiredSig, secret, 'aud-app').ok).toBe(false);
+    expect(verifyIdentity(expiredPayload, expiredSig, secret, 'aud-app', { allowReplay: true, allowExpired: true }).ok).toBe(true);
+
     delete parsed.jti;
     const payloadB64 = Buffer.from(JSON.stringify(parsed)).toString('base64url');
     const sig = createHmac('sha256', secret).update(payloadB64).digest('hex');

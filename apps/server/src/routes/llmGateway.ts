@@ -8,7 +8,7 @@
  * 不在流中途掐断（预估先行、事后校正——C6 语义）。
  */
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
@@ -28,7 +28,8 @@ import {
 } from '../lib/llm.js';
 import { verifyIdentity } from '../gateway/identity.js';
 import { getDb } from '../db/index.js';
-import { llmAppTokens } from '../db/schema.js';
+import { llmAppTokens, llmChatJobs } from '../db/schema.js';
+import { resolveStagedMediaMessages } from '../lib/llmMedia.js';
 
 export const llmGatewayRouter = Router();
 
@@ -39,6 +40,9 @@ function ttfbTimeoutMs(): number {
 }
 function fullTimeoutMs(): number {
   return Math.max(10, getSettingInt('LLM_TOTAL_TIMEOUT_SECONDS', 120)) * 1000;
+}
+function mediaTimeoutMs(): number {
+  return Math.max(30, getSettingInt('LLM_MEDIA_TIMEOUT_SECONDS', 600)) * 1000;
 }
 const DEFAULT_TOKEN_PER_MIN = 60;
 
@@ -97,6 +101,13 @@ async function getDbTouch(token: AppTokenRow): Promise<void> {
     .where(eq(llmAppTokens.id, token.id));
 }
 
+async function updateChatJobStage(req: Request, appId: string, stage: string): Promise<void> {
+  const jobId = req.headers['x-aap-job-id'];
+  if (typeof jobId !== 'string') return;
+  await getDb().update(llmChatJobs).set({ stage, updatedAt: Date.now() })
+    .where(and(eq(llmChatJobs.id, jobId), eq(llmChatJobs.appId, appId), eq(llmChatJobs.status, 'processing')));
+}
+
 // ---------- 用户归因（passUser 身份链转发） ----------
 
 /** 应用转发门户注入的身份头 → 归因到用户；无头/验签失败 → null（仅应用级计量） */
@@ -133,6 +144,8 @@ interface ChatBody {
   messages?: unknown;
   stream?: boolean;
   max_tokens?: number;
+  _aap_media_types?: unknown;
+  _aap_media_ids?: unknown;
   [k: string]: unknown;
 }
 
@@ -158,22 +171,45 @@ llmGatewayRouter.post(
       res.status(status).json(e);
       return;
     }
-    const candidates = await resolveRouteCandidates(model);
+    if (body._aap_media_types !== undefined && (
+      !Array.isArray(body._aap_media_types)
+      || body._aap_media_types.some((value) => value !== 'image' && value !== 'video')
+    )) {
+      const { status, body: e } = openaiError(400, 'invalid_request_error', '媒体类型标记无效');
+      res.status(status).json(e);
+      return;
+    }
+    const markedMediaTypes = (body._aap_media_types ?? []) as Array<'image' | 'video'>;
+    const mediaTypes = [...new Set([...markedMediaTypes, ...detectMediaTypes(body.messages)])];
+    const candidates = await resolveRouteCandidates(model, mediaTypes);
     if (candidates.length === 0) {
-      const { status, body: e } = openaiError(404, 'model_not_found', `模型 ${model} 不在网关目录中`);
+      const { status, body: e } = openaiError(
+        404,
+        mediaTypes.length ? 'media_route_not_found' : 'model_not_found',
+        mediaTypes.length ? `没有支持 ${mediaTypes.join('、')} 媒体格式的 ${model} 路由` : `模型 ${model} 不在网关目录中`,
+      );
       res.status(status).json(e);
       return;
     }
 
     const requestId = randomBytes(8).toString('hex');
     const userId = attributeUser(req, token.appId);
+    let upstreamMessages: unknown[] = body.messages;
+    if (body._aap_media_ids !== undefined) {
+      await updateChatJobStage(req, token.appId, 'preparing_media');
+      const resolved = await resolveStagedMediaMessages(body.messages, body._aap_media_ids, token.appId, userId);
+      if (markedMediaTypes.length !== resolved.mediaTypes.length || resolved.mediaTypes.some((type) => !markedMediaTypes.includes(type))) {
+        throw new HttpError(400, 'INVALID_MEDIA_REFERENCE', '媒体类型标记与已上传文件不匹配');
+      }
+      upstreamMessages = resolved.messages;
+    }
     const multiplier = candidates[0]!.multiplier;
     const stream = body.stream === true;
     // 预估成本：max_tokens 优先，缺省 1024（C6：预估先行、事后校正、不中途掐断）
     const estimatedCost = Math.max(1, Math.ceil((((body.max_tokens as number | undefined) ?? 1024) * multiplier) / 100));
     // 流式无 usage 帧的入账兜底：预检处算好请求 token 估算随 meta 传入，
     // 避免结算处二次序列化（审计 P1-7）
-    const estimatedPromptTokens = stream ? estimateTokens(body.messages) : 0;
+    const estimatedPromptTokens = stream ? estimateTokens(upstreamMessages) : 0;
     await precheck(userId, estimatedCost);
 
     const started = Date.now();
@@ -182,8 +218,9 @@ llmGatewayRouter.post(
     for (const candidate of candidates) {
       const url = candidate.upstreamBaseUrl.replace(/\/+$/, '') + '/chat/completions';
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), stream ? ttfbTimeoutMs() : fullTimeoutMs());
+      const timer = setTimeout(() => ctrl.abort(), stream ? ttfbTimeoutMs() : mediaTypes.length ? mediaTimeoutMs() : fullTimeoutMs());
       try {
+        await updateChatJobStage(req, token.appId, 'upstream_processing');
         const up = await fetch(url, {
           method: 'POST',
           headers: {
@@ -191,13 +228,15 @@ llmGatewayRouter.post(
             'content-type': 'application/json',
           },
           body: JSON.stringify({
-            ...body,
+            ...Object.fromEntries(Object.entries(body).filter(([key]) => !key.startsWith('_aap_'))),
             model: candidate.upstreamModel,
+            messages: upstreamMessages,
             ...(stream ? { stream_options: { include_usage: true } } : {}),
           }),
           signal: ctrl.signal,
         });
         clearTimeout(timer);
+        await updateChatJobStage(req, token.appId, 'settling');
 
         // 可切换错误：5xx/429/408 → failover 下一候选
         if (up.status >= 500 || up.status === 429 || up.status === 408) {
@@ -244,7 +283,7 @@ llmGatewayRouter.post(
           usage?: { prompt_tokens?: number; completion_tokens?: number };
           [k: string]: unknown;
         };
-        const promptTokens = json.usage?.prompt_tokens ?? estimateTokens(body.messages);
+        const promptTokens = json.usage?.prompt_tokens ?? estimateTokens(upstreamMessages);
         const completionTokens = json.usage?.completion_tokens ?? 0;
         await recordUsage({
           userId,
@@ -396,9 +435,30 @@ function parseUsageLine(line: string): { prompt_tokens?: number; completion_toke
 /** 请求体 token 估算兜底（上游未回 usage 时按字符数/4 估） */
 function estimateTokens(messages: unknown): number {
   try {
-    const text = JSON.stringify(messages);
+    const text = JSON.stringify(messages, (key, value: unknown) => {
+      if (key === 'image_url' || key === 'video_url') return '[media]';
+      if (typeof value === 'string' && /^data:(?:image|video)\//i.test(value)) return '[media]';
+      return value;
+    });
     return Math.max(1, Math.ceil(text.length / 4));
   } catch {
     return 1;
   }
+}
+
+function detectMediaTypes(messages: unknown): Array<'image' | 'video'> {
+  const found = new Set<'image' | 'video'>();
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    const record = value as Record<string, unknown>;
+    if (record.type === 'image_url' || 'image_url' in record) found.add('image');
+    if (record.type === 'video_url' || 'video_url' in record) found.add('video');
+    Object.values(record).forEach(visit);
+  };
+  visit(messages);
+  return [...found];
 }

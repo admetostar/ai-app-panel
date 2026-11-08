@@ -10,14 +10,17 @@
 """
 from __future__ import annotations
 
+import http.client
 import json
 import logging
+import mimetypes
 import os
 import sqlite3
 import sys
 import time
-import urllib.request
 import urllib.error
+import urllib.parse
+import urllib.request
 
 
 def _env(key, default=None):
@@ -90,11 +93,7 @@ class Llm:
             payload["temperature"] = temperature
         if max_tokens:
             payload["max_tokens"] = int(max_tokens)
-        headers = {}
-        ident = _resolve_identity(identity)
-        if ident:
-            headers["x-aap-identity"] = ident[0]
-            headers["x-aap-identity-sig"] = ident[1]
+        headers = self._identity_headers(identity)
         status, resp = _platform("/api/aap/llm/chat", payload, extra_headers=headers)
         choices = resp.get("choices") or []
         content = ""
@@ -102,6 +101,94 @@ class Llm:
             message = choices[0].get("message") or {}
             content = message.get("content", "")
         return {"content": content, "usage": resp.get("usage") or {}, "model": resp.get("model", model or "")}
+
+    @staticmethod
+    def _identity_headers(identity=None):
+        ident = _resolve_identity(identity)
+        if not ident:
+            return {}
+        return {"x-aap-identity": ident[0], "x-aap-identity-sig": ident[1]}
+
+    def upload_media(self, file_path, content_type=None, progress=None, identity=None):
+        """以分块原始字节上传图片（≤5 MiB）或视频（≤50 MiB），返回短期媒体引用。"""
+        file_path = os.fspath(file_path)
+        size = os.path.getsize(file_path)
+        guessed_type = content_type or mimetypes.guess_type(file_path)[0] or ""
+        limits = {
+            "image/jpeg": 5 * 1024 * 1024,
+            "image/png": 5 * 1024 * 1024,
+            "image/webp": 5 * 1024 * 1024,
+            "image/gif": 5 * 1024 * 1024,
+            "video/mp4": 50 * 1024 * 1024,
+            "video/webm": 50 * 1024 * 1024,
+            "video/quicktime": 50 * 1024 * 1024,
+        }
+        if guessed_type not in limits:
+            raise ValueError("仅支持 JPEG、PNG、WebP、GIF 图片及 MP4、WebM、MOV 视频")
+        if size <= 0 or size > limits[guessed_type]:
+            raise ValueError("媒体文件为空或超过对应类型的单文件大小限制")
+
+        platform_url = urllib.parse.urlsplit(_env("AAP_PLATFORM", "http://127.0.0.1:8080").rstrip("/"))
+        connection_type = http.client.HTTPSConnection if platform_url.scheme == "https" else http.client.HTTPConnection
+        connection = connection_type(platform_url.hostname, platform_url.port, timeout=180)
+        base_path = platform_url.path.rstrip("/")
+        target = base_path + "/api/aap/llm/media"
+        if platform_url.query:
+            target += "?" + platform_url.query
+        headers = {
+            "content-type": guessed_type,
+            "content-length": str(size),
+            "x-aap-token": _env("AAP_TOKEN", ""),
+            "x-aap-media-name": urllib.parse.quote(os.path.basename(file_path), safe=""),
+        }
+        headers.update(self._identity_headers(identity))
+        sent = 0
+        try:
+            connection.putrequest("POST", target)
+            for name, value in headers.items():
+                connection.putheader(name, value)
+            connection.endheaders()
+            with open(file_path, "rb") as media_file:
+                while True:
+                    chunk = media_file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    connection.send(chunk)
+                    sent += len(chunk)
+                    if progress:
+                        progress(sent, size)
+            response = connection.getresponse()
+            response_body = response.read().decode("utf-8", errors="replace")
+            if response.status < 200 or response.status >= 300:
+                raise RuntimeError("媒体上传失败(%s): %s" % (response.status, response_body[:500]))
+            return json.loads(response_body or "{}")
+        finally:
+            connection.close()
+
+    def chat_async(self, messages, media, model=None, temperature=None, max_tokens=None, identity=None):
+        """提交含已上传媒体的 chat 任务；轮询 get_chat_job 获取阶段、耗时和最终结果。"""
+        payload = {
+            "messages": messages,
+            "media": [{"id": item["id"]} for item in media],
+        }
+        if model:
+            payload["model"] = model
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if max_tokens:
+            payload["max_tokens"] = int(max_tokens)
+        status, response = _platform(
+            "/api/aap/llm/chat/jobs",
+            payload,
+            extra_headers=self._identity_headers(identity),
+        )
+        return response
+
+    def get_chat_job(self, job_id, identity=None):
+        """查询媒体 chat 任务：status/stage、阶段耗时、request id 和完成结果。"""
+        path = "/api/aap/llm/chat/jobs/" + urllib.parse.quote(str(job_id), safe="")
+        _status, response = _platform(path, extra_headers=self._identity_headers(identity))
+        return response
 
     # 流式的便捷形式：逐段产出增量文本（底层仍整段返回后切片，行为对齐契约）
     def chat_stream(self, messages, model=None, temperature=None, max_tokens=None, identity=None):

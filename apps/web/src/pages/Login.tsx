@@ -15,6 +15,7 @@ import { obtainPowToken, solvePow, type PowChallenge } from '../lib/pow';
 import { usePostAuthRedirect } from '../state/session';
 import type { SessionInfo } from '@aap/shared';
 import { AuthPanel } from '../components/AuthPanel';
+import { safeReturnTo } from '../lib/base';
 
 type LoginResult = SessionInfo & { mfaRequired: boolean };
 
@@ -29,11 +30,14 @@ export function LoginPage() {
     account_disabled: '账号已被禁用，无法登录。',
   };
   const oidcErrorMsg = oidcError ? (oidcErrorMessages[oidcError] ?? `登录失败（${oidcError}）`) : null;
+  const nonPublicApp = searchParams.get('nonPublicApp') === '1';
+  const requestedNext = safeReturnTo(searchParams.get('next'));
+  const returnTo = requestedNext ?? (nonPublicApp ? '/my-apps' : '/account');
   const { data: boot } = useQuery({
     queryKey: ['bootstrap'],
     queryFn: () => api<PortalBootstrap>('/api/portal/bootstrap'),
   });
-  const redirect = usePostAuthRedirect('/account');
+  const redirect = usePostAuthRedirect(returnTo);
   const [loading, setLoading] = useState(false);
   const [mfaRequired, setMfaRequired] = useState(false);
   const [mfaLoading, setMfaLoading] = useState(false);
@@ -140,6 +144,15 @@ export function LoginPage() {
         使用你的 AI 超级面板账号管理应用与权益。
       </Typography.Paragraph>
 
+      {nonPublicApp ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={`您正在访问${boot?.branding.siteName?.trim() || '本站'}的非公开应用，请先登录或注册账号。`}
+          style={{ marginBottom: 16 }}
+        />
+      ) : null}
+
       {oidcErrorMsg ? (
         <Alert
           type={oidcError === 'oidc_pending' ? 'warning' : 'error'}
@@ -220,7 +233,16 @@ export function LoginPage() {
             </>
           ) : null}
           <div style={{ marginTop: 16, display: 'flex', justifyContent: 'space-between' }}>
-            <Link to="/register">注册账号</Link>
+            <Link
+              to={returnTo === '/account' && !nonPublicApp
+                ? '/register'
+                : `/register?${new URLSearchParams({
+                    ...(requestedNext ? { next: requestedNext } : {}),
+                    ...(nonPublicApp ? { nonPublicApp: '1' } : {}),
+                  }).toString()}`}
+            >
+              注册账号
+            </Link>
             <Link to="/forgot">忘记密码</Link>
           </div>
         </>

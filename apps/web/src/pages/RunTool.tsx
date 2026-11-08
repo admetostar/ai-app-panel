@@ -1,8 +1,8 @@
 /** .awpk invoked 工具执行页（G5）：入参表单 → 沙箱运行 → 结果渲染。 */
 import { Alert, Button, Card, Input, Spin, Typography } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
-import { api } from '../api/client';
+import { useNavigate, useParams } from 'react-router-dom';
+import { api, ApiError } from '../api/client';
 
 interface RunMeta {
   id: string;
@@ -31,6 +31,7 @@ interface RunResponse {
 
 export function RunToolPage() {
   const { id = '' } = useParams();
+  const navigate = useNavigate();
   const [meta, setMeta] = useState<RunMeta | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
@@ -51,9 +52,16 @@ export function RunToolPage() {
         setValues(initial);
       }
     } catch (err) {
+      if (err instanceof ApiError && err.code === 'LOGIN_REQUIRED') {
+        navigate(`/login?${new URLSearchParams({
+          next: '/my-apps',
+          nonPublicApp: '1',
+        }).toString()}`, { replace: true });
+        return;
+      }
       setError(err instanceof Error ? err.message : '加载失败');
     }
-  }, [id]);
+  }, [id, navigate]);
 
   useEffect(() => {
     void load();

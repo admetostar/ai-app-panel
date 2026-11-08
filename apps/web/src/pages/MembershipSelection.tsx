@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Card, Col, Empty, Row, Spin, Typography, message } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { MembershipPlanSummary, UserMembershipData } from '@aap/shared';
 import { api } from '../api/client';
 import { TierBadge } from '../components/TierBadge';
 import { formatEntitlementCount } from '../lib/membershipPricing';
 import { useSession } from '../state/session';
 import { formatMembershipPlanPrice, isFreeMembershipPlan } from '../lib/membershipPricing';
+import { safeReturnTo } from '../lib/base';
 
 interface PlanSelectionResult {
   activated: boolean;
@@ -17,6 +18,8 @@ interface PlanSelectionResult {
 
 export function MembershipSelectionPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const returnTo = safeReturnTo(searchParams.get('returnTo')) ?? '/account';
   const queryClient = useQueryClient();
   const { me, loading: sessionLoading } = useSession();
   const plans = useQuery({
@@ -32,8 +35,8 @@ export function MembershipSelectionPage() {
   const [skippingSelection, setSkippingSelection] = useState(false);
 
   useEffect(() => {
-    if (me && !me.user.membershipSelectionRequired) navigate('/account', { replace: true });
-  }, [me, navigate]);
+    if (me && !me.user.membershipSelectionRequired) navigate(returnTo, { replace: true });
+  }, [me, navigate, returnTo]);
 
   async function selectPlan(plan: MembershipPlanSummary): Promise<void> {
     setSelectingPlan(plan.id);
@@ -46,7 +49,7 @@ export function MembershipSelectionPage() {
       await queryClient.invalidateQueries({ queryKey: ['membership'] });
       if (result.activated) {
         message.success(`已获取「${result.planName}」，权益立即生效`);
-        navigate('/account', { replace: true });
+        navigate(returnTo, { replace: true });
       } else {
         message.success(`已为「${result.planName}」创建待确认订单，请在个人中心查看`);
         navigate('/account?tab=billing', { replace: true });
@@ -63,7 +66,7 @@ export function MembershipSelectionPage() {
     try {
       await api('/api/user/membership/skip-selection', { method: 'POST' });
       await queryClient.invalidateQueries({ queryKey: ['me'] });
-      navigate('/account', { replace: true });
+      navigate(returnTo, { replace: true });
     } catch (error) {
       message.error(error instanceof Error ? error.message : '暂时无法跳过权益选择');
       await plans.refetch();

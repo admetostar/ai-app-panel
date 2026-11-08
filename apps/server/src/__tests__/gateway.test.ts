@@ -301,13 +301,16 @@ describe('W5 反代（B1）', () => {
 });
 
 describe('W5 访问策略（B4 三态）', () => {
-  it('public 匿名可访问；login 匿名 403 提示登录', async () => {
+  it('public 匿名可访问；非公开应用匿名自动跳转登录并保留分享信息', async () => {
     const pub = await fetch(`http://127.0.0.1:${gwPort}/app/pub/`);
     expect(pub.status).toBe(200);
 
     const priv = await fetch(`http://127.0.0.1:${gwPort}/app/priv/`);
-    expect(priv.status).toBe(403);
-    expect(await priv.text()).toContain('需要登录');
+    expect(priv.status).toBe(200);
+    const page = await priv.text();
+    expect(page).toContain('og:title" content="登录应用"');
+    expect(page).toContain('window.location.replace');
+    expect(page).toContain('/login?next=%2Fmy-apps&amp;nonPublicApp=1');
   });
 
   it('应用执行页匿名打开私有应用时明确提示先登录', async () => {
@@ -414,7 +417,7 @@ describe('W5 访问策略（B4 三态）', () => {
     expect(app?.visibility).toBe('public');
   });
 
-  it('登录用户不能直接打开其他账号的站内应用', async () => {
+  it('非归属登录用户不能直接打开其他账号的站内应用', async () => {
     const base = `http://127.0.0.1:${gwPort}`;
     await createAppViaAdmin({ id: 'site-shared', name: '站内应用', upstream: `http://127.0.0.1:${upPort}`, visibility: 'login' });
     const login = await fetch(`${base}/api/auth/login`, {
@@ -425,7 +428,7 @@ describe('W5 访问策略（B4 三态）', () => {
     const cookie = cookieOf(login);
     const res = await fetch(`${base}/app/site-shared/`, { headers: { cookie } });
     expect(res.status).toBe(403);
-    expect(await res.text()).toContain('站内');
+    expect(await res.text()).toContain('只能克隆');
   });
 
   it('卡片墙：accessible 标记按会话计算', async () => {
@@ -495,14 +498,14 @@ describe('HTML 托管应用', () => {
 });
 
 describe('站内共享可见性矩阵', () => {
-  it('站内应用：匿名需登录；其他登录用户不能直接访问或在发现页打开', async () => {
+  it('站内应用：匿名跳转登录；其他登录用户只能克隆，不能直接访问', async () => {
     const base = `http://127.0.0.1:${gwPort}`;
-    // 匿名 → 403 引导登录
+    // 匿名 → 登录页引导
     const anon = await fetch(`${base}/app/priv/`);
-    expect(anon.status).toBe(403);
-    expect(await anon.text()).toContain('需要登录');
+    expect(anon.status).toBe(200);
+    expect(await anon.text()).toContain('nonPublicApp=1');
 
-    // 其他登录用户仍不可直接访问
+    // 其他登录用户仍无权直接访问
     const login = await fetch(`${base}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base },
@@ -511,26 +514,32 @@ describe('站内共享可见性矩阵', () => {
     const cookie = cookieOf(login);
     const entry = await fetch(`${base}/app/priv/`, { headers: { cookie } });
     expect(entry.status).toBe(403);
-    expect(await entry.text()).toContain('站内共享');
+    expect(await entry.text()).toContain('只能克隆');
 
-    // 站内共享只会显示在「我的应用 → 站内共享」，不进入发现页。
+    // 站内共享只会显示在「我的应用 → 站内共享」，并且卡片不可直接打开。
     const wall = await fetch(`${base}/api/apps`, { headers: { cookie } });
     const wallBody = (await wall.json()) as { apps: Array<{ id: string; accessible: boolean }> };
     expect(wallBody.apps.some((a) => a.id === 'priv')).toBe(false);
+    const shared = await fetch(`${base}/api/apps/site-shared`, { headers: { cookie } });
+    const sharedBody = (await shared.json()) as { apps: Array<{ id: string; accessible: boolean }> };
+    expect(sharedBody.apps.find((a) => a.id === 'priv')?.accessible).toBe(false);
   });
 
-  it('站内源应用归属管理员可通过 WebSocket 访问，普通登录用户不能访问', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${gwPort}/app/priv/echo`, { headers: { cookie: adminCookie } });
-    const received = await new Promise<string>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('timeout')), 5000);
-      ws.on('open', () => ws.send('matrix'));
-      ws.on('message', (data) => {
-        clearTimeout(t);
-        resolve(data.toString());
-      });
-      ws.on('error', reject);
+  it('站内应用拒绝非归属登录用户的 WebSocket 访问', async () => {
+    const base = `http://127.0.0.1:${gwPort}`;
+    const login = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({ username: 'freeuser', password: 'free-password' }),
     });
-    expect(received).toBe('echo:matrix');
+    const cookie = cookieOf(login);
+    const ws = new WebSocket(`ws://127.0.0.1:${gwPort}/app/priv/echo`, { headers: { cookie } });
+    const outcome = await new Promise<string>((resolve) => {
+      ws.on('open', () => resolve('open'));
+      ws.on('error', (error) => resolve(error.message));
+      ws.on('unexpected-server-response', (res) => resolve(`status:${res.statusCode}`));
+    });
+    expect(outcome).not.toBe('open');
     ws.close();
   });
 });

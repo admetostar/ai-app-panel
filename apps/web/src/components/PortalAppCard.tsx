@@ -2,7 +2,6 @@ import { LockOutlined } from '@ant-design/icons';
 import { Card, Tag, Tooltip } from 'antd';
 import type { ReactNode } from 'react';
 import type { AppCard } from '@aap/shared';
-import { Link } from 'react-router-dom';
 import { withBase } from '../lib/base';
 import { useQuery } from '@tanstack/react-query';
 import type { PortalBootstrap } from '@aap/shared';
@@ -30,14 +29,12 @@ function StatusDot({ status }: { status: AppCard['status'] }) {
 
 export function PortalAppCard({
   app,
-  unavailableHref = '/login',
   footerAction,
   hideQr = false,
   showVisibilityBadge = false,
   hideVisibilityLabel = false,
 }: {
   app: AppCard;
-  unavailableHref?: string | null;
   footerAction?: ReactNode;
   hideQr?: boolean;
   showVisibilityBadge?: boolean;
@@ -87,7 +84,7 @@ export function PortalAppCard({
             ) : null}
             {!app.accessible ? (
               <span className="aap-app-card__unavailable">
-                {app.visibility === 'login' ? '仅可克隆' : '暂不可用'}
+                {app.visibility === 'login' ? '仅可克隆' : app.visibility === 'public' ? '暂不可用' : '需登录访问'}
               </span>
             ) : null}
             {footerAction}
@@ -133,11 +130,5 @@ export function PortalAppCard({
     };
   }, [app.id, hideQr, target]);
 
-  if (app.accessible) {
-    return <a className="aap-app-card-link" href={target}>{inner}</a>;
-  }
-  if (unavailableHref) {
-    return <Link className="aap-app-card-link" to={unavailableHref}>{inner}</Link>;
-  }
-  return inner;
+  return app.accessible ? <a className="aap-app-card-link" href={target}>{inner}</a> : inner;
 }

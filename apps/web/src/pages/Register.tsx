@@ -8,6 +8,7 @@ import { api } from '../api/client';
 import { obtainPowToken } from '../lib/pow';
 import { usePostAuthRedirect } from '../state/session';
 import { AuthPanel } from '../components/AuthPanel';
+import { safeReturnTo } from '../lib/base';
 
 interface StartResult {
   registrationId: string;
@@ -17,8 +18,10 @@ interface StartResult {
 }
 
 export function RegisterPage() {
-  const redirect = usePostAuthRedirect();
   const [searchParams] = useSearchParams();
+  const requestedNext = safeReturnTo(searchParams.get('next'));
+  const returnTo = requestedNext ?? '/';
+  const redirect = usePostAuthRedirect(returnTo);
   const bootstrapQ = useQuery({
     queryKey: ['bootstrap'],
     queryFn: () => api<PortalBootstrap>('/api/portal/bootstrap'),
@@ -187,7 +190,16 @@ export function RegisterPage() {
             获取{registrationChannel === 'phone' ? '短信' : '邮箱'}验证码
           </Button>
           <div style={{ marginTop: 12, textAlign: 'center' }}>
-            <Link to="/login">已有账号？登录</Link>
+            <Link
+              to={returnTo === '/' && searchParams.get('nonPublicApp') !== '1'
+                ? '/login'
+                : `/login?${new URLSearchParams({
+                    ...(requestedNext ? { next: requestedNext } : {}),
+                    ...(searchParams.get('nonPublicApp') === '1' ? { nonPublicApp: '1' } : {}),
+                  }).toString()}`}
+            >
+              已有账号？登录
+            </Link>
           </div>
         </Form>
       ) : (
