@@ -1044,7 +1044,7 @@ function AppsTab(): ReactNode {
               <Form.Item name="visibility" label="可见性" initialValue={visMode}>
                 <Select options={VIS_OPTIONS} onChange={(v) => setVisMode(String(v))} />
               </Form.Item>
-              <Form.Item name="passUser" label="注入用户身份" valuePropName="checked" extra="向应用转发 X-AAP-Identity 签名头（自研应用识别登录用户）">
+              <Form.Item name="passUser" label="注入应用属主身份" valuePropName="checked" extra="普通路由向应用转发属主的 X-AAP-Identity 签名头；account 路由仍传递已登录访问者身份，且不影响费用归属">
                 <Switch />
               </Form.Item>
               {passUserOn ? (

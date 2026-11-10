@@ -1,4 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { randomBytes } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { PortalBootstrap } from '@aap/shared';
@@ -6,7 +10,7 @@ import { eq } from 'drizzle-orm';
 import { createApp } from '../app.js';
 import { loadConfig } from '../config/index.js';
 import { getDb } from '../db/index.js';
-import { users } from '../db/schema.js';
+import { apps, users } from '../db/schema.js';
 import { createGroup } from '../lib/groups.js';
 import { createPlan, updatePlan } from '../lib/billing.js';
 import { setSetting } from '../lib/settings.js';
@@ -15,11 +19,16 @@ import { setupTestDb, teardownTestDb } from './testkit.js';
 let server: Server;
 let baseUrl: string;
 let dbSchema: string;
+let webDir: string;
 
 beforeAll(async () => {
   ({ dir: dbSchema } = await setupTestDb());
-  // 测试配置：默认值但关闭 webDist（测试环境无前端产物）
-  const cfg = { ...loadConfig({}), webDist: null };
+  webDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aap-login-share-'));
+  fs.writeFileSync(
+    path.join(webDir, 'index.html'),
+    '<!doctype html><html><head><title>网站页面标题</title></head><body></body></html>',
+  );
+  const cfg = { ...loadConfig({}), webDist: webDir };
   const app = createApp(cfg);
   server = app.listen(0);
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -27,10 +36,41 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
+  fs.rmSync(webDir, { recursive: true, force: true });
   await teardownTestDb(dbSchema);
 });
 
 describe('W1 冒烟', () => {
+  it('非公开应用跳转登录页沿用应用分享标题、简介与图标元数据', async () => {
+    const appId = `private-login-share-${randomBytes(4).toString('hex')}`;
+    await getDb().insert(apps).values({
+      id: appId,
+      name: '登录页应用标题',
+      description: '登录页应用简介',
+      visibility: 'private',
+      anonymousAccess: 'none',
+      kind: 'upstream',
+      upstream: 'http://127.0.0.1:8081',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    const response = await fetch(`${baseUrl}/login?nonPublicApp=1&appId=${appId}`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('<title>登录页应用标题</title>');
+    expect(html).toContain('<meta property="og:title" content="登录页应用标题">');
+    expect(html).toContain('<meta property="og:description" content="登录页应用简介">');
+    expect(html).toContain(`<meta property="og:image" content="${baseUrl}/favicon.png">`);
+    expect(html).not.toContain('网站页面标题');
+  });
+
+  it('普通登录页仍使用站点页面标题', async () => {
+    const response = await fetch(`${baseUrl}/login`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('<title>网站页面标题</title>');
+  });
+
   it('GET /api/health 探活', async () => {
     const res = await fetch(`${baseUrl}/api/health`);
     expect(res.status).toBe(200);

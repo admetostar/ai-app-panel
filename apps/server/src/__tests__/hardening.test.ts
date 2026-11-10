@@ -664,14 +664,57 @@ describe('LLM 归因强制（P1-5）', () => {
     await setSetting('LLM_UNATTRIBUTED_POLICY', 'reject');
   });
 
-  it('invoked 身份环境变量：平台签名可验签且 uid 正确（M4 归因链）', async () => {
-    const env = await identityEnv('some-app', ownerId);
+  it('invoked 的 passUser 注入属主身份，account 路由注入实际访问者身份', async () => {
+    await getDb().insert(apps).values([
+      {
+        id: 'some-app',
+        name: 'passUser 应用',
+        visibility: 'private',
+        kind: 'package',
+        upstream: '',
+        ownerUserId: ownerId,
+        passUser: true,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      {
+        id: 'account-identity-app',
+        name: '账号路由应用',
+        visibility: 'private',
+        kind: 'package',
+        upstream: '',
+        ownerUserId: ownerId,
+        passUser: false,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    ]);
+    const env = await identityEnv('some-app', otherId);
     expect(env.AAP_IDENTITY_PAYLOAD).toBeTruthy();
     const secret = getSetting('AAP_SIGN_SECRET')!;
     const v = verifyIdentity(env.AAP_IDENTITY_PAYLOAD!, env.AAP_IDENTITY_SIG!, secret, 'some-app');
     expect(v.ok).toBe(true);
     if (v.ok) expect(v.payload.uid).toBe(String(ownerId));
-    expect((await identityEnv('some-app', null)).AAP_IDENTITY_PAYLOAD).toBeUndefined();
+    expect((await identityEnv('account-identity-app', ownerId)).AAP_IDENTITY_PAYLOAD).toBeUndefined();
+    const accountEnv = await identityEnv('account-identity-app', otherId, true);
+    const accountIdentity = verifyIdentity(
+      accountEnv.AAP_IDENTITY_PAYLOAD!,
+      accountEnv.AAP_IDENTITY_SIG!,
+      secret,
+      'account-identity-app',
+    );
+    expect(accountIdentity.ok).toBe(true);
+    if (accountIdentity.ok) expect(accountIdentity.payload.uid).toBe(String(otherId));
+    const anonymousPassUser = await identityEnv('some-app', null);
+    const anonymousPassUserIdentity = verifyIdentity(
+      anonymousPassUser.AAP_IDENTITY_PAYLOAD!,
+      anonymousPassUser.AAP_IDENTITY_SIG!,
+      secret,
+      'some-app',
+    );
+    expect(anonymousPassUserIdentity.ok).toBe(true);
+    if (anonymousPassUserIdentity.ok) expect(anonymousPassUserIdentity.payload.uid).toBe(String(ownerId));
+    expect((await identityEnv('account-identity-app', null, true)).AAP_IDENTITY_PAYLOAD).toBeUndefined();
   });
 });
 
@@ -1220,12 +1263,17 @@ describe('登录 401 信息泄露收敛（P2-12）', () => {
       const skillEntry = archive.getEntry('SKILL.md');
       expect(skillEntry).toBeDefined();
       expect(skillEntry?.getData().toString('utf8').startsWith('---')).toBe(true);
+      expect(skillEntry?.getData().toString('utf8')).toContain('v0.3.8');
+      expect(skillEntry?.getData().toString('utf8')).toContain('自定义访问别名');
     }
 
     const markdown = await fetch(`${base}/api/dev/guide/download?format=md`);
     expect(markdown.status).toBe(200);
     expect(markdown.headers.get('content-disposition')).toContain('awpk-app-develop.md');
-    expect((await markdown.text()).startsWith('---')).toBe(true);
+    const markdownBody = await markdown.text();
+    expect(markdownBody.startsWith('---')).toBe(true);
+    expect(markdownBody).toContain('v0.3.8');
+    expect(markdownBody).toContain('自定义访问别名');
     expect((await fetch(`${base}/api/dev/guide/download?format=exe`)).status).toBe(400);
   });
 });

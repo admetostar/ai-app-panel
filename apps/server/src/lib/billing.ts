@@ -86,7 +86,7 @@ export async function listPlans(onlyEnabled = false): Promise<PlanRow[]> {
   const rows = await getDb()
     .select()
     .from(membershipPlans)
-    .orderBy(sql`price_fen`);
+    .orderBy(membershipPlans.tier, membershipPlans.id);
   return (onlyEnabled ? rows.filter((r) => r.enabled) : rows).map((r) => ({
     id: r.id,
     name: r.name,

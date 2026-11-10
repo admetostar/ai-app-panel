@@ -29,6 +29,7 @@ import { defaultAvatarForUser } from '../lib/userAvatar.js';
 import { listPlans } from '../lib/billing.js';
 import { ensureInviteCode } from '../lib/invites.js';
 import { aliyunSmsConfigured } from '../lib/aliyunSms.js';
+import { config } from '../config/index.js';
 
 export const authRouter = Router();
 
@@ -573,7 +574,7 @@ authRouter.get('/auth/oidc/callback', h(async (req, res) => {
     await recordSuccess(ip, `oidc:${profile.subject}`);
     await createSession(res, { id: row!.id }, { ip, userAgent: req.headers['user-agent'], authState: 'full', grantStepUp: true });
     await audit(`oidc:${profile.subject}`, ip, 'oidc.login', { userId: row!.id });
-    res.redirect(302, '/');
+    res.redirect(302, `${config.gatewayPrefix ?? ''}${profile.returnTo ?? '/'}`);
   } catch (err) {
     if (err instanceof HttpError) {
       res.redirect(302, `/login?error=${encodeURIComponent(err.code)}`);

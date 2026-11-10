@@ -5,9 +5,10 @@
  */
 import { eq } from 'drizzle-orm';
 import { getDb } from '../db/index.js';
-import { apps } from '../db/schema.js';
+import { apps, users } from '../db/schema.js';
 import { decryptSecret } from '../lib/cryptoSecrets.js';
 import { config } from '../config/index.js';
+import type { ManifestRouteAccess } from './staticApp.js';
 
 export type AppRow = typeof apps.$inferSelect;
 
@@ -23,8 +24,18 @@ export function appHasLlmCapability(app: Pick<AppRow, 'manifestJson'>): boolean 
   }
 }
 
-export function requiresOwnerIdentity(app: Pick<AppRow, 'visibility' | 'manifestJson'>): boolean {
-  return app.visibility === 'public' && appHasLlmCapability(app);
+export function requiresOwnerBilling(app: Pick<AppRow, 'manifestJson'>): boolean {
+  return appHasLlmCapability(app);
+}
+
+export async function hasValidLlmOwner(app: Pick<AppRow, 'ownerUserId' | 'manifestJson'>): Promise<boolean> {
+  if (!requiresOwnerBilling(app)) return true;
+  if (app.ownerUserId == null) return false;
+  return Boolean((await getDb()
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, app.ownerUserId))
+    .limit(1))[0]);
 }
 
 export interface UrlSecret {
@@ -79,7 +90,7 @@ function isAdminUser(user: { role: string } | null | undefined): boolean {
 }
 
 /**
- * 可见性模型（P）：
+ * 登录用户可见性（P）：
  *  - public：全员（含匿名）
  *  - login：站内共享，仅归属者与管理员可直接访问；其他用户只能克隆
  *  - private：门户中仅归属者可见；分享链接需要登录后访问
@@ -87,8 +98,27 @@ function isAdminUser(user: { role: string } | null | undefined): boolean {
 export async function canAccess(
   app: AppRow,
   user: { id: number; authState: string; role: string } | null | undefined,
+  request?: { method: string; path: string; websocket?: boolean },
 ): Promise<boolean> {
+  const routeAccess = request
+    ? manifestRouteAccess(app, request.method, request.path, request.websocket)
+    : null;
+  if (user && routeAccess?.access === 'account' && user.authState !== 'full') return false;
   if (isAdminUser(user)) return true;
+  if (!user) {
+    if (app.anonymousAccess === 'none') return false;
+    if (app.anonymousAccessPolicy === 'legacy' && !hasManifestRouteDefinitions(app)) return true;
+    if (!request) {
+      return hasManifestAnonymousRoutes(app, app.anonymousAccess);
+    }
+    const rule = routeAccess ?? manifestRouteAccess(app, request.method, request.path, request.websocket);
+    if (!rule || rule.access === 'account') return false;
+    if (
+      app.anonymousAccess === 'read' &&
+      (request.websocket || !['GET', 'HEAD', 'OPTIONS'].includes(request.method.toUpperCase()))
+    ) return false;
+    return app.anonymousAccess === 'write' || rule.access === 'anonymous_read';
+  }
   switch (app.visibility) {
     case 'public':
       return true;
@@ -99,6 +129,83 @@ export async function canAccess(
     default:
       return false;
   }
+}
+
+export function manifestRouteAccess(
+  app: Pick<AppRow, 'manifestJson'>,
+  method: string,
+  requestPath: string,
+  websocket = false,
+): ManifestRouteAccess | null {
+  if (!app.manifestJson) return null;
+  let manifest: { routes?: unknown };
+  try {
+    manifest = JSON.parse(app.manifestJson) as { routes?: unknown };
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(manifest.routes)) return null;
+  const normalizedPath = normalizeRoutePath(requestPath);
+  let best: ManifestRouteAccess | null = null;
+  let bestSpecificity = -1;
+  for (const rawRule of manifest.routes) {
+    if (!rawRule || typeof rawRule !== 'object' || Array.isArray(rawRule)) continue;
+    const rule = rawRule as Partial<ManifestRouteAccess>;
+    if (
+      typeof rule.path !== 'string' ||
+      !Array.isArray(rule.methods) ||
+      !rule.methods.every((value) => typeof value === 'string') ||
+      (rule.access !== 'anonymous_read' && rule.access !== 'anonymous_write' && rule.access !== 'account')
+    ) continue;
+    if (!rule.methods.includes(websocket ? 'WS' : method.toUpperCase())) continue;
+    const pattern = normalizeRoutePath(rule.path);
+    const matches = pattern.endsWith('*')
+      ? normalizedPath.startsWith(pattern.slice(0, -1))
+      : normalizedPath === pattern;
+    if (!matches) continue;
+    const specificity = pattern.endsWith('*') ? pattern.length - 1 : Number.MAX_SAFE_INTEGER;
+    if (specificity > bestSpecificity) {
+      best = rule as ManifestRouteAccess;
+      bestSpecificity = specificity;
+    }
+  }
+  return best;
+}
+
+export function hasManifestAnonymousRoutes(
+  app: Pick<AppRow, 'manifestJson'>,
+  permission?: 'read' | 'write',
+): boolean {
+  if (!app.manifestJson) return false;
+  try {
+    const manifest = JSON.parse(app.manifestJson) as { routes?: unknown };
+    return Array.isArray(manifest.routes) && manifest.routes.some((item) => {
+      if (!item || typeof item !== 'object') return false;
+      const access = (item as { access?: unknown }).access;
+      return permission === 'write'
+        ? access === 'anonymous_read' || access === 'anonymous_write'
+        : permission === 'read'
+          ? access === 'anonymous_read'
+          : access === 'anonymous_read' || access === 'anonymous_write';
+    });
+  } catch {
+    return false;
+  }
+}
+
+function hasManifestRouteDefinitions(app: Pick<AppRow, 'manifestJson'>): boolean {
+  if (!app.manifestJson) return false;
+  try {
+    const manifest = JSON.parse(app.manifestJson) as { routes?: unknown };
+    return Array.isArray(manifest.routes) && manifest.routes.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeRoutePath(value: string): string {
+  const path = value.startsWith('/') ? value : `/${value}`;
+  return path.length > 1 ? path.replace(/\/+$/, '') : path;
 }
 
 /** 门户卡片是否对该用户展示（private 且非归属者/管理员 → 隐藏） */

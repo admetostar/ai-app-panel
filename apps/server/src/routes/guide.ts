@@ -5,7 +5,7 @@
  *  - GET /api/dev/guide/download 公开：下载 skill、ZIP 或 Markdown 格式的 AWPK 开发技能
  *  - GET /api/dev/docs    仅管理员：平台使用说明（README / 内部实现约定）
  * 文件查找顺序：包内 assets（Docker 镜像/原生包）→ 仓库 docs（开发态）。
- * docs 是单一来源；pnpm skills:sync 生成 skill 包并同步两份文件到 apps/server/assets。
+ * docs 是单一来源；pnpm skills:sync 生成 skill 下载包并同步下载文件和权威 Markdown 到 apps/server/assets。
  */
 import fs from 'node:fs';
 import path from 'node:path';

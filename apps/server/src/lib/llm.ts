@@ -7,7 +7,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { getDb, type DbExecutor } from '../db/index.js';
-import { llmAppTokens, llmBalanceCache, llmLedger, llmRoutes, llmUpstreams, apps } from '../db/schema.js';
+import { llmAppTokens, llmBalanceCache, llmLedger, llmRoutes, llmUpstreams, apps, users } from '../db/schema.js';
 import { decryptSecret, encryptSecret } from './cryptoSecrets.js';
 import { HttpError } from './httpError.js';
 import { getSetting, getSettingInt } from './settings.js';
@@ -90,6 +90,28 @@ export async function appLlmAllowed(appId: string): Promise<boolean> {
   if (!row) return true;
   if (!row.manifestJson) return true;
   return appHasLlmCapability(row);
+}
+
+/** LLM capability spends are always charged to the current app owner, not the caller. */
+export async function resolveLlmBillingUserId(appId: string, callerUserId: number | null): Promise<number | null> {
+  const app = (await getDb()
+    .select({ ownerUserId: apps.ownerUserId, manifestJson: apps.manifestJson })
+    .from(apps)
+    .where(eq(apps.id, appId)))[0];
+  if (!app) return callerUserId;
+  if (app.ownerUserId == null) {
+    if (appHasLlmCapability(app)) {
+      throw new HttpError(503, 'APP_OWNER_UNAVAILABLE', '无法确认大模型应用的费用归属账号');
+    }
+    return callerUserId;
+  }
+  const owner = (await getDb()
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, app.ownerUserId))
+    .limit(1))[0];
+  if (!owner) throw new HttpError(503, 'APP_OWNER_UNAVAILABLE', '无法确认大模型应用的费用归属账号');
+  return owner.id;
 }
 
 /** 自动签发运行时凭据（幂等；重复上传复用）。对全部包签发（AAP_TOKEN 同时

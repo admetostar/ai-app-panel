@@ -206,12 +206,17 @@ export const inviteCodes = pgTable('invite_codes', {
 
 export const apps = pgTable('apps', {
   id: varchar('id', { length: 512 }).primaryKey(), // 应用 slug；克隆使用 clone_ + 8 位十六进制
+  alias: varchar('app_alias', { length: 63 }),
   name: varchar('name', { length: 191 }).notNull(),
   description: text('description').notNull().default(''),
   icon: text('icon'),
   category: text('category').notNull().default('未分类'),
   /** 'public' 公开 | 'login' 站内共享（仅归属者/管理员可直访） | 'private' 分享链接需登录 */
   visibility: text('visibility').notNull().default('login'),
+  /** 独立于可见范围的匿名请求权限：none | read | write */
+  anonymousAccess: text('anonymous_access').$type<'none' | 'read' | 'write'>().notNull().default('none'),
+  /** manifest | legacy（仅迁移时用于兼容旧公开应用） */
+  anonymousAccessPolicy: text('anonymous_access_policy').$type<'manifest' | 'legacy'>().notNull().default('manifest'),
   /** 应用形态：upstream 反代上游 | html 门户托管的静态页（简单 HTML / .awpk html 包） */
   kind: text('kind').notNull().default('upstream'),
   /** 归属者（用户自建应用默认私有可见的依据；管理员创建 = 该管理员 id） */
@@ -242,7 +247,10 @@ export const apps = pgTable('apps', {
   lastProbeAt: bigint('last_probe_at', { mode: 'number' }),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
-}, (t) => [index('apps_owner_clone_idx').on(t.ownerUserId, t.clonedFromAppId)]);
+}, (t) => [
+  index('apps_owner_clone_idx').on(t.ownerUserId, t.clonedFromAppId),
+  uniqueIndex('apps_alias_uq').on(t.alias).where(sql`${t.alias} IS NOT NULL`),
+]);
 
 // ---------- 用户分组（会员等级 / 自定义组） ----------
 
@@ -487,6 +495,7 @@ export const oidcStates = pgTable('oidc_states', {
   state: varchar('state', { length: 191 }).primaryKey(),
   nonce: text('nonce').notNull(),
   codeVerifier: text('code_verifier').notNull(),
+  returnTo: text('return_to'),
   ip: varchar('ip', { length: 191 }),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),

@@ -54,10 +54,22 @@ export function oidcAdminSubjects(): string[] {
     .filter(Boolean);
 }
 
+function safeReturnTo(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw.startsWith('/') || raw.startsWith('//')) return null;
+  try {
+    const url = new URL(raw, 'https://aap.invalid');
+    if (url.origin !== 'https://aap.invalid') return null;
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return null;
+  }
+}
+
 /** 生成授权跳转 URL（PKCE + state/nonce 入库，10 分钟有效） */
 export async function buildLoginRedirect(req: Request): Promise<string> {
   if (!oidcEnabled()) throw new HttpError(403, 'OIDC_DISABLED', 'OIDC 登录未配置');
   const client = await getClient(req);
+  const returnTo = safeReturnTo(req.query.returnTo);
   const state = randomBytes(16).toString('hex');
   const nonce = randomBytes(16).toString('hex');
   const codeVerifier = randomBytes(32).toString('hex');
@@ -67,6 +79,7 @@ export async function buildLoginRedirect(req: Request): Promise<string> {
       state,
       nonce,
       codeVerifier,
+      returnTo,
       ip: req.clientIp ?? null,
       createdAt: Date.now(),
       expiresAt: Date.now() + 10 * 60_000,
@@ -94,7 +107,7 @@ export interface OidcProfile {
 export async function exchangeCallback(
   req: Request,
   query: { code?: string; state?: string },
-): Promise<OidcProfile> {
+): Promise<OidcProfile & { returnTo: string | null }> {
   const client = await getClient(req);
   const state = String(query.state ?? '');
   const row = (await getDb().select().from(oidcStates).where(eq(oidcStates.state, state)))[0];
@@ -119,6 +132,7 @@ export async function exchangeCallback(
     subject,
     email: userinfo.email ?? null,
     name: userinfo.name || userinfo.preferred_username || userinfo.email || subject,
+    returnTo: row.returnTo,
   };
 }
 

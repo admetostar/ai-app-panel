@@ -16,8 +16,7 @@ import { config } from '../config/index.js';
 import { getDb } from '../db/index.js';
 import { apps, users } from '../db/schema.js';
 import { appSiteDir } from '../gateway/staticApp.js';
-import { appHasLlmCapability } from '../gateway/registry.js';
-import { signIdentity } from '../gateway/identity.js';
+import { signAppIdentity } from '../gateway/identity.js';
 import type { SessionUser } from '../types.js';
 import { getAppLlmProvision } from './llm.js';
 import { getSetting, getSettingInt } from './settings.js';
@@ -100,7 +99,7 @@ export async function baseEnv(appId: string, extra: Record<string, string> = {})
     if (v !== undefined) env[k] = v;
   }
   // passUser 应用本地验签密钥（app-develop.skill §三：应用可自行校验代理注入的
-  // x-aap-identity 头按用户隔离数据）。AAP_ 前缀保留名上传时已拒声明，包覆盖不了；
+  // x-aap-identity 头并按属主隔离数据）。AAP_ 前缀保留名上传时已拒声明，包覆盖不了；
   // 轮换/开关 passUser 后由管理端 stopPersistentFor/stopAllPersistent 触发重启生效。
   const passUser = await (await getDb()
     .select({ passUser: apps.passUser })
@@ -130,45 +129,53 @@ export async function baseEnv(appId: string, extra: Record<string, string> = {})
 }
 
 /**
- * 运行用户签名身份（M4 出口标准：沙箱内 LLM 调用计入调用者）。
- * runner 经 AAP_IDENTITY_PAYLOAD/SIG 回传 x-aap-identity*，/api/aap/llm/chat
- * 验签归因 → 网关预检按用户余额拦截与扣费。invoked：归因到发起执行的用户
- * （10 分钟 TTL 覆盖 30s 执行窗口绰绰有余）；persistent 为多用户长驻，
- * 归因走代理逐请求注入的身份头（见 proxyToSandbox），不放进程环境；公开 LLM 应用的
- * invoked 身份固定为属主。
+ * 运行路由身份（M4 出口标准：应用可按需识别应用属主或当前平台访问者）。
+ * runner 经 AAP_IDENTITY_PAYLOAD/SIG 回传 x-aap-identity*，LLM 网关验签并单独按
+ * appId 解析费用属主。invoked 的 passUser 身份代表应用属主；account 路由注入
+ * 实际访问者身份（10 分钟 TTL 覆盖 30s 执行窗口）。persistent 为多用户长驻，
+ * 身份走代理逐请求注入（见 proxyToSandbox），不放进程环境。LLM 计费与身份分离。
  */
-export async function identityEnv(appId: string, userId: number | null): Promise<Record<string, string>> {
-  if (userId === null) return {};
+export async function identityEnv(
+  appId: string,
+  userId: number | null,
+  forceIdentity = false,
+): Promise<Record<string, string>> {
   const app = (await getDb()
     .select({
+      id: apps.id,
+      ownerUserId: apps.ownerUserId,
       passUser: apps.passUser,
       visibility: apps.visibility,
       manifestJson: apps.manifestJson,
     })
     .from(apps)
     .where(eq(apps.id, appId)))[0];
-  if (!app || (!app.passUser && !(app.visibility === 'public' && appHasLlmCapability(app)))) return {};
-  const u = (await getDb().select().from(users).where(eq(users.id, userId)))[0];
-  if (!u) return {};
-  const su: SessionUser = {
-    id: u.id,
-    kind: u.kind === 'oidc' ? 'oidc' : 'local',
-    subject: u.kind === 'oidc' ? `oidc:${u.email ?? u.id}` : `local:${u.username ?? u.id}`,
-    username: u.username,
-    email: u.email,
-    phone: u.phone,
-    name: u.name || u.username || `用户${u.id}`,
-    role: u.role === 'admin' ? 'admin' : 'user',
-    status: u.status,
-    sessionId: 'aap-sandbox',
-    authState: 'full',
-    stepUpUntil: null,
-    plan: u.plan === 'member' ? 'member' : 'free',
-    mfaEnabled: Boolean(u.mfaEnabled),
-    mustChangePassword: Boolean(u.mustChangePassword),
-    membershipSelectionRequired: Boolean(u.membershipSelectionRequired),
-  };
-  const idn = signIdentity(su, appId);
+  if (!app || (!app.passUser && !forceIdentity) || (forceIdentity && userId === null)) return {};
+
+  let user: SessionUser | undefined;
+  if (forceIdentity && userId !== null) {
+    const u = (await getDb().select().from(users).where(eq(users.id, userId)))[0];
+    if (!u) return {};
+    user = {
+      id: u.id,
+      kind: u.kind === 'oidc' ? 'oidc' : 'local',
+      subject: u.kind === 'oidc' ? `oidc:${u.email ?? u.id}` : `local:${u.username ?? u.id}`,
+      username: u.username,
+      email: u.email,
+      phone: u.phone,
+      name: u.name || u.username || `用户${u.id}`,
+      role: u.role === 'admin' ? 'admin' : 'user',
+      status: u.status,
+      sessionId: 'aap-sandbox',
+      authState: 'full',
+      stepUpUntil: null,
+      plan: u.plan === 'member' ? 'member' : 'free',
+      mfaEnabled: Boolean(u.mfaEnabled),
+      mustChangePassword: Boolean(u.mustChangePassword),
+      membershipSelectionRequired: Boolean(u.membershipSelectionRequired),
+    };
+  }
+  const idn = await signAppIdentity(app, user, { force: forceIdentity });
   if (!idn) return {};
   return { AAP_IDENTITY_PAYLOAD: idn.payload, AAP_IDENTITY_SIG: idn.sig };
 }
@@ -187,7 +194,13 @@ function runInvokedOnce(
   appId: string,
   entry: string,
   input: unknown,
-  opts: { userId: number | null; timeoutMs?: number; platformBase?: string },
+  opts: {
+    userId: number | null;
+    timeoutMs?: number;
+    platformBase?: string;
+    forceIdentity?: boolean;
+    suppressIdentity?: boolean;
+  },
 ): Promise<InvokedResult> {
   const started = Date.now();
   const timeoutMs = opts.timeoutMs ?? 30_000;
@@ -201,10 +214,12 @@ function runInvokedOnce(
           AAP_MODE: 'run',
           AAP_MOD_PATH: packageEntryPath(appId, entry),
           AAP_RUN_ID: randomId(),
-          AAP_USER_ID: opts.userId !== null ? String(opts.userId) : '',
+          // AAP_USER_ID remains the execution requester; signed identity is independently
+          // selected as the owner for passUser or the requester for account routes.
+          AAP_USER_ID: !opts.suppressIdentity && opts.userId !== null ? String(opts.userId) : '',
           AAP_DEBUG: '0',
           ...(opts.platformBase ? { AAP_PLATFORM: opts.platformBase } : {}),
-          ...await identityEnv(appId, opts.userId),
+          ...await identityEnv(appId, opts.userId, opts.forceIdentity),
         }),
         stdio: ['pipe', 'pipe', 'pipe'],
         ...sandboxSpawnUser(),
@@ -305,7 +320,13 @@ export function runInvoked(
   appId: string,
   entry: string,
   input: unknown,
-  opts: { userId: number | null; timeoutMs?: number; platformBase?: string },
+  opts: {
+    userId: number | null;
+    timeoutMs?: number;
+    platformBase?: string;
+    forceIdentity?: boolean;
+    suppressIdentity?: boolean;
+  },
 ): Promise<InvokedResult> {
   // 排队上限：执行槽满且队列也满时直接 429（无界排队会积压请求内存）
   if (activeRuns >= sandboxMaxConcurrent() && runQueue.length >= MAX_QUEUE) {

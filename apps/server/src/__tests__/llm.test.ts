@@ -559,17 +559,25 @@ describe('LLM 能力声明闸（审计 F1：未声明 llm 不得直连 /v1 花�
     await getDb()
       .insert(users)
       .values({ id: U901, kind: 'local', username: 'u901', name: 'u901', role: 'user', createdAt: Date.now() });
+    const ownerId = 902;
+    await getDb()
+      .insert(users)
+      .values({ id: ownerId, kind: 'local', username: 'u902', name: 'u902', role: 'user', createdAt: Date.now() });
     await grantTokens(U901, 100_000, 'f1', 1);
+    await grantTokens(ownerId, 100_000, 'f1', 1);
     await insertPackageApp('withllm-f1', ['llm']);
+    await getDb().update(apps).set({ ownerUserId: ownerId }).where(eq(apps.id, 'withllm-f1'));
     const token = await createAppToken('withllm-f1', 'f1', null);
 
-    const before = await balanceOf(U901);
+    const callerBefore = await balanceOf(U901);
+    const ownerBefore = await balanceOf(ownerId);
     const res = await chat(
       { model: 'test-model', messages: [{ role: 'user', content: 'hi' }] },
       { authorization: `Bearer ${token}`, ...identityHeaders(U901, 'withllm-f1') },
     );
     expect(res.status).toBe(200);
-    expect(await balanceOf(U901)).toBeLessThan(before);
+    expect(await balanceOf(U901)).toBe(callerBefore);
+    expect(await balanceOf(ownerId)).toBeLessThan(ownerBefore);
 
     // manifest 存在但没写 capabilities：按未声明拒绝（fail-closed）
     await getDb()

@@ -32,7 +32,18 @@ export function LoginPage() {
   const oidcErrorMsg = oidcError ? (oidcErrorMessages[oidcError] ?? `登录失败（${oidcError}）`) : null;
   const nonPublicApp = searchParams.get('nonPublicApp') === '1';
   const requestedNext = safeReturnTo(searchParams.get('next'));
-  const returnTo = requestedNext ?? (nonPublicApp ? '/my-apps' : '/account');
+  const requestedAppId = searchParams.get('appId');
+  const requestedTarget = safeReturnTo(searchParams.get('target'));
+  const validAppId = requestedAppId && (/^[a-z0-9][a-z0-9-]{0,63}$/.test(requestedAppId) || /^clone_[0-9a-f]{8}$/.test(requestedAppId))
+    ? requestedAppId
+    : null;
+  const appTarget = validAppId && requestedTarget?.startsWith(`/app/${validAppId}/`)
+    ? requestedTarget
+    : validAppId ? `/app/${validAppId}/` : null;
+  const appLoginReturn = validAppId
+    ? `/app-login-return?${new URLSearchParams({ appId: validAppId, target: appTarget! }).toString()}`
+    : null;
+  const returnTo = appLoginReturn ?? requestedNext ?? (nonPublicApp ? '/my-apps' : '/account');
   const { data: boot } = useQuery({
     queryKey: ['bootstrap'],
     queryFn: () => api<PortalBootstrap>('/api/portal/bootstrap'),
@@ -148,7 +159,9 @@ export function LoginPage() {
         <Alert
           type="warning"
           showIcon
-          message={`您正在访问${boot?.branding.siteName?.trim() || '本站'}的非公开应用，请先登录或注册账号。`}
+          message={validAppId
+            ? `当前应用${validAppId}未开放匿名访问，请先登录`
+            : `您正在访问${boot?.branding.siteName?.trim() || '本站'}的非公开应用，请先登录或注册账号。`}
           style={{ marginBottom: 16 }}
         />
       ) : null}
@@ -227,7 +240,10 @@ export function LoginPage() {
                 <span style={{ color: 'var(--aap-text-secondary)', fontSize: 12 }}>或</span>
                 <div style={{ flex: 1, height: 1, background: 'var(--aap-border)' }} />
               </div>
-              <Button block href={withBase('/api/auth/oidc/start')}>
+              <Button
+                block
+                href={withBase(`/api/auth/oidc/start?${new URLSearchParams({ returnTo }).toString()}`)}
+              >
                 使用 OIDC 单点登录
               </Button>
             </>

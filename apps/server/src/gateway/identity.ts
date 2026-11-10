@@ -13,11 +13,44 @@ import { getDb } from '../db/index.js';
 import { users } from '../db/schema.js';
 import type { SessionUser } from '../types.js';
 import { getSetting } from '../lib/settings.js';
-import { requiresOwnerIdentity, type AppRow } from './registry.js';
+import type { AppRow } from './registry.js';
 
 export interface SignedIdentity {
   payload: string;
   sig: string;
+}
+
+function sessionUserFromOwner(owner: {
+  id: number;
+  kind: string;
+  username: string | null;
+  email: string | null;
+  name: string;
+}): Pick<SessionUser, 'id' | 'subject' | 'name' | 'email' | 'kind'> {
+  const kind = owner.kind === 'oidc' ? 'oidc' : 'local';
+  return {
+    id: owner.id,
+    subject: kind === 'oidc' ? `oidc:${owner.email ?? owner.id}` : `local:${owner.username ?? owner.id}`,
+    name: owner.name || owner.username || `用户${owner.id}`,
+    email: owner.email,
+    kind,
+  };
+}
+
+async function signOwnerIdentity(app: Pick<AppRow, 'id' | 'ownerUserId'>): Promise<SignedIdentity | null> {
+  if (app.ownerUserId === null) return null;
+  const owner = (await getDb()
+    .select({
+      id: users.id,
+      kind: users.kind,
+      username: users.username,
+      email: users.email,
+      name: users.name,
+    })
+    .from(users)
+    .where(eq(users.id, app.ownerUserId))
+    .limit(1))[0];
+  return owner ? signIdentity(sessionUserFromOwner(owner), app.id) : null;
 }
 
 export function signIdentity(
@@ -45,35 +78,16 @@ export function signIdentity(
 export async function signAppIdentity(
   app: Pick<AppRow, 'id' | 'passUser' | 'ownerUserId' | 'visibility' | 'manifestJson'>,
   user: SessionUser | null | undefined,
+  options: { force?: boolean } = {},
 ): Promise<SignedIdentity | null> {
-  if (requiresOwnerIdentity(app)) {
-    if (app.ownerUserId == null) return null;
-    const owner = (await getDb()
-      .select({
-        id: users.id,
-        kind: users.kind,
-        username: users.username,
-        email: users.email,
-        name: users.name,
-      })
-      .from(users)
-      .where(eq(users.id, app.ownerUserId)))[0];
-    if (!owner) return null;
-    return signIdentity({
-      id: owner.id,
-      kind: owner.kind === 'oidc' ? 'oidc' : 'local',
-      subject: owner.kind === 'oidc' ? `oidc:${owner.email ?? owner.id}` : `local:${owner.username ?? owner.id}`,
-      name: owner.name || owner.username || `用户${owner.id}`,
-      username: owner.username,
-      email: owner.email,
-    }, app.id);
-  }
-  return app.passUser && user ? signIdentity(user, app.id) : null;
+  if (options.force) return user ? signIdentity(user, app.id) : null;
+  if (app.passUser) return signOwnerIdentity(app);
+  return null;
 }
 
 /** 应用侧验签（供自研应用后端参考实现；平台测试用）。
  *  exp 强制存在且未过期；jti 一次性（TTL 窗口内防重放，P3-16）——
- *  平台内部归因（/api/aap/llm/chat 读沙箱环境变量身份）传 allowReplay 豁免，
+ * 平台内部调用（/api/aap/llm/chat 读沙箱环境变量身份）传 allowReplay 豁免，
  *  因为同一次 invoked 运行会多次携带同一身份。 */
 const seenJti = new Map<string, number>(); // jti → exp
 

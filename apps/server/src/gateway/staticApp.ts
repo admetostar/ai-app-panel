@@ -255,7 +255,13 @@ export function parseEnvSpec(value: unknown): Record<string, ManifestEnvVar> {
   return out;
 }
 
-/** 校验 .awpk manifest（app-develop.skill v0.2 契约），返回规范化字段 */
+export interface ManifestRouteAccess {
+  path: string;
+  methods: string[];
+  access: 'anonymous_read' | 'anonymous_write' | 'account';
+}
+
+/** 校验 .awpk manifest（app-develop.skill v0.3 契约），返回规范化字段 */
 export function validateManifest(m: Record<string, unknown>): {
   name: string;
   displayName: string;
@@ -266,6 +272,7 @@ export function validateManifest(m: Record<string, unknown>): {
   capabilities: string[];
   network: string[];
   route: string | null;
+  routes: ManifestRouteAccess[];
   env: Record<string, ManifestEnvVar>;
   requirements: string[];
 } {
@@ -288,6 +295,7 @@ export function validateManifest(m: Record<string, unknown>): {
   }
   const network = Array.isArray(m.network) ? m.network.map(String) : [];
   const route = m.route ? String(m.route) : null;
+  const routes = parseManifestRoutes(m.routes);
   if (type !== 'python' && m.requirements != null) throw new Error('manifest.requirements 仅 python 包支持');
   const requirements = parseRequirements(m.requirements);
   // display_name 会出现在门户卡片与网关错误页：限长并剥除 HTML 敏感字符（纵深，
@@ -306,9 +314,64 @@ export function validateManifest(m: Record<string, unknown>): {
     capabilities: caps,
     network,
     route,
+    routes,
     env: parseEnvSpec(m.env),
     requirements,
   };
+}
+
+const ROUTE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE', 'WS']);
+
+function parseManifestRoutes(value: unknown): ManifestRouteAccess[] {
+  if (value == null) return [];
+  if (!Array.isArray(value) || value.length > 128) {
+    throw new Error('manifest.routes 必须是最多 128 项的数组');
+  }
+  const seen = new Set<string>();
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`manifest.routes[${index}] 必须是对象`);
+    }
+    const item = entry as Record<string, unknown>;
+    const routePath = item.path;
+    if (
+      typeof routePath !== 'string' ||
+      !routePath.startsWith('/') ||
+      routePath.includes('?') ||
+      routePath.includes('#') ||
+      routePath.includes('\\') ||
+      routePath.split('/').some((part) => part === '.' || part === '..') ||
+      (routePath.includes('*') && !routePath.endsWith('*'))
+    ) {
+      throw new Error(`manifest.routes[${index}].path 必须是绝对路径或以 * 结尾的前缀路径`);
+    }
+    if (!Array.isArray(item.methods) || item.methods.length === 0) {
+      throw new Error(`manifest.routes[${index}].methods 必须是非空数组`);
+    }
+    const methods = item.methods.map((method) => String(method).toUpperCase());
+    if (methods.some((method) => !ROUTE_METHODS.has(method))) {
+      throw new Error(`manifest.routes[${index}].methods 包含不支持的方法`);
+    }
+    if (new Set(methods).size !== methods.length) {
+      throw new Error(`manifest.routes[${index}].methods 不能重复`);
+    }
+    const access = item.access;
+    if (access !== 'anonymous_read' && access !== 'anonymous_write' && access !== 'account') {
+      throw new Error(`manifest.routes[${index}].access 必须是 anonymous_read、anonymous_write 或 account`);
+    }
+    if (
+      access === 'anonymous_read' &&
+      methods.some((method) => !['GET', 'HEAD', 'OPTIONS'].includes(method))
+    ) {
+      throw new Error(`manifest.routes[${index}] 的 anonymous_read 仅允许 GET、HEAD、OPTIONS`);
+    }
+    for (const method of methods) {
+      const key = `${routePath}\n${method}`;
+      if (seen.has(key)) throw new Error(`manifest.routes 中路径和方法重复: ${routePath} ${method}`);
+      seen.add(key);
+    }
+    return { path: routePath, methods, access };
+  });
 }
 
 /**
@@ -383,19 +446,29 @@ function escapeMetaContent(value: string): string {
 export function injectAppShareMetadata(html: string, metadata: AppShareMetadata): string {
   const imageTags = metadata.imageUrl
     ? `<meta property="og:image" content="${escapeMetaContent(metadata.imageUrl)}">` +
+      `<link rel="image_src" href="${escapeMetaContent(metadata.imageUrl)}">` +
       '<meta name="twitter:card" content="summary">' +
       `<meta name="twitter:image" content="${escapeMetaContent(metadata.imageUrl)}">`
     : '';
+  const escapedTitle = escapeMetaContent(metadata.title);
+  const titleTag = `<title>${escapedTitle}</title>`;
   const tags =
-    `<meta property="og:title" content="${escapeMetaContent(metadata.title)}">` +
+    `<meta name="description" content="${escapeMetaContent(metadata.description)}">` +
+    `<meta name="twitter:title" content="${escapedTitle}">` +
+    `<meta name="twitter:description" content="${escapeMetaContent(metadata.description)}">` +
+    `<meta property="og:title" content="${escapedTitle}">` +
     `<meta property="og:description" content="${escapeMetaContent(metadata.description)}">` +
     '<meta property="og:type" content="website">' +
     imageTags;
+  const title = /<title(?:\s[^>]*)?>[\s\S]*?<\/title>/i;
+  const page = title.test(html) ? html.replace(title, titleTag) : html;
   const head = /<head(?:\s[^>]*)?>/i;
-  if (head.test(html)) return html.replace(head, (openingTag) => `${openingTag}${tags}`);
+  if (head.test(page)) {
+    return page.replace(head, (openingTag) => `${openingTag}${title.test(page) ? '' : titleTag}${tags}`);
+  }
   const htmlTag = /<html(?:\s[^>]*)?>/i;
-  if (htmlTag.test(html)) return html.replace(htmlTag, (openingTag) => `${openingTag}<head>${tags}</head>`);
-  return `<!doctype html><html><head>${tags}</head><body>${html}</body></html>`;
+  if (htmlTag.test(page)) return page.replace(htmlTag, (openingTag) => `${openingTag}<head>${titleTag}${tags}</head>`);
+  return `<!doctype html><html><head>${titleTag}${tags}</head><body>${page}</body></html>`;
 }
 
 export function serveSandboxShell(

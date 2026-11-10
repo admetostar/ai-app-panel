@@ -811,15 +811,22 @@ test('普通用户改密直达门户 + 绑定页跳过 + 个人中心 MFA 管理
   await expect(page.getByRole('button', { name: '绑定 TOTP' })).toBeVisible();
   await expect(page.getByText(/Passkey（\d+）/)).toBeVisible();
 
-  // 我的权益：名称与权益包卡片更新，充值和订单默认隐藏
-  await page.getByRole('tab', { name: '我的权益' }).click();
-  await expect(page.locator('#account-section-billing')).toBeInViewport();
-  await expect(page.getByText('当前权益详情')).toBeVisible();
+  // 我的权益：按证书详情卡片展示当前方案与各项权益
+  await page.getByRole('tab', { name: '订阅与用量' }).click();
+  await expect(page.locator('#account-section-benefits')).toBeInViewport();
+  await expect(page.getByText('当前权益', { exact: true })).toBeVisible();
+  await expect(page.locator('.membership-current-plan__descriptions')).toBeVisible();
+  await expect(page.getByText('当前订阅', { exact: true })).toBeVisible();
   await expect(page.getByText('可创建应用', { exact: true }).first()).toBeVisible();
-  await expect(page.getByText('可选择权益包', { exact: true })).toBeVisible();
-  await expect(page.getByText('使用兑换码')).toBeVisible();
+  await expect(page.getByText('权益分组', { exact: true })).toHaveCount(0);
   await expect(page.getByText('额度充值', { exact: true })).toHaveCount(0);
   await expect(page.getByText('我的订单', { exact: true })).toHaveCount(0);
+
+  await page.getByRole('tab', { name: '获取权益' }).click();
+  await expect(page.locator('#account-section-plans')).toBeInViewport();
+  await expect(page.getByRole('heading', { name: '选择你的权益包' })).toHaveCount(0);
+  await expect(page.locator('.aap-account-plan-cards .aap-home-plan-card').first()).toBeVisible();
+  await expect(page.getByText('使用兑换码获取权益')).toBeVisible();
 
   await page.getByRole('tab', { name: '个人资料' }).click();
   await expect(page.locator('#account-section-profile')).toBeInViewport();
@@ -848,18 +855,26 @@ test('普通用户改密直达门户 + 绑定页跳过 + 个人中心 MFA 管理
   });
   await page.getByRole('tab', { name: '应用管理' }).click();
   await expect(page.locator('#account-section-myapps')).toBeInViewport();
+  await expect(page.getByText('可见性分布', { exact: true })).toBeVisible();
+  await expect(page.getByText('仅自己应用')).toBeVisible();
+  await expect(page.getByText('站内应用')).toBeVisible();
+  await expect(page.getByText('公开应用')).toBeVisible();
+  await expect(page.getByRole('tab', { name: '已创建应用' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.locator('#account-section-myapps .ant-spin-spinning')).toBeVisible();
   await expect(page.getByText('应用列表加载失败')).toBeVisible();
   await page.getByRole('button', { name: '重试' }).click();
   await expect(page.getByText('应用列表加载失败')).toHaveCount(0);
   await page.unroute('**/api/apps/mine');
+  await page.getByRole('tab', { name: '上传 AWPK 包' }).click();
+  await expect(page.locator('.aap-account-app-tabs .ant-tabs-tabpane-active .aap-app-upload-dropzone')).toBeVisible();
+  await expect(page.locator('.aap-account-app-tabs .aap-owned-apps-table')).toBeHidden();
   await expect(page.getByRole('button', { name: '选择文件' })).toHaveCSS('font-size', cancelAccountButtonFontSize);
   await page.locator('#account-section-profile').scrollIntoViewIfNeeded();
   await page.mouse.move(900, 600);
   await page.mouse.wheel(0, 700);
   await expect(page.getByRole('tab', { name: '账户安全' })).toHaveAttribute('aria-selected', 'true');
   await page.mouse.wheel(0, 1200);
-  await expect(page.locator('[role="tab"][aria-selected="true"]')).toContainText(/应用管理|我的权益/);
+  await expect(page.locator('[role="tab"][aria-selected="true"]')).toContainText(/应用管理|订阅与用量/);
 
   await page.goto('/my-apps');
   await expect(page.getByRole('heading', { name: '我的应用' })).toBeVisible();
@@ -867,4 +882,203 @@ test('普通用户改密直达门户 + 绑定页跳过 + 个人中心 MFA 管理
   await page.getByRole('button', { name: '前往应用管理' }).click();
   await expect(page).toHaveURL(/\/account\?tab=myapps$/);
   await expect(page.getByRole('tab', { name: '应用管理' })).toBeVisible();
+});
+
+test('个人中心权益与应用管理标签只显示所选内容', async ({ page }) => {
+  await page.route('**/api/auth/me', (route) => route.fulfill({
+    json: {
+      user: {
+        id: 8,
+        kind: 'local',
+        username: 'layout-user',
+        email: null,
+        phone: null,
+        name: '界面测试用户',
+        avatar: null,
+        role: 'user',
+        status: 'active',
+        mfaEnabled: false,
+        plan: 'member',
+        membershipSelectionRequired: false,
+        createdAt: Date.now(),
+      },
+      authState: 'full',
+      stepUpUntil: null,
+      mustChangePassword: false,
+      mustEnrollMfa: false,
+    },
+  }));
+  await page.route('**/api/portal/bootstrap', (route) => route.fulfill({
+    json: {
+      branding: { siteName: '测试站点', browserTitle: '测试站点', logo: null },
+      appDomainRoot: 'example.com',
+      appPort: null,
+      registration: { verificationChannel: null },
+    },
+  }));
+  await page.route('**/api/user/membership', (route) => route.fulfill({
+    json: {
+      membership: {
+        tier: 2,
+        planName: '进阶权益',
+        expiresAt: Date.now() + 86_400_000,
+        appUploadLimit: 10,
+        remainingUploadApps: 8,
+        appCloneLimit: 4,
+        remainingCloneApps: 3,
+      },
+      tokenBalance: 900,
+      pointsBalance: 120,
+      plans: [{
+        id: 12,
+        name: '测试权益包',
+        groupName: '进阶组',
+        durationDays: 90,
+        priceCurrency: 'POINTS',
+        priceFen: 0,
+        priceCents: 0,
+        pricePoints: 30,
+        redeemUrl: null,
+        tokenGrant: 1000,
+        tier: 2,
+        appUploadLimit: 10,
+        appCloneLimit: 4,
+        enabled: true,
+      }],
+      orders: [],
+    },
+  }));
+  await page.route('**/api/user/billing', (route) => route.fulfill({
+    json: { showTopupPanel: false, showOrdersPanel: false },
+  }));
+  await page.route('**/api/apps/mine', (route) => route.fulfill({
+    json: {
+      apps: [{
+        id: 'alias-demo',
+        alias: 'my-alias',
+        name: '别名演示',
+        description: '',
+        icon: null,
+        category: '测试',
+        visibility: 'private',
+        accessible: true,
+        status: 'ok',
+        sort: 0,
+        kind: 'upstream',
+        isClone: false,
+        anonymousAccess: 'none',
+        anonymousReadSupported: false,
+        anonymousWriteSupported: false,
+        enabled: true,
+        updatedAt: Date.now(),
+        installedAt: Date.now(),
+        version: null,
+        packageSizeBytes: null,
+        capabilities: [],
+        signatureStatus: null,
+      }],
+    },
+  }));
+
+  await page.goto('/account?tab=plans');
+  await expect(page.locator('.aap-account-plan-cards .aap-home-plan-card')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '选择你的权益包' })).toHaveCount(0);
+  await expect(page.getByText(/可用积分兑换符合条件的权益包/)).toHaveCount(0);
+  await expect(page.getByText('使用兑换码获取权益')).toBeVisible();
+
+  await page.getByRole('button', { name: '我的权益' }).click();
+  const membershipCard = page.locator('.membership-current-plan');
+  await expect(membershipCard.locator('.membership-current-plan__expiry')).toContainText('天有效期');
+  await expect(membershipCard.locator('.membership-current-plan__heading .aap-tier-badge')).toContainText('等级 2');
+  await expect(membershipCard.locator('.membership-current-plan__name')).toHaveText('进阶权益');
+  const benefitMetrics = membershipCard.locator('.membership-current-plan__metric');
+  await expect(benefitMetrics).toHaveCount(5);
+  await expect(benefitMetrics.nth(0)).toContainText('到期时间');
+  await expect(benefitMetrics.nth(1)).toContainText('可创建应用');
+  await expect(benefitMetrics.nth(2)).toContainText('可克隆应用');
+  await expect(benefitMetrics.nth(3)).toContainText('900');
+  await expect(benefitMetrics.nth(4)).toContainText('120');
+  for (let index = 0; index < 5; index += 1) {
+    const metricValue = benefitMetrics.nth(index).locator('.membership-current-plan__metric-value');
+    await expect(metricValue).toHaveCSS('font-size', '14px');
+    await expect(metricValue).toHaveCSS('font-weight', '400');
+  }
+  for (let index = 0; index < 5; index += 1) {
+    await expect(benefitMetrics.nth(index)).toHaveCSS('grid-column-end', 'auto');
+  }
+  const metricColumns = await Promise.all([0, 1, 2, 3, 4].map(async (index) => {
+    const box = await benefitMetrics.nth(index).boundingBox();
+    if (!box) throw new Error(`权益明细第 ${index + 1} 项不可见`);
+    return box.x;
+  }));
+  expect(Math.abs(metricColumns[0]! - metricColumns[3]!)).toBeLessThan(1);
+  expect(Math.abs(metricColumns[1]! - metricColumns[4]!)).toBeLessThan(1);
+
+  await page.getByRole('button', { name: '应用管理' }).click();
+  await expect(page.getByText('可见性分布', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '设置应用「别名演示」' }).click();
+  const aliasInput = page.getByPlaceholder('例如：my-app');
+  await expect(aliasInput).toHaveValue('my-alias');
+  await expect(page.locator('.aap-account-modal')).toContainText('my-alias.example.com');
+  await aliasInput.fill('New-Alias');
+  await expect(aliasInput).toHaveValue('new-alias');
+  await expect(page.locator('.aap-account-modal')).toContainText('new-alias.example.com');
+  await page.locator('.aap-account-modal .ant-modal-close').click();
+  await page.getByRole('tab', { name: '上传 AWPK 包' }).click();
+  await expect(page.locator('.aap-account-app-tabs .ant-tabs-tabpane-active .aap-app-upload-dropzone')).toBeVisible();
+  await expect(page.locator('.aap-account-app-tabs .aap-owned-apps-table')).toBeHidden();
+});
+
+test('应用登录后按可访问性直达目标应用或倒计时进入个人中心', async ({ page }) => {
+  await page.route('**/api/auth/me', (route) => route.fulfill({
+    json: {
+      user: {
+        id: 8,
+        kind: 'local',
+        username: 'layout-user',
+        email: null,
+        phone: null,
+        name: '界面测试用户',
+        avatar: null,
+        role: 'user',
+        status: 'active',
+        mfaEnabled: false,
+        plan: 'member',
+        membershipSelectionRequired: false,
+        createdAt: Date.now(),
+      },
+      authState: 'full',
+      stepUpUntil: null,
+      mustChangePassword: false,
+      mustEnrollMfa: false,
+    },
+  }));
+  await page.route('**/api/portal/bootstrap', (route) => route.fulfill({
+    json: {
+      branding: { siteName: '测试站点', browserTitle: '测试站点', logo: null },
+      appDomainRoot: 'example.com',
+      appPort: null,
+      registration: { verificationChannel: 'email' },
+      oidc: { enabled: false },
+    },
+  }));
+  await page.route('**/api/apps/*/login-redirect', (route) => route.fulfill({
+    json: { openApp: new URL(route.request().url()).pathname.includes('public-return') },
+  }));
+  await page.route('**/app/public-return/**', (route) => route.fulfill({
+    status: 200,
+    contentType: 'text/html',
+    body: '<!doctype html><title>target app</title>',
+  }));
+
+  await page.goto('/login?nonPublicApp=1&appId=private-return&target=%2Fapp%2Fprivate-return%2F');
+  await expect(page.getByText('当前应用private-return未开放匿名访问，请先登录')).toBeVisible();
+
+  await page.goto('/app-login-return?appId=public-return&target=%2Fapp%2Fpublic-return%2Fdeep%3Fq%3D1');
+  await expect(page).toHaveURL(/\/app\/public-return\/deep\?q=1$/);
+  await expect(page).toHaveTitle('target app');
+
+  await page.goto('/app-login-return?appId=private-return&target=%2Fapp%2Fprivate-return%2F');
+  await expect(page.getByText('应用private-return属于非公开应用，5 秒后进入个人中心...')).toBeVisible();
+  await expect(page).toHaveURL(/\/account$/, { timeout: 10_000 });
 });

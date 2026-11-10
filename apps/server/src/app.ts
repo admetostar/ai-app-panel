@@ -35,6 +35,12 @@ import { gatewayRouter } from './gateway/proxy.js';
 import { getSettingBool, getSetting } from './lib/settings.js';
 import { HttpError, toBody } from './lib/httpError.js';
 import { appDomainRoot, appIdFromHostname, isAppHostname } from './gateway/appDomains.js';
+import { isSlug } from './gateway/registry.js';
+import { shareMetadataFor } from './gateway/shareMetadata.js';
+import { injectAppShareMetadata } from './gateway/staticApp.js';
+import { apps } from './db/schema.js';
+import { getDb } from './db/index.js';
+import { eq } from 'drizzle-orm';
 
 
 export function createApp(cfg: AapConfig = config): Express {
@@ -173,8 +179,32 @@ export function createApp(cfg: AapConfig = config): Express {
   const webIndex = cfg.webDist ? path.join(cfg.webDist, 'index.html') : null;
   if (cfg.webDist && webIndex && fs.existsSync(webIndex)) {
     app.use(express.static(cfg.webDist, { index: false }));
-    app.get('*', (_req, res) => {
-      res.sendFile(webIndex);
+    app.get('*', async (req, res, next) => {
+      try {
+        const appId = typeof req.query.appId === 'string' ? req.query.appId : '';
+        if (req.path === '/login' && req.query.nonPublicApp === '1' && isSlug(appId)) {
+          const shareApp = (await getDb()
+            .select({
+              id: apps.id,
+              name: apps.name,
+              description: apps.description,
+              icon: apps.icon,
+              enabled: apps.enabled,
+            })
+            .from(apps)
+            .where(eq(apps.id, appId))
+            .limit(1))[0];
+          if (shareApp?.enabled) {
+            const html = await fs.promises.readFile(webIndex, 'utf8');
+            res.setHeader('Cache-Control', 'no-store');
+            res.type('html').send(injectAppShareMetadata(html, shareMetadataFor(req, shareApp, false)));
+            return;
+          }
+        }
+        res.sendFile(webIndex);
+      } catch (error) {
+        next(error);
+      }
     });
   }
 

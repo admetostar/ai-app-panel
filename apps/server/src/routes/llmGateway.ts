@@ -22,6 +22,7 @@ import {
   precheck,
   recordUsage,
   resolveAppToken,
+  resolveLlmBillingUserId,
   resolveRouteCandidates,
   settleEstimate,
   type AppTokenRow,
@@ -108,7 +109,7 @@ async function updateChatJobStage(req: Request, appId: string, stage: string): P
     .where(and(eq(llmChatJobs.id, jobId), eq(llmChatJobs.appId, appId), eq(llmChatJobs.status, 'processing')));
 }
 
-// ---------- 用户归因（passUser 身份链转发） ----------
+// ---------- 调用者身份验签 ----------
 
 /** 应用转发门户注入的身份头 → 归因到用户；无头/验签失败 → null（仅应用级计量） */
 function attributeUser(req: Request, appId: string): number | null {
@@ -193,11 +194,12 @@ llmGatewayRouter.post(
     }
 
     const requestId = randomBytes(8).toString('hex');
-    const userId = attributeUser(req, token.appId);
+    const callerUserId = attributeUser(req, token.appId);
+    const userId = await resolveLlmBillingUserId(token.appId, callerUserId);
     let upstreamMessages: unknown[] = body.messages;
     if (body._aap_media_ids !== undefined) {
       await updateChatJobStage(req, token.appId, 'preparing_media');
-      const resolved = await resolveStagedMediaMessages(body.messages, body._aap_media_ids, token.appId, userId);
+      const resolved = await resolveStagedMediaMessages(body.messages, body._aap_media_ids, token.appId, callerUserId);
       if (markedMediaTypes.length !== resolved.mediaTypes.length || resolved.mediaTypes.some((type) => !markedMediaTypes.includes(type))) {
         throw new HttpError(400, 'INVALID_MEDIA_REFERENCE', '媒体类型标记与已上传文件不匹配');
       }

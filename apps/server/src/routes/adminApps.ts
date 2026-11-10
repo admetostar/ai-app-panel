@@ -21,6 +21,7 @@ import { audit } from '../lib/audit.js';
 import { probeAll } from '../gateway/health.js';
 import { stopPersistentFor } from '../lib/sandbox.js';
 import { installPyDeps } from '../lib/pydeps.js';
+import { appIdConflictsWithAlias } from '../gateway/appDomains.js';
 
 export const adminAppsRouter = Router();
 
@@ -147,6 +148,7 @@ adminAppsRouter.post(
     if (idConflictsWithGatewayPrefix(id))
       throw new HttpError(400, 'INVALID_ID', '该应用 ID 与 FPK 统一网关入口路径冲突，请更换 ID');
     if (await findApp(id)) throw new HttpError(409, 'APP_EXISTS', '应用 ID 已存在');
+    if (await appIdConflictsWithAlias(id)) throw new HttpError(409, 'APP_ID_CONFLICT', '应用 ID 已被其他应用的别名占用');
     if (!body.name?.trim()) throw new HttpError(400, 'INVALID_NAME', '请填写应用名称');
     const kind = (body.kind as string) ?? 'upstream';
     if (kind === 'upstream') {
@@ -319,6 +321,7 @@ adminAppsRouter.post(
     if (idConflictsWithGatewayPrefix(id))
       throw new HttpError(400, 'INVALID_ID', '该应用 ID 与 FPK 统一网关入口路径冲突，请更换 ID');
     if (await findApp(id)) throw new HttpError(409, 'APP_EXISTS', '应用 ID 已存在');
+    if (await appIdConflictsWithAlias(id)) throw new HttpError(409, 'APP_ID_CONFLICT', '应用 ID 已被其他应用的别名占用');
     if (!body.name?.trim()) throw new HttpError(400, 'INVALID_NAME', '请填写应用名称');
     const html = String(body.html ?? '');
     if (!html.trim()) throw new HttpError(400, 'INVALID_HTML', '页面内容不能为空');
@@ -438,6 +441,9 @@ adminAppsRouter.post(
       }
       if (await findApp(manifest.name)) {
         throw new HttpError(409, 'APP_EXISTS', '同名应用已存在（包版本更新请删除后重传，或直接覆盖文件目录）');
+      }
+      if (await appIdConflictsWithAlias(manifest.name)) {
+        throw new HttpError(409, 'APP_ID_CONFLICT', '应用 ID 已被其他应用的别名占用');
       }
       if (manifest.type === 'python') await installPyDeps(tmpDir, manifest.requirements);
       // 校验与查重通过：挪到正式目录

@@ -78,8 +78,14 @@ export function PortalLayout() {
   }, []);
 
   const branding = data?.branding;
+  const searchParams = new URLSearchParams(location.search);
+  const preserveAppShareTitle = location.pathname === '/login'
+    && searchParams.get('nonPublicApp') === '1'
+    && Boolean(searchParams.get('appId'));
   useEffect(() => {
-    document.title = branding?.browserTitle?.trim() || branding?.siteName?.trim() || 'ai-app-panel';
+    if (!preserveAppShareTitle) {
+      document.title = branding?.browserTitle?.trim() || branding?.siteName?.trim() || 'ai-app-panel';
+    }
 
     const existingIcon = document.head.querySelector<HTMLLinkElement>('link[data-aap-site-icon]');
     if (branding?.logo) {
@@ -91,7 +97,7 @@ export function PortalLayout() {
     } else {
       existingIcon?.remove();
     }
-  }, [branding?.browserTitle, branding?.logo, branding?.siteName]);
+  }, [branding?.browserTitle, branding?.logo, branding?.siteName, preserveAppShareTitle]);
 
   const isHome = location.pathname === '/';
   const isMembershipSelectionPage = location.pathname === '/membership-selection';

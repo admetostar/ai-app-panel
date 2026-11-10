@@ -148,6 +148,7 @@ describe('个人应用详情', () => {
     const body = (await response.json()) as {
       apps: Array<{
         id: string;
+        alias: string | null;
         installedAt: number;
         packageSizeBytes: number | null;
         version: string | null;
@@ -169,6 +170,8 @@ describe('个人应用详情', () => {
         name: '修改后的应用名称',
         description: '更新后的说明',
         visibility: 'public',
+        alias: '  My-App-2  ',
+        llmOwnerConsent: true,
       }),
     });
     expect(update.status).toBe(200);
@@ -178,7 +181,46 @@ describe('个人应用详情', () => {
       name: '修改后的应用名称',
       description: '更新后的说明',
       visibility: 'public',
+      alias: 'my-app-2',
     });
+    const updatedMine = await fetch(`${base}/api/apps/mine`, { headers: { cookie: adminCookie } });
+    const updatedMineBody = await updatedMine.json() as { apps: Array<{ id: string; alias: string | null }> };
+    expect(updatedMineBody.apps.find((item) => item.id === 'app-details-test')?.alias).toBe('my-app-2');
+
+    const invalidAlias = await fetch(`${base}/api/apps/app-details-test/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
+      body: JSON.stringify({
+        name: '修改后的应用名称',
+        description: '更新后的说明',
+        visibility: 'public',
+        alias: 'bad_name',
+      }),
+    });
+    expect(invalidAlias.status).toBe(400);
+
+    await getDb().insert(apps).values({
+      id: 'alias-reserved',
+      name: '别名占用测试',
+      visibility: 'private',
+      upstream: '',
+      alias: 'reserved-alias',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    const conflictingAlias = await fetch(`${base}/api/apps/app-details-test/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', origin: base, cookie: adminCookie },
+      body: JSON.stringify({
+        name: '修改后的应用名称',
+        description: '更新后的说明',
+        visibility: 'public',
+        alias: 'reserved-alias',
+        llmOwnerConsent: true,
+      }),
+    });
+    expect(conflictingAlias.status).toBe(409);
+    expect(await conflictingAlias.json()).toMatchObject({ error: { code: 'APP_ALIAS_CONFLICT' } });
 
     const iconBytes = Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jf5sAAAAASUVORK5CYII=',
@@ -220,6 +262,19 @@ describe('个人应用详情', () => {
       body: JSON.stringify({ dataBase64: iconBytes.toString('base64') }),
     });
     expect(forbiddenIconUpload.status).toBe(403);
+
+    await getDb().update(apps).set({
+      visibility: 'private',
+      clonedFromAppId: 'source-app',
+    }).where(eq(apps.id, 'app-details-test'));
+    const ownerCloneIcon = await fetch(`${base}${icon}`, { headers: { cookie: adminCookie } });
+    expect(ownerCloneIcon.status).toBe(200);
+    expect(Buffer.from(await ownerCloneIcon.arrayBuffer())).toEqual(iconBytes);
+
+    const otherUserCloneIcon = await fetch(`${base}${icon}`, {
+      headers: { cookie: await sessionCookieFor(otherUser!.id) },
+    });
+    expect(otherUserCloneIcon.status).toBe(404);
   });
 });
 

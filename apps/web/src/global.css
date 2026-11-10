@@ -2394,11 +2394,11 @@ body {
   border: 0;
 }
 
-.aap-account-tabs .ant-tabs-content {
+.aap-account-tabs.ant-tabs-left > .ant-tabs-content-holder > .ant-tabs-content {
   display: block;
 }
 
-.aap-account-tabs .ant-tabs-tabpane {
+.aap-account-tabs.ant-tabs-left > .ant-tabs-content-holder > .ant-tabs-content > .ant-tabs-tabpane {
   display: block !important;
   height: auto;
   padding-bottom: 24px;
@@ -3194,31 +3194,6 @@ body {
   margin: 0 4px;
 }
 
-.membership-current-plan__summary {
-  width: 50%;
-}
-
-.membership-current-plan__grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px 16px;
-}
-
-.membership-current-plan__item {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 7px;
-}
-
-.membership-current-plan__value {
-  color: var(--aap-text) !important;
-  font-size: 20px;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-}
-
 .membership-history .ant-table {
   overflow-x: auto;
 }
@@ -3227,6 +3202,38 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   gap: 12px;
+}
+
+.aap-account-page .aap-account-plan-cards .aap-home-plan-card.ant-card,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .aap-account-plan-cards .aap-home-plan-card.ant-card {
+  border: 1px solid var(--aap-border) !important;
+  border-radius: 14px !important;
+  background: var(--aap-bg-container) !important;
+  color: var(--aap-text) !important;
+}
+
+.aap-account-page .aap-account-plan-cards .aap-home-plan-card .ant-card-body,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .aap-account-plan-cards .aap-home-plan-card .ant-card-body {
+  background: var(--aap-bg-container) !important;
+}
+
+.aap-account-plan-cards .aap-home-plan-card__name {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 8px;
+}
+
+.aap-account-plan-cards .aap-home-plan-card__name h3.ant-typography {
+  margin: 0;
+}
+
+.aap-account-plan-cards .aap-home-plan-card__features {
+  margin-top: 12px;
+}
+
+.aap-account-plan-cards .aap-home-plan-card .ant-btn {
+  padding-inline: 12px;
 }
 
 .membership-plan-option {
@@ -3616,23 +3623,6 @@ body {
   }
 }
 
-@media (max-width: 520px) {
-  .membership-current-plan__summary {
-    width: 100%;
-  }
-
-  .membership-current-plan__grid {
-    grid-template-columns: 1fr;
-    gap: 12px;
-  }
-}
-
-@media (min-width: 521px) and (max-width: 900px) {
-  .membership-current-plan__summary {
-    width: 100%;
-  }
-}
-
 .aap-account-modal--light.aap-step-up-modal .ant-modal-content {
   border-radius: 12px;
 }
@@ -3901,6 +3891,157 @@ body {
 
   .aap-account-tabs.ant-tabs-left > .ant-tabs-nav {
     padding: 8px;
+  }
+}
+
+.aap-account-page .membership-current-plan.ant-card {
+  overflow: hidden;
+  border: 1px solid rgba(208, 213, 221, 0.75) !important;
+  border-radius: 14px !important;
+  background-color: #fff !important;
+  background-image:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.8)),
+    url('../../server/assets/home-background.png') !important;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  box-shadow: 0 12px 36px rgba(16, 24, 40, 0.08);
+}
+
+.aap-account-page .membership-current-plan.ant-card > .ant-card-body {
+  background: transparent !important;
+}
+
+.aap-account-page .membership-current-plan__expiry {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.aap-account-page .membership-current-plan__heading {
+  margin-bottom: 22px;
+}
+
+.aap-account-page .membership-current-plan__heading .ant-space {
+  max-width: 100%;
+}
+
+.aap-account-page .membership-current-plan__name.ant-typography {
+  margin: 0;
+  color: var(--aap-text);
+  font-size: clamp(24px, 3vw, 32px);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.aap-account-page .membership-current-plan__metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 22px 24px;
+}
+
+.aap-account-page .membership-current-plan__metric {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.aap-account-page .membership-current-plan__metric > .ant-typography-secondary {
+  color: var(--aap-text-secondary);
+  font-size: 13px;
+}
+
+.aap-account-page .membership-current-plan__metric-value.ant-typography {
+  color: var(--aap-text);
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.aap-account-page .membership-current-plan__metric-value strong {
+  color: var(--aap-text);
+  font-size: 14px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.aap-account-page .membership-current-plan__heading .aap-tier-badge {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.aap-account-page .membership-current-plan__heading .aap-tier-badge img {
+  width: 30px;
+  height: 30px;
+}
+
+.aap-account-page .membership-current-plan__heading .aap-tier-badge--base {
+  color: var(--aap-text);
+}
+
+.aap-account-page .aap-account-app-totals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+  gap: 14px;
+}
+
+.aap-account-page .aap-account-app-visibility-card > .ant-card-body {
+  padding: 16px;
+}
+
+.aap-account-page .aap-account-app-total-card.ant-card {
+  height: 100%;
+  border: 1px solid #eaecf0 !important;
+  border-radius: 12px !important;
+  background: #fff !important;
+  box-shadow: 0 5px 16px rgba(16, 24, 40, 0.045);
+}
+
+.aap-account-page .aap-account-app-total-card h2.ant-typography {
+  margin: 12px 0 20px;
+  font-size: clamp(26px, 3vw, 34px);
+  font-variant-numeric: tabular-nums;
+}
+
+.aap-account-page .aap-account-app-tabs .ant-tabs-nav {
+  display: flex !important;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .membership-current-plan.ant-card {
+  border-color: rgba(65, 71, 84, 0.9) !important;
+  background-color: #1d2129 !important;
+  background-image:
+    linear-gradient(90deg, rgba(20, 23, 28, 0.88), rgba(20, 23, 28, 0.8)),
+    url('../../server/assets/home-background.png') !important;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .membership-current-plan__metric > .ant-typography-secondary,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .membership-current-plan__expiry {
+  color: #aeb6c4 !important;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .membership-current-plan__metric-value,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .membership-current-plan__metric-value strong,
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .membership-current-plan__name.ant-typography {
+  color: #e6e8ec !important;
+}
+
+.aap-account-shell[data-user-theme='dark'] .aap-account-page .aap-account-app-total-card.ant-card {
+  border-color: #2e333d !important;
+  background: #1d2129 !important;
+  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.14);
+}
+
+@media (max-width: 600px) {
+  .aap-account-page .membership-current-plan__metrics {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .aap-account-page .membership-current-plan__metric {
+    grid-column: 1;
   }
 }
 
@@ -4219,7 +4360,7 @@ body {
   width: 100%;
 }
 
-.aap-account-tabs .ant-tabs-tabpane {
+.aap-account-tabs.ant-tabs-left > .ant-tabs-content-holder > .ant-tabs-content > .ant-tabs-tabpane {
   padding-bottom: 0;
 }
 

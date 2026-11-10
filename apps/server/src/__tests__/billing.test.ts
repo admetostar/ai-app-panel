@@ -57,6 +57,24 @@ describe('M3 计费闭环（D1/D2）', () => {
     expect(await (await listPlans()).find((plan) => plan.id === planId)?.tier).toBe(3);
   });
 
+  it('所有套餐列表按权益等级从低到高排列', async () => {
+    const lowPlanId = await createPlan({
+      name: '低等级测试权益',
+      groupId,
+      durationDays: 30,
+      tier: 1,
+    });
+    const highPlanId = await createPlan({
+      name: '高等级测试权益',
+      groupId,
+      durationDays: 30,
+      tier: 5,
+    });
+    const listedIds = (await listPlans()).map((plan) => plan.id);
+    expect(listedIds.indexOf(lowPlanId)).toBeLessThan(listedIds.indexOf(planId));
+    expect(listedIds.indexOf(planId)).toBeLessThan(listedIds.indexOf(highPlanId));
+  });
+
   it('编辑套餐后即时更新订阅者的应用名额；Token、价格和时长只作用于后续开通或续订', async () => {
     const editablePlanId = await createPlan({
       name: '可调整权益',

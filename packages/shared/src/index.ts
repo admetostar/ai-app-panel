@@ -151,6 +151,7 @@ export interface PortalBootstrap {
 // ---------- 应用（B4 / 门户卡片墙） ----------
 
 export type AppVisibility = 'public' | 'login' | 'private';
+export type AppAnonymousAccess = 'none' | 'read' | 'write';
 export type AppStatus = 'ok' | 'down' | 'unknown';
 
 /** 卡片墙 / 列表用的应用公开视图（不含 upstream/urlSecret 等敏感字段） */
@@ -173,6 +174,10 @@ export interface AppCard {
 /** Owner-scoped application card data used by /api/apps/mine. */
 export interface OwnedAppCard extends AppCard {
   isClone: boolean;
+  alias: string | null;
+  anonymousAccess: AppAnonymousAccess;
+  anonymousReadSupported: boolean;
+  anonymousWriteSupported: boolean;
   enabled: boolean;
   updatedAt: number;
   installedAt: number;

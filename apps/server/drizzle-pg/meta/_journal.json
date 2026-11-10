@@ -36,6 +36,27 @@
       "when": 1794130515149,
       "tag": "0004_bumpy_midnight",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794231819971,
+      "tag": "0005_pink_thing",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794245527666,
+      "tag": "0006_colossal_lady_mastermind",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794286970131,
+      "tag": "0007_smiling_whirlwind",
+      "breakpoints": true
     }
   ]
 }

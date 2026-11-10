@@ -13,7 +13,9 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Progress,
   Select,
+  Spin,
   Space,
   Table,
   Tabs,
@@ -106,12 +108,12 @@ export function AccountPage() {
     benefits: {
       group: '权益中心',
       title: '我的权益',
-      description: '查看权益有效期、应用上传名额、Token 额度与积分；首次将应用设为公开可按所属分组获积分，删除时扣回（余额最低为 0）。',
+      description: '查看当前权益等级、订阅计划、有效期、应用名额、Token 额度与积分余额。',
     },
     plans: {
       group: '权益中心',
       title: '获取权益',
-      description: '可用积分兑换符合条件的权益包，也可通过兑换码获取指定订阅或 Token 额度；其他方案按页面说明获取。',
+      description: '',
     },
   };
 
@@ -400,12 +402,14 @@ export function AccountPage() {
       <header className="aap-account-heading">
         <Typography.Text className="aap-account-eyebrow">{sectionDetails[accountTab].group}</Typography.Text>
         <Typography.Title level={2}>{sectionDetails[accountTab].title}</Typography.Title>
-        <Typography.Paragraph>
-          {sectionDetails[accountTab].description}
-          {accountTab === 'myapps' ? (
-            <> <Link to="/guide">点击查看操作指南</Link></>
-          ) : null}
-        </Typography.Paragraph>
+        {sectionDetails[accountTab].description || accountTab === 'myapps' ? (
+          <Typography.Paragraph>
+            {sectionDetails[accountTab].description}
+            {accountTab === 'myapps' ? (
+              <> <Link to="/guide">点击查看操作指南</Link></>
+            ) : null}
+          </Typography.Paragraph>
+        ) : null}
       </header>
 
       <Tabs
@@ -992,134 +996,149 @@ function MembershipTopupTab({ section, theme }: {
         />
       ) : null}
       {section === 'benefits' ? (
-      <Card
-        size="small"
-        className="membership-current-plan"
-        title={
-          <Space size={8}>
-            <span>当前权益详情</span>
-            {d?.membership ? <TierBadge tier={d.membership.tier} /> : null}
-            <Typography.Text style={{ fontSize: 12, color: '#D6A542' }}>
+      <Card size="small" className="membership-current-plan">
+        <Typography.Text type="secondary" className="membership-current-plan__expiry">
+          {d?.membership
+            ? `${Math.max(0, Math.ceil((d.membership.expiresAt - Date.now()) / 86_400_000))} 天有效期`
+            : '尚未订阅权益计划'}
+        </Typography.Text>
+        <div className="membership-current-plan__heading">
+          <Space align="center" size={12}>
+            {d?.membership ? <TierBadge tier={d.membership.tier} size={28} /> : <Tag>未订阅</Tag>}
+            <Typography.Title level={3} className="membership-current-plan__name">
               {d?.membership?.planName ?? '未订阅'}
-            </Typography.Text>
+            </Typography.Title>
           </Space>
-        }
-      >
-        <div className="membership-current-plan__summary">
-          <div className="membership-current-plan__grid">
-            <div className="membership-current-plan__item">
-              <Typography.Text type="secondary">到期时间</Typography.Text>
-              <Typography.Text strong className="membership-current-plan__value">{d?.membership ? new Date(d.membership.expiresAt).toLocaleString() : '—'}</Typography.Text>
-            </div>
-            <div className="membership-current-plan__item">
-              <Typography.Text type="secondary">权益分组</Typography.Text>
-              <Typography.Text strong className="membership-current-plan__value">{d?.membership?.groupName ?? '—'}</Typography.Text>
-            </div>
-            <div className="membership-current-plan__item">
-              <Typography.Text type="secondary">可创建应用</Typography.Text>
-              <Typography.Text strong className="membership-current-plan__value">
-                {d?.membership
-                  ? `${formatEntitlementCount(d.membership.remainingUploadApps)} / ${formatEntitlementCount(d.membership.appUploadLimit, ' 个')}`
-                  : '—'}
-              </Typography.Text>
-            </div>
-            <div className="membership-current-plan__item">
-              <Typography.Text type="secondary">可克隆应用</Typography.Text>
-              <Typography.Text strong className="membership-current-plan__value">
-                {d?.membership
-                  ? `${formatEntitlementCount(d.membership.remainingCloneApps)} / ${formatEntitlementCount(d.membership.appCloneLimit, ' 个')}`
-                  : '—'}
-              </Typography.Text>
-            </div>
-            <div className="membership-current-plan__item">
-              <Typography.Text type="secondary">剩余 Token 额度</Typography.Text>
-              <Typography.Text strong className="membership-current-plan__value">
-                {d?.tokenBalance === undefined ? '—' : formatEntitlementCount(d.tokenBalance)}
-              </Typography.Text>
-            </div>
-            <div className="membership-current-plan__item">
-              <Typography.Text type="secondary">可用积分</Typography.Text>
-              <Typography.Text strong className="membership-current-plan__value">
-                {d?.pointsBalance === undefined ? '—' : formatEntitlementCount(d.pointsBalance)}
-              </Typography.Text>
-            </div>
+        </div>
+        <div className="membership-current-plan__metrics">
+          <div className="membership-current-plan__metric">
+            <Typography.Text type="secondary">到期时间</Typography.Text>
+            <Typography.Text className="membership-current-plan__metric-value">
+              {d?.membership ? new Date(d.membership.expiresAt).toLocaleString() : '—'}
+            </Typography.Text>
+          </div>
+          <div className="membership-current-plan__metric">
+            <Typography.Text type="secondary">可创建应用</Typography.Text>
+            <Typography.Text className="membership-current-plan__metric-value">
+              {d?.membership ? (
+                <>
+                  <strong>{formatEntitlementCount(d.membership.remainingUploadApps)}</strong>
+                  <span> / {formatEntitlementCount(d.membership.appUploadLimit, ' 个')}</span>
+                </>
+              ) : '—'}
+            </Typography.Text>
+          </div>
+          <div className="membership-current-plan__metric">
+            <Typography.Text type="secondary">可克隆应用</Typography.Text>
+            <Typography.Text className="membership-current-plan__metric-value">
+              {d?.membership ? (
+                <>
+                  <strong>{formatEntitlementCount(d.membership.remainingCloneApps)}</strong>
+                  <span> / {formatEntitlementCount(d.membership.appCloneLimit, ' 个')}</span>
+                </>
+              ) : '—'}
+            </Typography.Text>
+          </div>
+          <div className="membership-current-plan__metric">
+            <Typography.Text type="secondary">剩余 Token 额度</Typography.Text>
+            <Typography.Text className="membership-current-plan__metric-value">
+              {d?.tokenBalance === undefined ? '—' : formatEntitlementCount(d.tokenBalance)}
+            </Typography.Text>
+          </div>
+          <div className="membership-current-plan__metric">
+            <Typography.Text type="secondary">可用积分</Typography.Text>
+            <Typography.Text className="membership-current-plan__metric-value">
+              {d?.pointsBalance === undefined ? '—' : formatEntitlementCount(d.pointsBalance)}
+            </Typography.Text>
           </div>
         </div>
       </Card>
       ) : null}
 
       {section === 'acquire' ? (
-      <Card size="small" className="membership-plan-card" title="可选择权益包">
-        {d?.plans.length ? (
-          <div className="membership-plan-grid">
+      <>
+        {data.isError ? (
+          <Alert type="error" showIcon message="权益包加载失败" description={data.error instanceof Error ? data.error.message : '请刷新页面重试'} />
+        ) : data.isLoading ? (
+          <div className="aap-home-loading"><Spin /></div>
+        ) : d?.plans.length ? (
+          <div className="aap-home-plan-grid aap-account-plan-cards">
             {d.plans.map((plan) => (
-              <Card
-                key={plan.id}
-                size="small"
-                className="membership-plan-option"
-                title={
-                  <Space wrap>
-                    <TierBadge tier={plan.tier} />
-                    <Typography.Text strong>{plan.name}</Typography.Text>
-                  </Space>
-                }
-              >
-                <div className="membership-plan-option__details">
-                  <div><Typography.Text type="secondary">权益分组</Typography.Text><Typography.Text>{plan.groupName}</Typography.Text></div>
-                  <div><Typography.Text type="secondary">可用时间</Typography.Text><Typography.Text>{membershipDurationLabel(plan.durationDays)}</Typography.Text></div>
-                  <div><Typography.Text type="secondary">可创建应用</Typography.Text><Typography.Text>{formatEntitlementCount(plan.appUploadLimit, ' 个')}</Typography.Text></div>
-                  <div><Typography.Text type="secondary">可克隆应用</Typography.Text><Typography.Text>{formatEntitlementCount(plan.appCloneLimit, ' 个')}</Typography.Text></div>
-                  <div><Typography.Text type="secondary">Token 额度</Typography.Text><Typography.Text>{formatEntitlementCount(plan.tokenGrant)}</Typography.Text></div>
+              <Card key={plan.id} className="aap-home-plan-card" bordered>
+                <span className="aap-home-plan-card__duration">
+                  {plan.durationDays >= 100_000 ? '长期权益' : `${plan.durationDays} 天有效期`}
+                </span>
+                <div className="aap-home-plan-card__name">
+                  <TierBadge tier={plan.tier} size={26} />
+                  <Typography.Title level={3}>{plan.name}</Typography.Title>
                 </div>
-                <div className="membership-plan-option__footer">
-                  <Typography.Text strong style={{ color: 'var(--aap-primary)' }}>{formatMembershipPlanPrice(plan)}</Typography.Text>
-                  <Button type="primary" disabled={!plan.enabled} onClick={() => setSelectedPlan(plan)}>获取</Button>
+                <div className="aap-home-plan-card__price">
+                  {formatMembershipPlanPrice(plan)}
+                  <span> / 套</span>
                 </div>
+                <div className="aap-home-plan-card__features">
+                  <div><span>权益等级</span><strong>{plan.tier}</strong></div>
+                  <div><span>权益分组</span><strong>{plan.groupName}</strong></div>
+                  <div><span>可创建应用</span><strong>{formatEntitlementCount(plan.appUploadLimit, ' 个')}</strong></div>
+                  <div><span>可克隆应用</span><strong>{formatEntitlementCount(plan.appCloneLimit, ' 个')}</strong></div>
+                  <div><span>赠送额度</span><strong>{formatEntitlementCount(plan.tokenGrant)}</strong></div>
+                </div>
+                <Button
+                  type="primary"
+                  block
+                  disabled={!plan.enabled || (plan.priceCurrency === 'POINTS' && (d.pointsBalance ?? 0) < plan.pricePoints)}
+                  onClick={() => setSelectedPlan(plan)}
+                >
+                  {plan.priceCurrency === 'POINTS' && (d.pointsBalance ?? 0) < plan.pricePoints
+                    ? '积分不足'
+                    : isFreeMembershipPlan(plan)
+                      ? '获取'
+                      : plan.priceCurrency === 'POINTS'
+                        ? '立即兑换'
+                        : '选择并创建待确认订单'}
+                </Button>
               </Card>
             ))}
           </div>
         ) : (
           <Typography.Text type="secondary">暂无可选择权益包</Typography.Text>
         )}
-      </Card>
-      ) : null}
-
-      {section === 'acquire' ? (
-      <Card size="small" title="使用兑换码获取权益">
-        <Space wrap>
-          <Input
-            style={{ width: 240 }}
-            placeholder="输入兑换码，如 AAP-XXXX-XXXX-XXXX"
-            value={redeemCode}
-            onChange={(e) => setRedeemCode(e.target.value.toUpperCase())}
-          />
-          <Button
-            type="primary"
-            loading={redeeming}
-            onClick={async () => {
-              if (!redeemCode.trim()) return message.warning('请输入兑换码');
-              setRedeeming(true);
-              try {
-                const r = await api<{ kind: string; tokens?: number; planName?: string }>('/api/user/redeem', {
-                  method: 'POST',
-                  json: { code: redeemCode },
-                });
-                if (r.kind === 'tokens') message.success(`兑换成功：到账 ${r.tokens?.toLocaleString()} 额度`);
-                else message.success(`兑换成功：功能订阅「${r.planName}」已开通`);
-                setRedeemCode('');
-                void qc.invalidateQueries({ queryKey: ['membership'] });
-                void qc.invalidateQueries({ queryKey: ['billing'] });
-              } catch (err) {
-                message.error(err instanceof Error ? err.message : '兑换失败');
-              } finally {
-                setRedeeming(false);
-              }
-            }}
-          >
-            立即兑换
-          </Button>
-        </Space>
-      </Card>
+        <Card size="small" title="使用兑换码获取权益">
+          <Space wrap>
+            <Input
+              style={{ width: 240 }}
+              placeholder="输入兑换码，如 AAP-XXXX-XXXX-XXXX"
+              value={redeemCode}
+              onChange={(e) => setRedeemCode(e.target.value.toUpperCase())}
+            />
+            <Button
+              type="primary"
+              loading={redeeming}
+              onClick={async () => {
+                if (!redeemCode.trim()) return message.warning('请输入兑换码');
+                setRedeeming(true);
+                try {
+                  const r = await api<{ kind: string; tokens?: number; planName?: string }>('/api/user/redeem', {
+                    method: 'POST',
+                    json: { code: redeemCode },
+                  });
+                  if (r.kind === 'tokens') message.success(`兑换成功：到账 ${r.tokens?.toLocaleString()} 额度`);
+                  else message.success(`兑换成功：功能订阅「${r.planName}」已开通`);
+                  setRedeemCode('');
+                  void qc.invalidateQueries({ queryKey: ['membership'] });
+                  void qc.invalidateQueries({ queryKey: ['billing'] });
+                } catch (err) {
+                  message.error(err instanceof Error ? err.message : '兑换失败');
+                } finally {
+                  setRedeeming(false);
+                }
+              }}
+            >
+              立即兑换
+            </Button>
+          </Space>
+        </Card>
+      </>
       ) : null}
 
       {section === 'acquire' && showTopup ? (
@@ -1315,6 +1334,20 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
   const [lastError, setLastError] = useState<string | null>(null);
   const [settingsApp, setSettingsApp] = useState<MyAppRow | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const ownedApps = mine.data?.apps ?? [];
+  const visibilityTotals = [
+    { key: 'private', label: '仅自己' },
+    { key: 'login', label: '站内' },
+    { key: 'public', label: '公开' },
+  ].map(({ key, label }) => ({
+    key,
+    label,
+    count: ownedApps.filter((app) => app.visibility === key).length,
+  }));
+
+  function uncappedProgress(value: number): number {
+    return value > 0 ? Math.min(96, Math.log10(value + 1) * 10) : 0;
+  }
 
   async function uploadFile(f: File): Promise<void> {
     if (uploading) return;
@@ -1359,47 +1392,26 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card size="small" title="上传 .awpk 包" extra={<Tag bordered={false} color="blue" style={{ fontSize: 11 }}>python 沙箱运行时已上线</Tag>}>
-        <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-          平台按当前权益包限制可创建应用数量（通过上传应用包创建）；创建后默认仅自己可见，发布为公开不再受数量限制。
-        </Typography.Paragraph>
-        <div
-          className={`aap-app-upload-dropzone${uploadDragActive ? ' aap-app-upload-dropzone--active' : ''}`}
-          onDragEnter={onUploadDragOver}
-          onDragOver={onUploadDragOver}
-          onDragLeave={(e) => {
-            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setUploadDragActive(false);
-          }}
-          onDrop={onUploadDrop}
-          aria-label="应用包拖拽上传区域"
-        >
-          <Typography.Text strong>将 .awpk 文件拖拽到此处</Typography.Text>
-          <Typography.Text type="secondary">或</Typography.Text>
-          <Button danger disabled={uploading} onClick={() => fileInputRef.current?.click()}>
-            选择文件
-          </Button>
-        </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".awpk"
-          onChange={(e) => void onFile(e)}
-          disabled={uploading}
-          style={{ display: 'none' }}
-        />
-        {uploading ? (
-          <div className="aap-app-upload-progress" role="status" aria-live="polite">
-            <div className="aap-app-upload-progress__track" role="progressbar" aria-label="应用包上传与校验进度" aria-valuetext="正在处理中，进度未知">
-              <span className="aap-app-upload-progress__indicator" />
-            </div>
-            <Typography.Text type="secondary" className="aap-app-upload-progress__label">
-              正在校验应用包并安装依赖，请勿重复上传…
-            </Typography.Text>
-          </div>
-        ) : null}
-        {lastError ? <Alert type="error" showIcon style={{ marginTop: 10 }} message={lastError} /> : null}
+      <Card size="small" className="aap-account-app-visibility-card" title="可见性分布">
+        <section className="aap-account-app-totals" aria-label="应用可见性分布">
+          {visibilityTotals.map((metric) => (
+            <Card className="aap-account-app-total-card" key={metric.key}>
+              <Typography.Text type="secondary">{metric.label}应用</Typography.Text>
+              <Typography.Title level={2}>{mine.isLoading || mine.isError ? '—' : metric.count.toLocaleString()}</Typography.Title>
+              <Progress percent={uncappedProgress(metric.count)} showInfo={false} />
+            </Card>
+          ))}
+        </section>
       </Card>
 
+      <Tabs
+        className="aap-account-app-tabs"
+        defaultActiveKey="created"
+        items={[
+          {
+            key: 'created',
+            label: '已创建应用',
+            children: (
       <Card size="small" title="已创建应用">
         {mine.isError ? (
           <Alert
@@ -1418,7 +1430,7 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
             scroll={{ x: 782 }}
             pagination={{ pageSize: 10, showSizeChanger: false }}
             loading={mine.isLoading}
-            dataSource={mine.data?.apps ?? []}
+            dataSource={ownedApps}
             columns={[
               {
                 title: '应用',
@@ -1523,6 +1535,56 @@ function MyAppsTab({ active, ensureStepUp, theme }: {
           />
         )}
       </Card>
+            ),
+          },
+          {
+            key: 'upload',
+            label: '上传 AWPK 包',
+            children: (
+      <Card size="small" title="上传 .awpk 包" extra={<Tag bordered={false} color="blue" style={{ fontSize: 11 }}>python 沙箱运行时已上线</Tag>}>
+        <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+          平台按当前权益包限制可创建应用数量（通过上传应用包创建）；创建后默认仅自己可见，发布为公开不再受数量限制。
+        </Typography.Paragraph>
+        <div
+          className={`aap-app-upload-dropzone${uploadDragActive ? ' aap-app-upload-dropzone--active' : ''}`}
+          onDragEnter={onUploadDragOver}
+          onDragOver={onUploadDragOver}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setUploadDragActive(false);
+          }}
+          onDrop={onUploadDrop}
+          aria-label="应用包拖拽上传区域"
+        >
+          <Typography.Text strong>将 .awpk 文件拖拽到此处</Typography.Text>
+          <Typography.Text type="secondary">或</Typography.Text>
+          <Button danger disabled={uploading} onClick={() => fileInputRef.current?.click()}>
+            选择文件
+          </Button>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".awpk"
+          onChange={(e) => void onFile(e)}
+          disabled={uploading}
+          style={{ display: 'none' }}
+        />
+        {uploading ? (
+          <div className="aap-app-upload-progress" role="status" aria-live="polite">
+            <div className="aap-app-upload-progress__track" role="progressbar" aria-label="应用包上传与校验进度" aria-valuetext="正在处理中，进度未知">
+              <span className="aap-app-upload-progress__indicator" />
+            </div>
+            <Typography.Text type="secondary" className="aap-app-upload-progress__label">
+              正在校验应用包并安装依赖，请勿重复上传…
+            </Typography.Text>
+          </div>
+        ) : null}
+        {lastError ? <Alert type="error" showIcon style={{ marginTop: 10 }} message={lastError} /> : null}
+      </Card>
+            ),
+          },
+        ]}
+      />
 
       <AppSettingsModal
         app={settingsApp}

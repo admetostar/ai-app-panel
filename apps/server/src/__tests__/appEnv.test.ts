@@ -185,6 +185,30 @@ describe('manifest.env 声明校验', () => {
     const many = Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`V${i}`, 'x']));
     expect(() => validateManifest({ ...baseManifest, env: many })).toThrow(/最多/);
   });
+
+  it('匿名路由必须声明路径、方法和有效权限；只读路由仅接受安全方法', () => {
+    const manifest = validateManifest({
+      ...baseManifest,
+      routes: [
+        { path: '/items/*', methods: ['GET'], access: 'anonymous_read' },
+        { path: '/items', methods: ['POST'], access: 'anonymous_write' },
+        { path: '/admin', methods: ['GET', 'POST'], access: 'account' },
+      ],
+    });
+    expect(manifest.routes).toEqual([
+      { path: '/items/*', methods: ['GET'], access: 'anonymous_read' },
+      { path: '/items', methods: ['POST'], access: 'anonymous_write' },
+      { path: '/admin', methods: ['GET', 'POST'], access: 'account' },
+    ]);
+    expect(() => validateManifest({
+      ...baseManifest,
+      routes: [{ path: '/mutate', methods: ['POST'], access: 'anonymous_read' }],
+    })).toThrow(/anonymous_read/);
+    expect(() => validateManifest({
+      ...baseManifest,
+      routes: [{ path: '/x', methods: ['GET'], access: 'owner' }],
+    })).toThrow(/access/);
+  });
 });
 
 describe('沙箱环境对象注入', () => {

@@ -6,7 +6,23 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
 # app-develop.skill.md
 
 > ai-app-panel 应用开发规范 · 供开发 Agent 使用
-> 版本 v0.3.1（2026-11）· 配套平台 PRD v0.3+
+> 版本 v0.3.8（2026-11）· 配套平台 PRD v0.3+
+>
+> **v0.3.8 变更**：明确 passUser 注入应用属主身份（匿名路由也适用）；`account` 路由仍注入已鉴权的实际访问者身份，且任何身份头都不改变 LLM 费用按应用属主归属的规则。
+>
+> **v0.3.7 变更**：补充属主可选配置应用域名别名的说明；别名只改变访问入口，不改变可见范围、匿名路由权限或费用归属。
+>
+> **v0.3.6 变更**：新增 AWPK 路由级匿名读写和账号身份声明；匿名权限与可见范围分离；明确 LLM 用量按属主计费、与请求身份分离。
+>
+> **v0.3.5 变更**：新增大文件媒体异步 LLM 契约：`upload_media`、`chat_async`、`get_chat_job`，明确图片/视频限制、状态阶段、媒体路由格式及 10 分钟身份有效期边界。
+>
+> **v0.3.4 变更**：强化 LLM 用户身份归因要求，补充单线程与后台线程/线程池的身份头捕获和传递方法；增加按任务类型选择 `MODEL` 的建议。
+>
+> **v0.3.3 变更**：明确 AWPK 更新的 `manifest.version` 递增规则；每次生成用于替换既有应用的新包必须递增版本，并在交付前核对旧版本。
+>
+> **v0.3.2 变更**：声明 `llm` 能力的应用统一使用必填 `env.MODEL`，从门户模型目录选择并显式传给 `aap.llm.chat`；历史模型变量名继续兼容。
+>
+> **v0.3.2 变更**：声明 `llm` 能力的应用统一使用必填 `env.MODEL`，从门户模型目录选择并显式传给 `aap.llm.chat`；历史模型变量名继续兼容。
 >
 > **v0.3.1 变更**：补充未配置 `SITE_DOMAIN` 时的本地路径沙箱回退；需验证应用独立 origin 与浏览器存储时，应配置应用域名。
 >
@@ -59,6 +75,11 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
   "network": [                       // 出站域名白名单（无需联网则留空数组）
     "api.example-data.com"
   ],
+  "routes": [                        // v0.3.6：按路径和方法声明访问级别；未声明路由不向匿名开放
+    { "path": "/api/items", "methods": ["GET"], "access": "anonymous_read" },
+    { "path": "/api/items", "methods": ["POST"], "access": "anonymous_write" },
+    { "path": "/api/admin/*", "methods": ["GET", "POST"], "access": "account" }
+  ],
   "env": {                           // 环境变量/机密声明（v0.2.2，见 §1.1；无需配置则省略）
     "ABUSEIPDB_API_KEY": { "required": true, "secret": true, "pattern": "^[a-f0-9]{80}$", "description": "AbuseIPDB 密钥" },
     "MAX_CONCURRENCY": { "required": false, "default": "4", "description": "并发上限" }
@@ -68,10 +89,36 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
 }
 ```
 
+**应用版本号（强制）**：
+- `manifest.version` 使用 `MAJOR.MINOR.PATCH` 三段数字格式（例如 `1.2.3`）；新应用可从 `1.0.0` 开始。
+- 每次重新生成并交付用于更新同一应用的 `.awpk`，都必须比当前已安装/上次交付版本更高；即使只是修复、小改动或重打包，也至少递增 PATCH（`1.2.3` → `1.2.4`）。新增且向后兼容的功能递增 MINOR；不兼容变更递增 MAJOR，并将较低位归零。
+- 开始修改前先检查用户提供的现有 `manifest.json`、已有包或对话/项目记录，确定该应用当前版本；不能因为新一轮任务或上下文变化重置为 `1.0.0`，也不能重复使用已发布版本。若无法确认当前版本，先向用户询问，不能猜测。
+- 每次打包后再次核对新旧版本，并在交付说明中写明版本变化（例如 `1.2.3 → 1.2.4`）。版本号是作者侧更新契约；不要假设平台会自动递增或拒绝重复版本。
+
 **铁律**：
 1. `capabilities` 和 `network` 是应用的能力申请与出网边界声明；只声明应用实际需要的能力。上传不要求签名，修改后重新上传/更新。
 2. Agent 必须按本规范的接受清单和限制清单实现；不得自行增加平台 API、系统权限、网络出口或依赖安装途径。
 3. `runtime: "persistent"` 会常驻占用资源：没有持续服务需求的（哪怕要调 LLM）一律用 `invoked`。
+
+### 1.0.2 匿名访问路由（v0.3.6）
+
+应用门户可见范围（公开 / 站内 / 仅自己）与匿名访问权限是完全独立的设置。属主在应用设置中单独选择“关闭、只读、读写”；新建应用默认为关闭。公开可见不代表自动开放匿名访问，站内或仅自己应用也可以通过分享链接开放所声明的匿名路由，但仍不会因此出现在额外的门户列表或改变克隆规则。
+
+属主可在应用设置中为应用配置可选的自定义访问别名。配置后，应用也可通过 `https://<别名>.<SITE_DOMAIN>/` 访问；留空时仍使用应用 ID。别名只改变入口地址，不改变应用可见范围、匿名访问权限、克隆规则或 LLM 费用归属；应用创建时别名为空。应用 ID 与别名是不同 origin，浏览器本地存储和 host-only Cookie 不共享，建议对外固定使用其中一个入口。
+
+AWPK 必须在 `manifest.routes` 中逐条声明匿名可访问或需要账号身份的应用路由：
+
+| `access` | 含义 |
+|---|---|
+| `anonymous_read` | 只允许 `GET`、`HEAD`、`OPTIONS`；仅在属主应用级权限至少为“只读”时允许匿名请求 |
+| `anonymous_write` | 允许属主应用级权限为“读写”时匿名请求；只读设置会拒绝 |
+| `account` | 必须有完整平台账号会话；网关为该请求签发 `X-AAP-Identity` 与签名头，即使应用没有启用通用 `passUser` |
+
+`path` 是以 `/` 开头的应用路径，可用末尾 `*` 匹配路径前缀；`methods` 使用大写 HTTP 方法。WebSocket 使用方法 `WS`，属于写操作，只能声明为 `anonymous_write` 或 `account`。重叠路径由更具体的规则优先。没有匹配声明的路由一律拒绝匿名请求；账号访问仍按可见范围原有登录规则判断。不要把会修改状态、发起付费调用或暴露敏感信息的处理器标为 `anonymous_read`。此声明是平台网关实际强制的边界，不能只在前端隐藏按钮。
+
+`passUser` 是属主对应用身份注入的单独开关：开启后，普通应用路由（包括获准匿名访问的路由）收到的签名身份代表**应用当前属主**，不代表请求访问者；关闭时这些路由不注入身份。`account` 路由优先要求完整账号会话，并始终注入**实际访问者**身份，即使 `passUser` 已开启。匿名权限与可见范围仍独立控制能否访问；身份注入不会放宽访问控制。
+
+声明 `capabilities` 包含 `llm` 的应用，无论可见范围、访问者或是否匿名，所有 LLM 用量始终归应用当前属主账号；克隆副本以克隆者为新属主，其用量归克隆者。匿名应用必须由属主承担相应费用和额度限制。
 
 ### 1.0 Agent 边界清单（强制）
 
@@ -79,7 +126,7 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
 
 | 需求 | 唯一允许的接入方式 | 约束 |
 |---|---|---|
-| 大模型 | `aap.llm.chat`；`capabilities` 必须声明 `llm` | 走平台网关；有效平台身份按平台账号归因。应用自己的外部账号不会自动映射为平台账号，匿名/无身份调用可能被拒；不得自带模型 API key、直连模型服务或绕过网关 `/v1` |
+| 大模型 | `aap.llm.chat`；`capabilities` 必须声明 `llm` | 走平台网关；所有用量始终按应用当前属主计费，克隆副本归克隆属主，身份头不改变费用归属。需识别登录访问者时将路由声明为 `account`；匿名路由不传递访问者身份，开启 `passUser` 时收到的是属主身份。不得自带模型 API key、直连模型服务或绕过网关 `/v1` |
 | 应用私有结构化数据 | `aap.db.execute/query`；声明 `db` | 只访问本应用自己的 SQLite；SQL 参数使用 `?`；不得连平台数据库或其他应用数据库 |
 | 应用私有文件 | `aap.storage.put/get/delete/list`；声明 `storage` | 只在本应用配额目录内操作；不得把主机目录当文件存储 |
 | 第三方 HTTP GET | `aap.http.fetch` + `network` 白名单 | 仅 HTTP/HTTPS GET；域名、DNS 解析结果、每次重定向都由平台代理复核 |
@@ -124,7 +171,7 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
 
 ### 1.1 env——环境变量 / 机密声明（v0.2.2）
 
-需要外部配置（第三方 API key、模型名、阈值……）时，**在 manifest `env` 里声明，不要写死在代码里，更不要自己要求用户把 key 交给你**：
+需要外部配置（第三方 API key、阈值……）时，**在 manifest `env` 里声明，不要写死在代码里，更不要自己要求用户把 key 交给你**：
 
 ```jsonc
 "env": {
@@ -132,6 +179,8 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
   "变量名": { "required": true, "secret": true, "pattern": "^…$", "default": "…", "description": "…" }
 }
 ```
+
+**LLM 应用模型约定**：声明 `capabilities` 包含 `llm` 的应用必须在 `env` 中声明必填的 `MODEL`（`{"required": true}`），并通过 `os.environ["MODEL"]` 读取后显式传给 `aap.llm.chat(..., model=model)`。模型名由应用使用者在门户可用模型目录中选择；`MODEL` 不要声明为机密变量，不需要填写专属 `description`，也不要设置默认模型。向使用者给出清晰的选择建议：短文本分类、抽取、改写等简单任务优先选择响应快、成本较低且指令遵循稳定的模型；长文档分析或多步推理选择上下文长度和推理能力足够的模型；要求结构化输出时选择 JSON/格式遵循表现可靠的模型，并用代表性输入验证输出。最终以门户当前可用模型目录为准，结合质量、延迟和成本试用，不要假定目录中存在未展示的模型。现有包中的 `OCR_MODEL`、`MODEL_NAME` 等历史命名仍受门户模型选择器兼容，但新包统一使用 `MODEL`。
 
 | 字段 | 说明 |
 |---|---|
@@ -188,7 +237,7 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
 - **状态纪律**：进程会因空闲回收、崩溃或平台重启而消失；任务、结果、草稿等跨请求状态写入 `aap.db`/`aap.storage`，不得只放进程内存。
 - 应用以根路径工作，可使用普通网站的绝对路径（如 `/static/x.css`）；相对路径同样可用。兼容 `/app/<id>/` 入口时，代理会去掉旧前缀并下发 `X-Forwarded-Prefix`，但应用不应依赖这个兼容行为。
 - **应用自己的会话**：配置独立 origin 后可使用 `localStorage`、`sessionStorage` 和应用 host-only Cookie；本地路径沙箱回退不提供这些独立 origin 存储能力。平台会话 Cookie 不转发到应用；应用不得读取、复制或依赖平台身份状态。应用自有 Cookie 不得设置父域 `Domain`，浏览器存储仅对该应用 origin 可见。
-- **平台身份头是可选能力**：仅当管理员对应用启用 passUser 时才可使用注入身份头；应按平台契约验签，不能把它当作匿名/外部用户的通用身份。开发独立账号体系时，应用自行完成登录、会话和数据隔离。
+- **平台身份与 LLM 前置条件**：声明 `llm` 能力仍是调用 LLM 的必要条件，LLM 用量始终按当前应用属主计费，与身份头分开。开启 `passUser` 时普通路由收到的身份头代表应用属主；匿名获准访问时也可注入该属主身份。要识别平台访问者，必须将对应路由声明为 `account`；只有完整平台会话可访问该路由，网关优先注入实际访问者身份。persistent 应用在 Flask 请求处理中成对读取 `X-AAP-Identity` 与 `X-AAP-Identity-Sig` 并作为 SDK `identity` 传入；invoked 应用由平台注入对应身份环境变量。任何身份头都不会改变 LLM 费用归属。开发独立账号体系时，应用自行完成登录、会话和数据隔离。
 - 监听端口由平台通过环境变量注入 `PORT`，bind 到 `127.0.0.1`，不要自行选择端口；第三方出站仍只能走 `aap.http.fetch`。
 
 ---
@@ -200,23 +249,104 @@ description: "当用户要求开发、打包或重构 .awpk 应用包时使用�
 ### 3.1 `aap.llm.chat(messages, **opts)` — 调用大模型
 
 ```python
-resp = aap.llm.chat(
-    messages=[
-        {"role": "system", "content": "你是一个财务分析助手"},
-        {"role": "user", "content": f"总结 {text} 的要点"},
-    ],
-    model="glm-4.7",        # 可选；不填用平台默认模型
-    temperature=0.7,         # 可选
-    max_tokens=2000,         # 可选，建议写——影响预检额度预估
-)
-print(resp["content"])       # 助手回复文本
-print(resp["usage"])         # {"prompt_tokens":..., "completion_tokens":...}
+import os
+from flask import Flask, jsonify, request
+
+app = Flask(__name__)
+
+@app.post("/summarize")
+def summarize():
+    payload = request.headers.get("X-AAP-Identity")
+    signature = request.headers.get("X-AAP-Identity-Sig")
+    if not payload or not signature:
+        return jsonify({"error": "未收到完整的平台用户身份，请登录后重试"}), 401
+    identity = (payload, signature)
+    text = request.get_json()["text"]
+    resp = aap.llm.chat(
+        messages=[
+            {"role": "system", "content": "你是一个财务分析助手"},
+            {"role": "user", "content": f"总结 {text} 的要点"},
+        ],
+        model=os.environ["MODEL"],  # 必填模型配置，见 §1.1
+        identity=identity,         # 必须同时传入身份 payload 与签名
+        temperature=0.7,            # 可选
+        max_tokens=2000,             # 可选，建议写——影响预检额度预估
+    )
+    return jsonify({"content": resp["content"], "usage": resp["usage"]})
 ```
 
-- 走平台 LLM 网关（OpenAI 兼容）；有有效平台身份时 token 按平台账号归因。应用自建账号不自动成为平台计费身份；无归因调用可能被平台拒绝或按管理员策略处理，不要承诺应用访客可直接免费调用
-- 模型名以门户管理员的模型目录为准；写错会返回明确错误
+- **账号路由身份校验**：只有 manifest 声明为 `account` 的路由要求完整平台会话与有效身份。此类路由从 Flask 请求读取身份时两个头缺一不可；将 `(payload, sig)` 二元组通过 `identity=` 传给相关 `aap.llm.chat` / `aap.llm.chat_stream` 调用。仅传 payload 字符串、丢弃签名头或使用客户端自造身份头都不合规。匿名路由不传递访问者身份；若启用了 `passUser`，其中身份代表应用属主。LLM 网关始终按应用属主记账。
+- **单线程请求**：在 Flask 请求处理期间成对读取两个头并显式传入 `identity`（如上例）；不要把读取身份的逻辑延迟到请求上下文之外。
+- **后台线程 / 线程池**：若任务需要保留 `account` 路由访问者身份，在请求处理线程仍持有 Flask `request` 上下文时，先读取并校验两个头，形成 `(payload, sig)` 元组；把该元组作为任务参数传入每一层 worker，并在需要身份的 LLM 调用中显式传 `identity=identity`。后台线程不能依赖 Flask 的 `request` 上下文，也不能只传 payload。身份有效期为 10 分钟，不得写入数据库、持久队列、日志或作为长期任务凭据；身份过期且任务依赖该身份时，应要求用户重新发起。匿名 LLM 调用不需要访问者身份，费用仍归应用属主；如确需传身份，`passUser` 路由提供的是属主身份。
+- **invoked 应用**：SDK 从平台注入的 `AAP_IDENTITY_PAYLOAD` 与 `AAP_IDENTITY_SIG` 环境变量获取当前路由身份（passUser 路由为属主，account 路由为实际访问者）；不得自行从浏览器读取或构造身份头。若应用把调用转交后台工作线程，在提交任务前从这两个环境变量捕获 `(payload, sig)` 并作为 `identity=` 显式传递；不要假定工作线程有 Flask 请求上下文。
+- 走平台 LLM 网关（OpenAI 兼容）；应用调用的费用始终记入应用属主账号，克隆副本记入克隆属主账号。身份头用于传递经签名验证的运行身份，不改变费用归属。应用自建账号不自动成为平台计费身份；不要承诺应用访客可直接免费调用。
+- 模型名以门户当前可用模型目录为准；写错或不可用会返回错误。根据任务类型向使用者推荐模型：简单短文本任务优先快且经济的模型，复杂推理/长文档选能力和上下文足够的模型，结构化输出任务选格式遵循稳定的模型；用代表性输入试用后再确定。
 - 当前 SDK 的 `stream=True` 不代表上游模型的实时流式传输；不要依赖首 token 延迟或实时增量输出，需要实时流式时先确认平台 SDK 契约已更新。
 - 不传 `max_tokens` 时的生成上限由平台设置 `LLM_SANDBOX_MAX_TOKENS` 统一治理（0 = 不限制）；显式指定可精确控制预检额度预估
+
+后台任务示例（身份必须在请求线程中捕获，所有 LLM 调用都显式传入同一个短期元组）：
+
+```python
+import os
+from concurrent.futures import ThreadPoolExecutor
+from flask import Flask, jsonify, request
+
+app = Flask(__name__)
+executor = ThreadPoolExecutor(max_workers=4)
+
+def run_job(text, identity):
+    return aap.llm.chat(
+        messages=[{"role": "user", "content": text}],
+        model=os.environ["MODEL"],
+        identity=identity,
+    )
+
+@app.post("/jobs")
+def create_job():
+    payload = request.headers.get("X-AAP-Identity")
+    signature = request.headers.get("X-AAP-Identity-Sig")
+    if not payload or not signature:
+        return jsonify({"error": "未收到完整的平台用户身份，请登录后重试"}), 401
+    identity = (payload, signature)
+    executor.submit(run_job, request.get_json()["text"], identity)
+    return jsonify({"status": "queued"}), 202
+```
+
+不要把示例中的身份元组保存到任务表或长期队列；如任务可能排队超过身份有效期，应在有效期内执行模型调用或要求用户重新提交任务。禁止用捕获 `TypeError`、空身份或无归因策略作为自动回退。
+
+### 3.1.1 `aap.llm` 媒体上传与异步 chat
+
+图片/视频使用独立原始字节上传，随后以短期引用提交异步任务；不要把大文件 Base64 塞进普通 `aap.llm.chat`。单个图片最多 5 MiB，单个视频最多 50 MiB；每次 chat 的媒体合计最多 50 MiB、最多 20 个文件。支持 JPEG、PNG、WebP、GIF、MP4、WebM、MOV。上传引用绑定当前应用及平台用户，1 小时过期。
+
+```python
+import os
+import time
+
+media = aap.llm.upload_media("/tmp/receipt.jpg")
+job = aap.llm.chat_async(
+    messages=[{"role": "user", "content": "请识别图片中的内容"}],
+    media=[media],
+    model=os.environ["MODEL"],
+    max_tokens=1200,
+)
+
+while True:
+    job = aap.llm.get_chat_job(job["id"])
+    if job["status"] in ("completed", "failed"):
+        break
+    time.sleep(1)
+
+if job["status"] == "failed":
+    raise RuntimeError(job["error"])
+result = job["result"]
+```
+
+- `upload_media(file_path, content_type=None, progress=None, identity=None)` 通过 1 MiB 分块发送原始文件字节；上传回调参数是 `(已发送字节数, 文件总字节数)`，返回值含 `id`、`type`、`mimeType`、`size`、`uploadMs` 与 `expiresAt`。身份优先级沿用 `aap.llm.chat`；长期任务不得保存身份元组。
+- `chat_async(messages, media, model=None, temperature=None, max_tokens=None, identity=None)` 返回 `id/status/stage`，平台把媒体引用附加到最后一条 user 消息；messages 应包含至少一条 user 消息。`get_chat_job(job_id, identity=None)` 返回任务状态，完成时含 OpenAI 兼容的 `result`，失败时含 `error`，并在 `timings` 提供 `uploadMs`、`queueMs`、`prepareMs`、`gatewayMs`、`totalMs` 与 `requestId`。
+- 阶段包括 `queued`、`preparing`、`routing`、`preparing_media`、`upstream_processing`、`settling`、`completed`、`failed`。应用应轮询并向用户展示当前阶段；网络故障、模型路由不支持或上游失败均可能导致 `failed`。
+- 有效身份签名 10 分钟过期。平台只在进程内排队身份，不会持久化；排队过久导致身份过期时，模型任务会失败，需由用户重新提交。仅为查询已提交任务，平台允许用原始签名身份在任务有效期内读取该任务状态/结果；该过期身份不能用于上传媒体、提交任务或新的 LLM 调用。任务状态与媒体引用最长保留 1 小时。
+- 管理员须在模型路由中配置媒体格式：`image_url` 适用于图片；`video_url` 适用于图片和视频。`video_url` 是上游扩展格式，平台以 `data:video/...;base64,...` 发送，不属于所有 OpenAI-compatible 服务的通用约定；只有确认上游支持时才能启用。视频请求只选择 `video_url` 路由，不会降级为图片格式。
+- 含图片或视频的异步 chat 默认最多等待上游 600 秒，可由管理员通过 `LLM_MEDIA_TIMEOUT_SECONDS` 调整。媒体计量以上游返回的 usage 为准；上游不返回 usage 时，平台估算会排除 Base64 媒体字节，不把文件大小误算成文本 token。
 
 ### 3.2 `aap.db` — 数据库（每包独立 SQLite，支持 SQL）
 
@@ -324,6 +454,7 @@ aap.log.error("生成失败: %s", err)               # 失败（同时按规范�
 
 ```python
 # manifest: type=python, runtime=invoked, capabilities=["llm"]
+import os
 
 def handle(input: dict, aap) -> dict:
     """
@@ -340,6 +471,7 @@ def handle(input: dict, aap) -> dict:
                 {"role": "system", "content": "你是财务摘要助手，输出 JSON"},
                 {"role": "user", "content": f"股票 {code}，备注 {text}，生成三句话摘要"},
             ],
+            model=os.environ["MODEL"],
             max_tokens=800,
         )
     except Exception as err:                   # noqa: BLE001 — 顶层兜底
@@ -371,7 +503,10 @@ def home():
 
 @app.route("/generate", methods=["POST"])
 def generate():
-    resp = aap.llm.chat(messages=[{"role": "user", "content": request.form["topic"]}])
+    resp = aap.llm.chat(
+        messages=[{"role": "user", "content": request.form["topic"]}],
+        model=os.environ["MODEL"],
+    )
     return jsonify({"text": resp["content"]})
 
 if __name__ == "__main__":
@@ -385,7 +520,11 @@ if __name__ == "__main__":
 **manifest 与能力声明**
 
 - [ ] manifest 各字段齐备；`capabilities` / `network` / `runtime` / `env` 与代码实际行为严格一致，按需最小声明；仅 `llm` 当前由服务端对未声明调用强制拒绝，`db`/`storage` 声明目前不构成逐项运行时闸
+- [ ] 若这是既有应用的新更新包，已核对当前版本并递增 `manifest.version`（至少 PATCH）；交付说明标出旧版本 → 新版本，版本未知时先询问而非重置/猜测
 - [ ] 外部配置项已声明 manifest `env`（§1.1）：必填/可选、secret、pattern 划分正确，代码经 `os.environ` 读取，未声明平台保留变量名
+- [ ] 声明 `llm` 能力的包已声明必填 `env.MODEL`，代码显式将其传给 `aap.llm.chat`；不使用应用专属模型变量描述或硬编码模型
+- [ ] 身份路由完整：匿名访问仍由应用级权限和 manifest 路由共同控制；`passUser` 注入属主身份，`account` 要求登录并注入实际访问者身份；后台任务捕获并逐层传递所需身份；所有 LLM 用量仍由应用属主承担
+- [ ] 已按任务特征向使用者提供 `MODEL` 选择建议，并让使用者从门户当前模型目录试用配置；不假定或硬编码目录外模型
 - [ ] 没有硬编码任何密钥/令牌；没有绕过平台向使用者索要密钥（前端输入框收 key = 设计错误）
 
 **代码边界**

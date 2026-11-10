@@ -16,35 +16,45 @@ import { Readable } from 'node:stream';
 import path from 'node:path';
 import express, { Router, type Request, type Response } from 'express';
 import { config } from '../config/index.js';
-import { canAccess, findApp, getUrlSecret, isSlug, requiresOwnerIdentity, type AppRow, type UrlSecret } from './registry.js';
+import { canAccess, findApp, getUrlSecret, hasValidLlmOwner, isSlug, manifestRouteAccess, requiresOwnerBilling, type AppRow, type UrlSecret } from './registry.js';
 import { signAppIdentity } from './identity.js';
 import { allowRequest } from './limiter.js';
 import { getSettingInt } from '../lib/settings.js';
 import { injectAppShareMetadata, injectChrome, injectSandboxBridge, serveHtmlApp, serveSandboxShell, needsIframeSandbox, stripRawPrefix, RAW_SANDBOX_CSP, type AppShareMetadata } from './staticApp.js';
+import { shareMetadataFor } from './shareMetadata.js';
 import { ensurePersistent, touchByPort } from '../lib/sandbox.js';
 import { missingRequiredEnv } from '../lib/appEnv.js';
 import { recordAppRuntimeEvent } from '../lib/appRuntimeEvents.js';
-import { appDomainRoot, appIdFromHostname, isAppHostname } from './appDomains.js';
+import { appDomainRoot, appIdFromHostname, isAppHostname, resolveAppIdFromHostname } from './appDomains.js';
 import { appCookieHeader, safeAppSetCookies } from './appCookies.js';
 import http from 'node:http';
 
 export const gatewayRouter = Router();
 
 gatewayRouter.use((req, res, next) => {
-  const appId = appIdFromHostname(req.hostname);
-  if (appId === null) return next();
-  if (!appId) {
+  const label = appIdFromHostname(req.hostname);
+  if (label === null) return next();
+  if (!label) {
     res.status(404).type('text').send('Application not found');
     return;
   }
-  const rewritten = `/app/${encodeURIComponent(appId)}${req.url.startsWith('/') ? req.url : `/${req.url}`}`;
-  req.url = rewritten;
-  req.originalUrl = rewritten;
-  next();
+  void resolveAppIdFromHostname(req.hostname)
+    .then((appId) => {
+      if (appId === null) return next();
+      if (!appId) {
+        res.status(404).type('text').send('Application not found');
+        return;
+      }
+      const rewritten = `/app/${encodeURIComponent(appId)}${req.url.startsWith('/') ? req.url : `/${req.url}`}`;
+      req.url = rewritten;
+      req.originalUrl = rewritten;
+      next();
+    })
+    .catch(next);
 });
 
 // 不转发给上游的请求头（x-aap-identity* 也在列：客户端自带的身份头一律剥除，
-// 仅在 passUser 启用时由网关注入重新签名的身份头，防伪造）
+// 仅由 passUser 或 account 路由触发网关注入重新签名的身份头，防伪造）
 const REQ_SKIP = new Set([
   'host',
   'connection',
@@ -88,31 +98,21 @@ function escapeHtml(s: string): string {
   return String(s).replace(/[&<>"']/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;'));
 }
 
-function shareMetadataFor(req: Request, app: AppRow, appOrigin: boolean): AppShareMetadata | undefined {
-  const host = appOrigin
-    ? `${appDomainRoot()}${req.get('host')?.match(/:(\d+)$/)?.[0] ?? ''}`
-    : req.get('host');
-  const iconPrefix = `/api/apps/${encodeURIComponent(app.id)}/icon/`;
-  const iconFilename = app.icon?.startsWith(iconPrefix) ? app.icon.slice(iconPrefix.length) : '';
-  const imagePath = /^icon-[a-f0-9]{32}\.(?:png|jpe?g|gif|webp)$/.test(iconFilename)
-    ? `${config.gatewayPrefix ?? ''}${app.icon}`
-    : null;
-  return {
-    title: app.name,
-    description: app.description || app.name,
-    imageUrl: host && imagePath ? `${req.protocol}://${host}${imagePath}` : null,
-  };
-}
-
-function htmlLoginRedirect(res: Response, metadata: AppShareMetadata | undefined, loginHref: string): void {
+function htmlLoginRedirect(
+  req: Request,
+  res: Response,
+  metadata: AppShareMetadata | undefined,
+  loginHref: string,
+): void {
   const safeLoginHref = escapeHtml(loginHref);
   const scriptHref = JSON.stringify(loginHref).replace(/</g, '\\u003c');
+  const userAgent = req.get('user-agent') ?? '';
+  const isSocialCrawler = /bot|crawler|spider|preview|facebookexternalhit|facebot|twitterbot|whatsapp|telegrambot|discordbot|slackbot|linkedinbot|skypeuri/i.test(userAgent);
   const page =
     '<!doctype html><html><head><meta charset="utf-8">' +
-    `<meta http-equiv="refresh" content="0;url=${safeLoginHref}">` +
     '</head><body><p>此应用需要登录后访问，正在跳转…' +
     `<a href="${safeLoginHref}">前往登录</a></p>` +
-    `<script>window.location.replace(${scriptHref})</script></body></html>`;
+    `${isSocialCrawler ? '' : `<script>window.location.replace(${scriptHref})</script>`}</body></html>`;
   res.type('html').send(metadata ? injectAppShareMetadata(page, metadata) : page);
 }
 
@@ -277,23 +277,36 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
     return htmlError(res, 404, '应用不存在', '未找到应用 %% 或已被停用', id);
   }
 
-  const appOrigin = appIdFromHostname(req.hostname) === id;
+  const appOrigin = await resolveAppIdFromHostname(req.hostname) === id;
   const shareMetadata = shareMetadataFor(req, app, appOrigin);
   const shouldUseAppOrigin = app.kind !== 'upstream' && await needsIframeSandbox(app);
+  const requestedSubpath = decodeSafe((req.params[0] as string | undefined) ?? '')
+    .replace(/^raw(?:\/|$)/, '');
+  const requestedPath = `/${requestedSubpath}`.replace(/\/{2,}/g, '/');
+  const routeAccess = manifestRouteAccess(app, req.method, requestedPath);
   // 访问策略三态
   const user = req.user;
-  if (!await canAccess(app, user ?? null)) {
+  if (!await canAccess(app, user ?? null, { method: req.method, path: requestedPath })) {
     if (!user) {
       const portalHost = appOrigin ? appDomainRoot() : '';
       const port = appOrigin ? req.get('host')?.match(/:(\d+)$/)?.[1] : undefined;
       const loginPath = `${config.gatewayPrefix ?? ''}/login`;
-      const returnPath = `${config.gatewayPrefix ?? ''}/my-apps`;
-      const search = new URLSearchParams({ next: returnPath, nonPublicApp: '1' });
+      const targetSubpath = decodeSafe((req.params[0] as string | undefined) ?? '');
+      const queryIndex = req.url.indexOf('?');
+      const query = queryIndex < 0 ? '' : req.url.slice(queryIndex);
+      const target = `/app/${encodeURIComponent(id)}/${targetSubpath}${query}`;
+      const returnPath = `/app-login-return?${new URLSearchParams({ appId: id, target }).toString()}`;
+      const search = new URLSearchParams({
+        next: returnPath,
+        nonPublicApp: '1',
+        appId: id,
+        target,
+      });
       const loginPathWithQuery = `${loginPath}?${search.toString()}`;
       const loginHref = appOrigin
         ? `${req.protocol}://${portalHost}${port ? `:${port}` : ''}${loginPathWithQuery}`
         : loginPathWithQuery;
-      return htmlLoginRedirect(res, shareMetadata, loginHref);
+      return htmlLoginRedirect(req, res, shareMetadata, loginHref);
     }
     if (user.authState !== 'full') {
       return htmlError(res, 403, '需要完成验证', '请先完成多因子认证');
@@ -305,7 +318,7 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
   }
 
   // 双维度限流
-  const userKey = requiresOwnerIdentity(app) && app.ownerUserId !== null
+  const userKey = requiresOwnerBilling(app) && app.ownerUserId !== null
     ? `owner:${app.ownerUserId}`
     : user ? `${user.kind}:${user.id}` : null;
   if (!allowRequest(userKey, req.clientIp ?? 'unknown')) {
@@ -357,10 +370,12 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
         return htmlError(res, 503, '应用配置非法', err instanceof Error ? err.message : '应用配置非法');
       }
       if (!port) return htmlError(res, 503, '应用启动中', '请稍后重试');
-      // 公开 LLM 应用固定使用属主身份；其他 passUser 应用沿用当前登录用户。
-      const identity = await signAppIdentity(app, user);
-      if (requiresOwnerIdentity(app) && !identity) {
-        return htmlError(res, 503, '应用暂不可用', '无法确认公开应用的归属账号，暂时无法运行');
+      // passUser 路由签应用属主；account 路由强制签实际访问者。LLM 费用按 appId 归属。
+      const identity = await signAppIdentity(app, user, {
+        force: routeAccess?.access === 'account',
+      });
+      if (requiresOwnerBilling(app) && !await hasValidLlmOwner(app)) {
+        return htmlError(res, 503, '应用暂不可用', '无法确认应用的大模型费用归属账号');
       }
       return proxyToSandbox(req, res, port, inRaw ? stripRawPrefix(sub0) : sub0, identity, app.id, inRaw, appOrigin, shareMetadata);
     }
@@ -385,10 +400,12 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
   }
   const prefix = appOrigin ? '' : `/app/${encodeURIComponent(id)}`;
 
-  // 公开 LLM 应用固定使用属主身份；其他 passUser 应用沿用当前登录用户。
-  const identity = await signAppIdentity(app, user);
-  if (requiresOwnerIdentity(app) && !identity) {
-    return htmlError(res, 503, '应用暂不可用', '无法确认公开应用的归属账号，暂时无法运行');
+  // passUser 路由签应用属主；account 路由强制签实际访问者。LLM 费用按 appId 归属。
+  const identity = await signAppIdentity(app, user, {
+    force: routeAccess?.access === 'account',
+  });
+  if (requiresOwnerBilling(app) && !await hasValidLlmOwner(app)) {
+    return htmlError(res, 503, '应用暂不可用', '无法确认应用的大模型费用归属账号');
   }
   const headers = filterRequestHeaders(req, base, identity, appOrigin);
 
@@ -468,7 +485,7 @@ gatewayRouter.all('/app/:id/*', async (req: Request, res: Response) => {
       }
       // 统一页面元素（P3）：返回超级面板入口（幂等、失败静默）
       html = injectChrome(html, id);
-      return res.send(html);
+      return res.send(shareMetadata ? injectAppShareMetadata(html, shareMetadata) : html);
     }
 
     if (upstream.body) {

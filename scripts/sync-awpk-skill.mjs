@@ -60,5 +60,6 @@ fs.copyFileSync(sourceFile, markdownFile);
 for (const file of [packageFile, zipFile, markdownFile]) {
   fs.copyFileSync(file, path.join(assetsDir, path.basename(file)));
 }
+fs.copyFileSync(sourceFile, path.join(assetsDir, path.basename(sourceFile)));
 
-console.log(`Updated ${packageFile}, ${zipFile}, and ${markdownFile}; copied all three to ${assetsDir}`);
+console.log(`Updated ${packageFile}, ${zipFile}, and ${markdownFile}; copied skill downloads and source to ${assetsDir}`);

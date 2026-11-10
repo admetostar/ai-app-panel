@@ -1,4 +1,7 @@
 import { getSetting } from '../lib/settings.js';
+import { getDb } from '../db/index.js';
+import { apps } from '../db/schema.js';
+import { eq } from 'drizzle-orm';
 import { isSlug } from './registry.js';
 
 export function appDomainRoot(): string {
@@ -18,4 +21,25 @@ export function appIdFromHostname(hostname: string | null | undefined, root = ap
 
 export function isAppHostname(hostname: string | null | undefined, root = appDomainRoot()): boolean {
   return appIdFromHostname(hostname, root) !== null;
+}
+
+/** Resolve a valid application host label to its stable app ID, supporting owner-defined aliases. */
+export async function resolveAppIdFromHostname(hostname: string | null | undefined, root = appDomainRoot()): Promise<string | null> {
+  const label = appIdFromHostname(hostname, root);
+  if (label === null || label === '') return label;
+
+  const [byId] = await getDb().select({ id: apps.id }).from(apps).where(eq(apps.id, label)).limit(1);
+  if (byId) return byId.id;
+
+  const [byAlias] = await getDb().select({ id: apps.id }).from(apps).where(eq(apps.alias, label)).limit(1);
+  return byAlias?.id ?? label;
+}
+
+export async function appIdConflictsWithAlias(appId: string): Promise<boolean> {
+  const [alias] = await getDb().select({ id: apps.id }).from(apps).where(eq(apps.alias, appId)).limit(1);
+  return alias !== undefined;
+}
+
+export function isValidAppAlias(alias: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(alias);
 }

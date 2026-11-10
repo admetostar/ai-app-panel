@@ -12,7 +12,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import express, { Router } from 'express';
 import { and, eq, gt, inArray, isNotNull, ne, sql } from 'drizzle-orm';
-import type { AppCard, OwnedAppCard } from '@aap/shared';
+import type { AppAnonymousAccess, AppCard, OwnedAppCard } from '@aap/shared';
 import { getDb } from '../db/index.js';
 import {
   appRuns,
@@ -25,7 +25,7 @@ import {
 } from '../db/schema.js';
 import { HttpError, h } from '../lib/httpError.js';
 import { requireAuth, requireStepUp } from '../lib/auth.js';
-import { appHasLlmCapability, canAccess, isVisibleInPortal } from '../gateway/registry.js';
+import { appHasLlmCapability, canAccess, hasManifestAnonymousRoutes, isVisibleInPortal, manifestRouteAccess } from '../gateway/registry.js';
 import { allowRequest } from '../gateway/limiter.js';
 import { appSiteDir, isAwpkFilename } from '../gateway/staticApp.js';
 import { loopbackPlatformPort, runInvoked } from '../lib/sandbox.js';
@@ -37,6 +37,7 @@ import { encryptSecret, decryptSecret } from '../lib/cryptoSecrets.js';
 import { missingRequiredEnv } from '../lib/appEnv.js';
 import { stopPersistentFor } from '../lib/sandbox.js';
 import { getSettingInt } from '../lib/settings.js';
+import { appIdConflictsWithAlias, isValidAppAlias } from '../gateway/appDomains.js';
 import { appEnvVars } from '../db/schema.js';
 import { assertAppUploadQuota } from '../lib/billing.js';
 import { installPyDeps } from '../lib/pydeps.js';
@@ -67,6 +68,20 @@ async function loadApp(id: string) {
   return (await getDb().select().from(apps).where(eq(apps.id, id)))[0];
 }
 
+appsRunRouter.get(
+  '/apps/:id/login-redirect',
+  requireAuth,
+  h(async (req, res) => {
+    const app = await loadApp(String(req.params.id));
+    if (!app || !app.enabled) {
+      throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在或不可访问');
+    }
+    res.json({
+      openApp: app.visibility === 'public' || app.ownerUserId === req.user!.id,
+    });
+  }),
+);
+
 export function appIconDir(appId: string): string {
   const directoryId = createHash('sha256').update(appId).digest('hex');
   return path.join(config.dataDir, 'app-private', 'icons', directoryId);
@@ -90,12 +105,32 @@ function removePreviousIcon(app: { id: string; icon: string | null }, keepFilena
 }
 
 appsRunRouter.get(
+  '/apps/:id/share-icon/:filename',
+  h(async (req, res) => {
+    const app = await loadApp(String(req.params.id));
+    const filename = String(req.params.filename);
+    if (!app || !app.enabled || iconFilenameFor(app) !== filename) {
+      throw new HttpError(404, 'APP_ICON_NOT_FOUND', '应用图标不存在或不可访问');
+    }
+
+    const extension = path.extname(filename);
+    const file = path.join(appIconDir(app.id), filename);
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.type(extension).send(fs.readFileSync(file));
+  }),
+);
+
+appsRunRouter.get(
   '/apps/:id/icon/:filename',
   h(async (req, res) => {
     const app = await loadApp(String(req.params.id));
-    const canView = app?.visibility === 'login'
-      ? Boolean(req.user && req.user.authState === 'full')
-      : Boolean(app && isVisibleInPortal(app, req.user ?? null));
+    const canView = Boolean(
+      app && (
+        isVisibleInPortal(app, req.user ?? null)
+        || req.user?.role === 'admin'
+        || req.user?.id === app.ownerUserId
+      ),
+    );
     const filename = String(req.params.filename);
     if (
       !app ||
@@ -200,8 +235,8 @@ appsRunRouter.get(
     if (!app || !app.enabled) {
       throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在或不可访问');
     }
-    if (!await canAccess(app, req.user ?? null)) {
-      if (!req.user && app.visibility !== 'public') {
+    if (!await canAccess(app, req.user ?? null, { method: req.method, path: '/meta' })) {
+      if (!req.user) {
         throw new HttpError(401, 'LOGIN_REQUIRED', '请先登录平台账号后访问此应用');
       }
       throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在或不可访问');
@@ -234,8 +269,8 @@ appsRunRouter.post(
     if (!app || !app.enabled || app.kind !== 'package') {
       throw new HttpError(404, 'APP_NOT_FOUND', '应用不存在或不是可执行包');
     }
-    if (!await canAccess(app, req.user ?? null)) {
-      if (!req.user && app.visibility !== 'public') {
+    if (!await canAccess(app, req.user ?? null, { method: req.method, path: '/run' })) {
+      if (!req.user) {
         throw new HttpError(401, 'LOGIN_REQUIRED', '请先登录平台账号后访问此应用');
       }
       throw new HttpError(403, 'FORBIDDEN', '无权访问该应用');
@@ -251,25 +286,25 @@ appsRunRouter.post(
     }
     const entry = manifest.entry || 'mod.py';
     const input = (req.body ?? {}) as { input?: unknown };
-    const publicLlmApp = app.visibility === 'public' && appHasLlmCapability(app);
-    let executionUserId: number | null;
-    if (publicLlmApp) {
+    const runAccess = manifestRouteAccess(app, 'POST', '/run')?.access;
+    const llmApp = appHasLlmCapability(app);
+    let ownerUserId: number | null = null;
+    if (llmApp) {
       const ownerId = app.ownerUserId;
       if (
         ownerId == null
         || !(await getDb().select({ id: users.id }).from(users).where(eq(users.id, ownerId)))[0]
       ) {
-        throw new HttpError(503, 'APP_OWNER_UNAVAILABLE', '无法确认公开应用的归属账号，暂时无法运行');
+        throw new HttpError(503, 'APP_OWNER_UNAVAILABLE', '无法确认大模型应用的费用归属账号');
       }
-      executionUserId = ownerId;
-    } else {
-      executionUserId = req.user?.authState === 'full' ? req.user.id : null;
+      ownerUserId = ownerId;
     }
+    const executionUserId = req.user?.authState === 'full' ? req.user.id : null;
     const auditUserId = req.user?.authState === 'full' ? req.user.id : null;
-    const limiterUserId = publicLlmApp ? executionUserId : auditUserId;
+    const limiterUserId = llmApp ? ownerUserId : auditUserId;
     const userKey = limiterUserId == null
       ? null
-      : publicLlmApp ? `owner:${limiterUserId}` : `${req.user!.kind}:${limiterUserId}`;
+      : llmApp ? `owner:${limiterUserId}` : `${req.user!.kind}:${limiterUserId}`;
     if (!allowRequest(userKey, req.clientIp ?? 'unknown')) {
       throw new HttpError(429, 'RATE_LIMITED', '请求过于频繁，请稍后再试');
     }
@@ -285,7 +320,13 @@ appsRunRouter.post(
     // loopbackPlatformPort）。绝不能用请求 Host——那会注入沙箱的净网守卫
     // 放行面，也是 AAP_TOKEN 的外泄目标（渗透测试 P1-8 关联项）
     const platformBase = `http://127.0.0.1:${loopbackPlatformPort(req.socket.localPort, config)}`;
-    const result = await runInvoked(app.id, entry, input.input ?? {}, { userId: executionUserId, timeoutMs: 30_000, platformBase });
+    const result = await runInvoked(app.id, entry, input.input ?? {}, {
+      userId: executionUserId,
+      timeoutMs: 30_000,
+      platformBase,
+      forceIdentity: runAccess === 'account',
+      suppressIdentity: runAccess === 'anonymous_read' || runAccess === 'anonymous_write',
+    });
 
     await getDb()
       .insert(appRuns)
@@ -335,7 +376,7 @@ async function updateOwnedAppVisibility(
   appId: string,
   userId: number,
   visibility: 'public' | 'login' | 'private',
-  options: { name?: string; description?: string; enable?: boolean } = {},
+  options: { name?: string; description?: string; enable?: boolean; anonymousAccess?: AppAnonymousAccess; alias?: string | null } = {},
   llmOwnerConsent = false,
 ): Promise<number> {
   return getDb().transaction(async (tx) => {
@@ -396,6 +437,10 @@ async function updateOwnedAppVisibility(
         ...(options.name !== undefined ? { name: options.name } : {}),
         ...(options.description !== undefined ? { description: options.description } : {}),
         ...(options.enable ? { enabled: true } : {}),
+        ...(options.anonymousAccess !== undefined
+          ? { anonymousAccess: options.anonymousAccess, anonymousAccessPolicy: 'manifest' }
+          : {}),
+        ...(options.alias !== undefined ? { alias: options.alias } : {}),
         visibility,
         updatedAt: Date.now(),
         ...(rewardPoints !== app.publicationRewardPoints ? { publicationRewardPoints: rewardPoints } : {}),
@@ -414,7 +459,14 @@ appsRunRouter.put(
     if (app.ownerUserId !== req.user!.id) throw new HttpError(403, 'FORBIDDEN', '只有应用归属者可以修改应用设置');
     if (app.kind === 'upstream') throw new HttpError(400, 'NOT_PACKAGE', '仅托管应用可以修改这些设置');
 
-    const body = (req.body ?? {}) as { name?: unknown; description?: unknown; visibility?: unknown; llmOwnerConsent?: unknown };
+    const body = (req.body ?? {}) as {
+      name?: unknown;
+      description?: unknown;
+      visibility?: unknown;
+      anonymousAccess?: unknown;
+      alias?: unknown;
+      llmOwnerConsent?: unknown;
+    };
     if (typeof body.name !== 'string' || !body.name.trim() || body.name.trim().length > 191) {
       throw new HttpError(400, 'INVALID_NAME', '应用名称不能为空且不能超过 191 个字符');
     }
@@ -425,17 +477,70 @@ appsRunRouter.put(
     if (visibility !== 'public' && visibility !== 'login' && visibility !== 'private') {
       throw new HttpError(400, 'INVALID_VISIBILITY', '可见范围必须是公开、站内或仅自己');
     }
+    let anonymousAccess: AppAnonymousAccess | undefined;
+    if (body.anonymousAccess !== undefined) {
+      if (body.anonymousAccess !== 'none' && body.anonymousAccess !== 'read' && body.anonymousAccess !== 'write') {
+        throw new HttpError(400, 'INVALID_ANONYMOUS_ACCESS', '匿名访问权限必须是关闭、只读或读写');
+      }
+      anonymousAccess = body.anonymousAccess;
+      if (anonymousAccess !== 'none' && !hasManifestAnonymousRoutes(app, anonymousAccess)) {
+        throw new HttpError(400, 'ANONYMOUS_ROUTES_REQUIRED', '请先在 AWPK manifest 中声明匹配的匿名访问路由');
+      }
+    }
+    let alias: string | null | undefined;
+    if (body.alias !== undefined) {
+      if (typeof body.alias !== 'string') {
+        throw new HttpError(400, 'INVALID_APP_ALIAS', '应用别名必须是字符串');
+      }
+      alias = body.alias.trim().toLowerCase() || null;
+      if (alias !== null) {
+        if (!isValidAppAlias(alias)) {
+          throw new HttpError(400, 'INVALID_APP_ALIAS', '别名只能包含小写字母、数字和连字符，且不能以连字符开头或结尾');
+        }
+        if (alias === app.id) {
+          throw new HttpError(400, 'INVALID_APP_ALIAS', '别名不能与应用 ID 相同');
+        }
+        const [idConflict] = await getDb()
+          .select({ id: apps.id })
+          .from(apps)
+          .where(eq(apps.id, alias))
+          .limit(1);
+        if (idConflict) {
+          throw new HttpError(409, 'APP_ALIAS_CONFLICT', '该别名已被其他应用 ID 占用');
+        }
+      }
+    }
 
     const values = {
       name: body.name.trim(),
       description: body.description.trim(),
       visibility,
+      anonymousAccess,
+      alias,
     };
     const llmOwnerConsent = body.llmOwnerConsent === true;
-    const pointsAwarded = await updateOwnedAppVisibility(app.id, req.user!.id, visibility, values, llmOwnerConsent);
+    let pointsAwarded: number;
+    try {
+      pointsAwarded = await updateOwnedAppVisibility(app.id, req.user!.id, visibility, values, llmOwnerConsent);
+    } catch (error) {
+      const databaseError = error instanceof Error && 'cause' in error ? error.cause : error;
+      if (
+        typeof databaseError === 'object'
+        && databaseError !== null
+        && 'code' in databaseError
+        && databaseError.code === '23505'
+        && 'constraint' in databaseError
+        && databaseError.constraint === 'apps_alias_uq'
+      ) {
+        throw new HttpError(409, 'APP_ALIAS_CONFLICT', '该别名已被其他应用使用');
+      }
+      throw error;
+    }
     await audit(`${req.user!.kind}:${req.user!.id}`, req.clientIp ?? null, 'app.settings.update', {
       appId: app.id,
       visibility: values.visibility,
+      anonymousAccess: values.anonymousAccess,
+      alias: values.alias,
       pointsAwarded,
       llmOwnerConsentAccepted:
         visibility === 'public' && app.visibility !== 'public' && appHasLlmCapability(app) && llmOwnerConsent,
@@ -624,6 +729,10 @@ appsRunRouter.post(
         throw new HttpError(409, 'APP_EXISTS', '同名应用已存在');
       }
     }
+    if (!existing && await appIdConflictsWithAlias(manifest.name)) {
+      fs.rmSync(appSiteDir(tmpDir), { recursive: true, force: true });
+      throw new HttpError(409, 'APP_ID_CONFLICT', '应用 ID 已被其他应用的别名占用');
+    }
     if (!existing && req.user!.role !== 'admin') {
       try {
         await assertAppUploadQuota(req.user!.id);
@@ -745,6 +854,7 @@ appsRunRouter.get(
           : [];
         return {
           id: r.id,
+          alias: r.alias,
           name: r.name,
           description: r.description,
           icon: r.icon,
@@ -753,6 +863,9 @@ appsRunRouter.get(
           runtimeMode: r.runtimeMode as OwnedAppCard['runtimeMode'],
           visibility: r.visibility as AppCard['visibility'],
           isClone: r.clonedFromAppId !== null,
+          anonymousAccess: r.anonymousAccess as AppAnonymousAccess,
+          anonymousReadSupported: hasManifestAnonymousRoutes(r, 'read'),
+          anonymousWriteSupported: hasManifestAnonymousRoutes(r, 'write'),
           status: (r.healthState as AppCard['status']) ?? 'unknown',
           sort: r.sort,
           accessible: r.enabled,

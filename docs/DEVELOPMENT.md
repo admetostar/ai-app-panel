@@ -26,7 +26,7 @@ pnpm install
 pnpm dev            # server:8080（tsx watch）+ web:5173（Vite，代理 /api 与 /app）
 pnpm skills:sync    # 从 Markdown 更新 .skill/.zip 包并同步三种下载格式到 apps/server/assets
 pnpm build          # 先同步 skill，再构建 shared → server → web（生产产物 apps/web/dist）
-pnpm test           # 服务端测试（vitest，24 个文件 241 个用例）
+pnpm test           # 服务端测试（vitest，24 个文件 249 个用例）
 pnpm test:e2e       # Playwright 端到端（自动拉起真实服务 + mock 上游）
 pnpm typecheck      # 全仓类型检查
 pnpm db:generate    # drizzle-kit 生成迁移（schema 变更后必跑）
@@ -36,7 +36,7 @@ pnpm db:generate    # drizzle-kit 生成迁移（schema 变更后必跑）
 
 门户首页首屏背景图源文件位于 `apps/server/assets/home-background.png`，由 Vite 从 `apps/web/src/global.css` 打包；首页背景卡片、页眉、内容区与页脚共用约 1130px 的内容宽度。首屏主按钮未登录进入 `/login`、已登录进入 `/account`，操作指南按钮进入 `/guide`；应用搜索框位于应用列表区域。
 
-AWPK Agent skill 的权威 Markdown 为 `docs/app-develop.skill-v0.3.md`。更新该文件后运行 `pnpm skills:sync`（`pnpm build`、Docker、原生包和 FPK 构建也会自动同步）：它生成 `.skill` 与 `.zip` 两种 ZIP 格式和 `awpk-app-develop.md`，并将三种下载文件复制到 `apps/server/assets`，供「操作导航」下载。压缩包内 `SKILL.md` 必须位于 ZIP 根目录，不能再包一层 `awpk-app-develop/` 目录。
+AWPK Agent skill 的权威 Markdown 为 `docs/app-develop.skill-v0.3.md`。更新该文件后运行 `pnpm skills:sync`（`pnpm build`、Docker、原生包和 FPK 构建也会自动同步）：它生成 `.skill` 与 `.zip` 两种 ZIP 格式和 `awpk-app-develop.md`，并将三种下载文件及权威 Markdown 复制到 `apps/server/assets`，供「操作导航」下载。压缩包内 `SKILL.md` 必须位于 ZIP 根目录，不能再包一层 `awpk-app-develop/` 目录。
 
 本地账号的新密码策略由 `packages/shared` 的 `isPasswordValid` 单一维护：8-128 位，至少包含大写字母、小写字母和数字。服务端在注册、找回密码、修改密码、管理员创建用户和密码重置时校验；前端对应表单同步提示与校验。管理员自动生成的初始密码由随机字母数字组成并符合此策略。
 
@@ -71,7 +71,7 @@ Docker Compose 默认启动 PostgreSQL 17 和门户。复制 `deploy/docker/.env
 
 ## 4. 应用网关（/app/\<id\>/）
 
-- **独立应用 origin**：配置「站点设置 → 本站域名」后，应用通过 `<应用 ID>.<本站域名>` 提供服务；留空时卡片和旧 `/app/<id>/...` 入口使用门户同源路径，不把内部服务端口暴露给浏览器。此本地回退仍通过 opaque-origin iframe 隔离用户上传应用；需要验证独立 origin / 浏览器存储时应配置应用域名。配置域名后，公开且需经沙箱的应用从旧 `/app/<id>/...` 入口访问时会跳转至应用子域名。应用子域名上的 `/api`、`/v1` 都只属于该应用，不进入门户接口；缺失或空 Host 不视为应用子域名并安全回落到门户路由。代理只移除平台会话 Cookie，应用 Cookie 会去掉 `Domain` 并限制为当前主机，不允许覆盖平台会话 Cookie；HTTP 下将 `SameSite=None` 调整为 `Lax`，避免浏览器拒收缺少 `Secure` 的 Cookie，HTTPS 下保留 `SameSite=None` 并加 `Secure`。请求的 `Origin`/`Referer` 透传给应用，以保留应用自己的 CSRF 校验能力。
+- **独立应用 origin**：配置「站点设置 → 本站域名」后，应用默认通过 `<应用 ID>.<本站域名>` 提供服务，属主也可配置唯一访问别名；别名入口映射到相同应用，权限和费用归属不变。留空时卡片和旧 `/app/<id>/...` 入口使用门户同源路径，不把内部服务端口暴露给浏览器。此本地回退仍通过 opaque-origin iframe 隔离用户上传应用；需要验证独立 origin / 浏览器存储时应配置应用域名。配置域名后，公开且需经沙箱的应用从旧 `/app/<id>/...` 入口访问时会跳转至应用子域名。应用子域名上的 `/api`、`/v1` 都只属于该应用，不进入门户接口；缺失或空 Host 不视为应用子域名并安全回落到门户路由。代理只移除平台会话 Cookie，应用 Cookie 会去掉 `Domain` 并限制为当前主机，不允许覆盖平台会话 Cookie；HTTP 下将 `SameSite=None` 调整为 `Lax`，避免浏览器拒收缺少 `Secure` 的 Cookie，HTTPS 下保留 `SameSite=None` 并加 `Secure`。请求的 `Origin`/`Referer` 透传给应用，以保留应用自己的 CSRF 校验能力。
 - **部署要求**：生产环境需将 `*.<本站域名>` DNS 指向本服务，并部署包含 `*.<本站域名>` 的通配证书；证书管理通过 Cloudflare DNS-01 签发通配符证书。应用可按普通网站使用 `localStorage` 与 host-only Cookie，页面刷新后由浏览器按各自 origin 保持状态。
 - 应用注册在 `apps` 表（管理后台 → 应用管理），三种形态 `kind`：
   - `upstream`：反代到内网上游（HTML 改写 + `<base>` + fetch/XHR/script 猴补丁 + 路径穿越双查 + `duplex:'half'` + SSE 零缓冲）
@@ -82,8 +82,11 @@ Docker Compose 默认启动 PostgreSQL 17 和门户。复制 `deploy/docker/.env
 - 管理后台所有数据列表按内容自动确定列宽，单元格内容自动换行，表格溢出时在自身区域横向滚动；单元格操作按钮统一尺寸与样式，同时保留主操作和危险操作的语义颜色。后台内容、卡片和表格包装器均允许收缩，避免长列把整个页面撑出视口。
 - **iframe 沙箱兼容**：配置应用域名时，用户应用从独立 origin 进入，不依赖 opaque-origin iframe；未配置时通过同源门户路径和 opaque-origin iframe 沙箱运行。`/app/<id>/raw/...` 仅在已配置应用域名时跳转至新域名下去掉 `/raw` 标记后的等价路径。
 - **AWPK 包格式与开发边界**：应用开发 Agent 应遵循 [`app-develop.skill-v0.3.md`](./app-develop.skill-v0.3.md) 的清单与资源表。AWPK 是含 `manifest.json` 的 ZIP 容器，只接受 `.awpk` 扩展名，不兼容 `.asp-app` 或 `.zip` 上传。`aap.llm.upload_media` 原始分块上传支持图片单张 5 MiB、视频单个 50 MiB；`aap.llm.chat_async` 将暂存引用提交为异步任务，`get_chat_job` 提供阶段、耗时、request ID 和结果；单次媒体总量 50 MiB、最多 20 个引用、媒体与任务保留 1 小时。LLM 模型路由需显式配置媒体适配器，视频 `video_url` 是供应商扩展格式，必须先确认上游支持；媒体请求超时默认 600 秒（`LLM_MEDIA_TIMEOUT_SECONDS`）。当前仅 `llm` 声明由服务端强制门控，`db`/`storage` 尚无逐项运行时闸；storage 默认 10 MiB/应用，SQLite 无硬容量配额；CPU/内存无 per-app 硬限额。出站仅可经 `aap.http.fetch`（HTTP(S) GET、manifest 白名单、逐跳 DNS/IP 检查），Python 网络守卫不是硬隔离。
-- 配置应用域名并使用独立 origin 后，应用自己的网页登录态可使用该 origin 的 localStorage/sessionStorage 与 host-only Cookie；未配置时的同源 iframe 沙箱回退不提供这些存储能力。平台会话 Cookie 不转发。公开应用若需要独立账号体系，必须自行认证并隔离用户数据，不能假设访客拥有平台账号或身份头。
-- “站内”或“仅自己”应用的卡片链接与二维码可分享；匿名访客打开时会自动跳转登录页并提示“您正在访问<站点名称>的非公开应用，请先登录或注册账号。”，登录或注册成功后进入“我的应用”。“站内”应用只有归属者和管理员能直接打开；其他用户只能在“我的应用 → 站内共享”克隆。“仅自己”应用的分享链接需完整登录态，且仍从其他用户的门户列表隐藏。公开应用（含 invoked Python 包）可匿名使用。公开 AWPK manifest 声明 `llm` 能力时，设为公开前必须由属主明确确认 Token 消耗记入其账号；确认由服务端校验并写入审计事件。公开 LLM 应用的 HTTP/WS 代理与 invoked 沙箱调用均由服务端签发属主身份，访客不能指定归因账号，LLM 网关仍按属主既有额度预检与扣费。迁移会把已公开的 LLM 能力应用转为仅自己可见，需属主重新确认后发布。
+- 配置应用域名并使用独立 origin 后，应用自己的网页登录态可使用该 origin 的 localStorage/sessionStorage 与 host-only Cookie；未配置时的同源 iframe 沙箱回退不提供这些存储能力。平台会话 Cookie 不转发。AWPK `manifest.routes` 中声明为 `account` 的路由要求完整平台会话，网关只对这些路由签发平台身份；未声明路由拒绝匿名访问。
+- 应用可见范围与匿名权限完全独立。可见范围控制门户发现、克隆与登录用户访问；属主另行设置匿名“关闭 / 只读 / 读写”。新建应用匿名访问默认关闭；迁移时仅旧 `public` 应用保留旧匿名读写行为，旧 `login/private` 应用关闭。此后切换可见范围不联动匿名权限。AWPK 路由权限由 `manifest.routes` 的路径和 HTTP 方法决定，未声明路由匿名拒绝；`anonymous_read` 只接受 GET/HEAD/OPTIONS，WebSocket 需声明为读写或 account。站内/仅自己应用开放匿名访问时，持链接者均可调用获准路由，但应用仍遵循各自的发现/克隆范围；非 AWPK 应用不能新开匿名访问。
+- 未开放匿名访问或 `account` 路由被匿名请求时，登录提示包含应用 ID。密码、Passkey 与 OIDC 登录均保留原应用路径；完整登录后仅公开应用或当前属主可直接进入目标应用，其他用户看到非公开提示并在 5 秒后进入个人中心。回跳判定 API 仅用于导航体验，应用请求仍由网关执行原有鉴权。OIDC 回跳目标与一次性 state 一同保存，且只接受同源站内路径。
+- 应用入口 HTML 为分享卡片输出应用名称、简介、图标及 `<title>`、Open Graph、Twitter 和 `image_src` 元数据，不受应用可见范围或匿名访问权限影响。非公开应用的登录拦截页对社交预览爬虫停用自动脚本跳转；跳转后的 `/login` 页也根据应用 ID 服务端注入相同分享元数据，并避免前端品牌标题覆盖应用标题，防止社交平台重新抓取后显示网站标题；普通访客仍自动跳转登录。自定义图标通过 `/api/apps/:id/share-icon/:filename` 只读端点公开读取，未设置时回退到站点 Logo 或默认 `/favicon.png`；这些分享元数据不开放应用内容或改变访问门禁。
+- LLM 用量始终由 LLM 网关按应用 ID 查询当前属主并记账，独立于可见范围及请求者身份；`account` 路由需要时，HTTP/WS 代理或 invoked 沙箱携带的是实际登录用户身份，不影响费用归属。克隆副本复制包与配置，但属主变为克隆者，因此副本费用计入克隆者账号。匿名公开或共享带来的费用由属主承担并受其额度限制。
 - **应用数量权益**：订阅套餐分别配置“可创建应用”和“可克隆应用数”。创建额度只统计用户直接上传的托管应用；站内共享克隆只占克隆额度、不重复占创建额度。克隆事务锁定用户并校验当前有效权益与已持有克隆数，复制托管应用文件和加密环境变量，清除应用运行期 `app.sqlite`/`storage` 数据，强制副本为仅自己可见；克隆副本始终不出现在首页「发现应用」列表，但仍可在「我的应用」管理。删除克隆即释放额度。权益降级不会删除已有克隆，但持有数超过新额度时需先删除部分克隆才能继续创建。
 - WebSocket：HTTP 与 HTTPS server 均挂 `upgrade` → 路径匹配 → 会话鉴权 → 三态门禁 → TCP 管道；`persistent` 沙箱应用的 WS 经同一门禁透传到沙箱端口（与 HTTP 反代同路径语义：**转发前剥 `/app/<id>` 前缀并下发 `x-forwarded-prefix`**，raw 通道剥除 raw 段——2026-09-19 审计修复前 WS 未剥前缀，persistent 应用 WS 不可用）。
 - **安全加固（2026-09-14 批）**：网关错误页全参数 HTML 转义 + `/app/:id` isSlug 校验（防反射/存储 XSS，线上实锤项）；托管应用越界判断改 `path.relative`（防 `..%2F兄弟目录` 跨用户读文件，线上实锤项）；`display_name` 剥 HTML 敏感字符 + 限长；persistent 沙箱响应头套用 `RESP_STRIP`（防 cookie tossing / CSP 覆写）并逐请求注入签名身份头；persistent 崩溃重启计数随条目继承（`MAX_RESTARTS` 真正生效防 CrashLoop）；invoked stdout/stderr 捕获 512KB 上限 + 执行排队上限 64（超出 429 `SANDBOX_BUSY`）。
@@ -93,7 +96,7 @@ Docker Compose 默认启动 PostgreSQL 17 和门户。复制 `deploy/docker/.env
   - `login`（前端名称“站内”）仅归属者与管理员可直接访问；其他用户从“我的应用 → 站内共享”克隆到自己的账号
   - 已有数据库中的旧受限应用迁移为站内可见；未来仅使用公开、站内、仅自己三种范围
   - `private` 分享链接需完整登录态；门户对非归属者隐藏卡片，克隆副本不进入首页发现列表
-- passUser 身份注入：`X-AAP-Identity`（base64url JSON：uid/kind/subject/aud/jti/iat/exp）+ `X-AAP-Identity-Sig`（HMAC-SHA256，密钥 `AAP_SIGN_SECRET`）。应用侧验签参考 `gateway/identity.ts` 的 `verifyIdentity`（aud 与 (kind,uid) 契约必查）。验签密钥自动下发：passUser 的 .aap 包沙箱 env 注入 `AAP_SIGN_SECRET`，上游应用在应用表单勾选时显示复制（详见 §3 密钥查看）。客户端自带的身份头在代理入口一律剥除（HTTP/WS/沙箱反代同一张剥离表），仅网关签名注入的可信；公开 LLM 能力应用固定注入属主身份，不能透传访客身份。
+- passUser 身份注入：`X-AAP-Identity`（base64url JSON：uid/kind/subject/aud/jti/iat/exp）+ `X-AAP-Identity-Sig`（HMAC-SHA256，密钥 `AAP_SIGN_SECRET`）。应用侧验签参考 `gateway/identity.ts` 的 `verifyIdentity`（aud 与 (kind,uid) 契约必查）。验签密钥自动下发：passUser 的 .aap 包沙箱 env 注入 `AAP_SIGN_SECRET`，上游应用在应用表单勾选时显示复制（详见 §3 密钥查看）。客户端自带的身份头在代理入口一律剥除（HTTP/WS/沙箱反代同一张剥离表），仅网关签名注入的可信；`account` 路由携带实际访问者身份，LLM 计费归属由网关按 appId 单独解析为属主。
 - 统一页面元素：HTML 响应自动注入 `/portal-chrome.js`（在应用页面右下角显示后台配置的站点名称作为门户入口）；幂等、失败静默。覆盖三条通道：HTML 托管直出、persistent 反代直连（HTML 缓冲注入，2MB 上限）、沙箱外壳层（包代码不可触碰，raw 通道不重复注入）。
 
 ## 5. LLM 网关（/v1/*，M2）
@@ -109,10 +112,10 @@ client = OpenAI(base_url="http://<host>:8080/v1", api_key="aapk_…")
 - **模型路由（C3/C4）**：`llm_routes` 把公开模型名映射到上游真实模型；同模型多条 = failover 候选（`priority` 升序、同级 `weight` 加权随机）；切换条件：连接失败/超时/5xx/429/408。`multiplier`（千分比收入倍率）与 `costPer1k`（千 token 上游成本，分）用于毛利统计。
 - **流式（C1）**：SSE 零缓冲透传，自动注入 `stream_options.include_usage` 捕获末帧 usage；不中途掐断。
 - **超时（可配）**：`LLM_TTFB_TIMEOUT_SECONDS`（流式首字节，默认 15s，超时切候选；推理型模型首字节慢可调大）与 `LLM_TOTAL_TIMEOUT_SECONDS`（非流式整体，默认 120s）；流式闲置断开 `LLM_STREAM_IDLE_TIMEOUT`（默认 60s）。
-- **计量（C5）**：`llm_ledger` append-only（usage 负 delta / grant 正 / adjust 正），用户归因来自应用转发的身份头（验签 `AAP_SIGN_SECRET`，aud=appId）；无头时仅应用级计量。计费倍率取**实际服务的候选**上游（同模型各路由 multiplier 可不同）。
+- **计量（C5）**：`llm_ledger` append-only（usage 负 delta / grant 正 / adjust 正），应用调用按 appId 查询当前属主并将费用记入属主账户；身份头用于传递经签名验证的运行身份，不改变应用费用归属。无有效应用属主时按策略拒绝。计费倍率取**实际服务的候选**上游（同模型各路由 multiplier 可不同）。
 - **预检（C6）**：请求前按 `max_tokens×倍率` 原子递减 `llm_balance_cache`，不足 → `402 INSUFFICIENT_BALANCE`；响应后按实际用量校正；**全候选失败/上游 4xx/流式中断等无用量路径即时全额退回预估扣减**；结算循环每分钟对账（重算近期活跃用户，吸收崩溃漂移），**对账重算补减进程内在途预估**（防预检扣减被周期性抹除）。流式转发有闲置超时（`LLM_STREAM_IDLE_TIMEOUT`，默认 60s 无新字节即断开并按已收 usage 结算），防上游挂起占满连接。**例外（2026-09-19 审计 P1-7 修复）：内容已流出但无 usage 帧（客户端断连/上游不回 include_usage）不再全额退回**——prompt 按请求体估算（字符数/4）、completion 按已转发字节数/4 估算入账；流末无换行符的 usage 残行也会补解析，真实值优先于估算。
-- **无归因调用默认拒绝**：`/v1/chat/completions` 未携带可验签身份头时默认 `403 ATTRIBUTION_REQUIRED`（否则任何持 app token 者可绕过全部余额闸门免费调用，线上实锤项）；可信内网应用可由管理员将计费设置 `LLM_UNATTRIBUTED_POLICY` 切为 `allow`（仅计量不计费）。
-- **用户归因**：LLM 调用必须携带可验证的平台用户身份。persistent AWPK 在 Flask 请求上下文内同时捕获 `X-AAP-Identity` 与 `X-AAP-Identity-Sig`，以 `(payload, sig)` 传给每次 `aap.llm.chat` / `chat_stream`；后台线程须在请求线程中捕获并显式逐层传递，不能只传 payload、不能在 worker 读取 Flask `request`，也不能匿名回退。invoked AWPK 由 SDK 使用平台注入的身份环境变量。客户端自带的身份头在网关入口一律剥除（HTTP 与 WS 同语义），只认可信注入的签名头。
+- **无归因调用默认拒绝**：没有应用属主的凭据调用 `/v1/chat/completions` 且未携带可验签身份头时默认 `403 ATTRIBUTION_REQUIRED`；归属到具体应用的 LLM 能力凭据由网关按 appId 查询属主并向属主预检、记账，即使请求匿名也不会落入“无归因”路径。可信内网的非应用凭据仍可由管理员将 `LLM_UNATTRIBUTED_POLICY` 切为 `allow`（仅计量不计费）。
+- **调用者身份与费用归属分离**：manifest 声明 `llm` 仍是调用 LLM 的必要条件。`passUser` 开启时普通路由（包括获准匿名访问的路由）注入属主身份；`account` 路由要求完整会话并注入实际访问者身份。匿名权限与可见范围独立控制访问，身份注入不放宽权限。persistent 可将代理注入的 `X-AAP-Identity` 与 `X-AAP-Identity-Sig` 成对传给 `aap.llm.chat` / `chat_stream`，invoked 使用平台运行环境身份。LLM 网关一律按 appId 将应用用量归当前属主，身份头不改变计费归属。后台线程需在请求线程内捕获并逐层传递身份，不能只传 payload、不能在 worker 读取 Flask `request`。客户端自带身份头在入口剥除，只信任网关签名。
 - **沙箱默认模型与生成上限**：`aap.llm.chat` 不指定 model 时按规范 §3.1 取 `LLM_DEFAULT_MODEL` 设置（计费组），未设置取模型目录排序第一个；目录为空返回可读 400。生成上限 `LLM_SANDBOX_MAX_TOKENS`（计费组）：包未显式指定 max_tokens 时注入，**0 = 不限制**（默认，模型自然收尾；推理型模型思考消耗大，包内硬编码上限会把 JSON 截半截——llm-proofread 实测）。
 - **上游连通性测试**：`POST /api/admin/llm/upstreams/:id/test` 用该上游第一条启用路由的真实模型发 1-token chat ping（比 /models 列表更能暴露 key 失效、http/https 边缘拦截、模型名映射错误）；管理后台「LLM 网关 → 上游」每行有「测试」按钮。实测教训：DeepSeek 填 `http://api.deepseek.com` 会被边缘 401（Authentication Fails governor），必须 https。
 
@@ -128,8 +131,9 @@ client = OpenAI(base_url="http://<host>:8080/v1", api_key="aapk_…")
 - **账户导航与头像**：门户页眉右侧头像/昵称入口以灰白信息面板展示账号资料、从当前有效订阅接口读取的权益名称与等级图标、角色和三段式主题选择；个人中心基础资料以无边框二维表格展示，头像支持上传图片并在前端裁剪压缩为 256×256 JPEG（≤90KB），昵称可编辑，用户名、邮箱和角色只读，保存统一提交到 `PATCH /api/user/profile`。个人中心与「我的应用」使用固定可折叠侧栏，将品牌置顶、用户入口置底，并按「应用」「账户和安全」「权益中心」分组显示二级导航；「应用」分组首项为“应用管理”，第二项为“我的应用”；每次仅渲染当前内容面板。浅色主题下个人中心页面、侧栏与信息卡片统一使用纯白背景；深色主题下个人中心各板块、表格（含分页区域）和主题相关弹窗统一使用深色表面，避免遗留浅色长条。其它页面用户菜单提供「个人中心」「我的应用」「退出登录」「账号电子身份卡」及管理员专属「管理后台」导航。浅色为默认主题，深色与跟随系统选项仅作用于个人中心和「我的应用」，通过同源 cookie 保持刷新后的选择，不写入后台；登录成功默认进入个人中心，匿名访问非公开应用登录后进入“我的应用”。头像文件位于 `apps/server/assets/icons`，新注册、本地管理员建号、OIDC 首登及首次管理员均按用户 ID 稳定分配；历史空头像账号由 `publicUserOf` 提供确定性回退，Web 构建通过 Vite glob 将头像打包。注销卡片位于账户信息面板末尾，操作需步升验证。
 - **网页字体**：门户、认证页、操作导航、个人中心及管理后台共用系统无衬线字体栈（优先系统字体，中文依次回退到苹方/微软雅黑，再回退 `sans-serif`）；代码、密钥及验证码等需要对齐的内容保留专用等宽字体。
 - **我的应用**：`/my-apps` 在个人中心共用侧栏与页面标题样式，分为“我自己的”“已共享的”和“站内共享”；卡片左上角显示 `apps/server/assets/badges/tag-internal.svg`、`tag-private.svg` 或 `tag-public.svg` 可见性角标，角标为绝对定位，不占用卡片内容的上方空间；卡片内容垂直居中并保持相同上下留白，角标不遮挡应用图标；应用管理列表使用相应的 `internal.svg`、`private.svg`、`public.svg` 图标替代文字标签。卡片链接和二维码均可分享，非公开应用需登录后访问；“站内共享”区仍展示可克隆应用。站内克隆复制应用文件和环境变量，不复制应用运行期 `app.sqlite`/`storage` 数据，副本固定为仅自己可见；删除后释放一个克隆名额。卡片带轻量 3D 阴影与悬浮效果，悬停时右侧以抽屉动效展示访问二维码。`GET /api/apps/shared` 返回可直接访问的公开共享应用，`GET /api/apps/site-shared` 返回可克隆的站内共享应用，`GET /api/apps/mine` 返回用户托管应用及克隆标记。发布、配置环境变量、删除等操作仍集中在「应用管理」分区。
-- **应用设置**：个人中心「应用管理」的已创建应用列表以圆角「设置」弹窗集中管理图标、名称、描述和可见范围；点击图标即可选择图片上传，不另设上传按钮；图标保存于数据卷 `DATA_DIR/app-private/icons/<应用 ID 的 SHA-256>/`，不进入可下载的应用文件目录。`POST /api/apps/:id/icon` 只允许归属者上传受签名校验的 PNG/JPEG/GIF/WebP 图片（最大 2 MB）；读取接口只返回应用当前登记的图标文件，以支持分享卡片预览。AWPK 包的环境变量也可在同一弹窗中配置，无变量时显示简洁空状态图，变量说明使用较小字号，输入框与选择框使用圆角；唯一的「保存设置」按钮会先保存环境变量，再保存基本信息和可见范围；若后一步失败会明确提示环境变量已先行保存。`PUT /api/apps/:id/settings` 仅允许归属者修改名称、描述及可见范围，并校验字段长度；环境变量仍经 `/api/apps/:id/env` 保存并加密。已创建应用列表以列展示安装日期、包大小、版本和平台支持，不再点击名称展开详情。
-- **个人中心权益**：「我的权益」解释权益对服务范围、有效期、应用上传名额及 Token 额度的作用，并突出实际余额；当前权益详情不再嵌套“权益概览”卡片，桌面端所有权益信息集中在板块左侧一半，窄屏自动铺满；敏感操作的步升验证弹窗和输入框使用圆角。历史订阅仅展示权益订阅订单。「获取权益」说明可通过积分兑换和兑换码获取指定权益，额度订单以 Token 额度描述。
+- **应用设置**：个人中心「应用管理」的已创建应用列表以圆角「设置」弹窗集中管理图标、名称、描述、可见范围及独立的匿名访问权限；匿名选项为关闭/只读/读写，开放权限还要求 AWPK `manifest.routes` 声明匹配的路由。点击图标即可选择图片上传，不另设上传按钮；图标保存于数据卷 `DATA_DIR/app-private/icons/<应用 ID 的 SHA-256>/`，不进入可下载的应用文件目录。`POST /api/apps/:id/icon` 只允许归属者上传受签名校验的 PNG/JPEG/GIF/WebP 图片（最大 2 MB）；读取接口只返回应用当前登记的图标文件，以支持分享卡片预览。AWPK 包的环境变量也可在同一弹窗中配置，无变量时显示简洁空状态图，变量说明使用较小字号，输入框与选择框使用圆角；唯一的「保存设置」按钮会先保存环境变量，再保存基本信息和访问策略；若后一步失败会明确提示环境变量已先行保存。`PUT /api/apps/:id/settings` 仅允许归属者修改名称、描述、可见范围与匿名权限，并校验字段长度；匿名权限变更同时切换到 manifest 路由策略。环境变量仍经 `/api/apps/:id/env` 保存并加密。已创建应用列表以列展示安装日期、包大小、版本和平台支持，不再点击名称展开详情。
+- **个人中心权益**：「我的权益」按管理后台“当前证书”的信息卡片方式展示：标题和等级状态在上方，订阅方案、有效期、应用名额、Token 与积分以 Descriptions 明细呈现；使用首页背景图，不展示权益分组。敏感操作的步升验证弹窗和输入框使用圆角。历史订阅仅展示权益订阅订单。「获取权益」不重复展示选择页标题和说明，直接显示套餐卡片及兑换码功能。首页、首次选择、个人中心和管理后台的套餐列表统一按权益等级从低到高排序，同级按套餐 ID 排序。
+- **个人中心应用管理**：顶部使用与管理后台“平台累计”一致的数量级进度卡片，分别展示当前账号的仅自己、站内和公开应用数；应用列表和 AWPK 上传拆分为独立标签页。
 - **门户首页与认证页**：首页品牌文案读取门户引导接口 `branding.siteName`，欢迎标题、品牌介绍和上传说明均随后台站点名称设置变化；首页按首屏欢迎区、应用列表、在售权益包、常见问题纵向排列；发现应用卡片内容垂直居中并保持上下留白一致，“用户提交”分类不显示独立小标题；卡片带轻量 3D 阴影与悬浮效果，悬停时右侧以抽屉动效展示访问二维码，点击卡片直接打开应用；首页页眉固定在顶部，未滚动时完全透明并显示灰白导航文字与白底黑字登录按钮，滚动后切换为毛玻璃乳白半透明背景、灰黑导航文字与黑底白字登录按钮；「发现应用」、权益、FAQ 与登录按钮等间距排列，不显示区块入口选中态。其它显示门户页眉的页面保持磨砂透明背景；页眉导航平滑定位到对应区块。「现在开始」对未登录用户进入分步应用制作导航（五章使用中文数字编号、精简章节内容与留白以减少滚动，逐步阅读或跳过后进入登录/注册），已登录用户直达应用管理；其它页面页眉的「操作指南」进入同一分步导航。登录成功不再弹出操作指南。权益包通过公开只读接口 `/api/portal/plans` 获取，仅返回管理员启用的套餐；FAQ 与操作指南共用同一份问答数据。登录/注册页使用 `apps/server/assets/login.jpg` 铺满左栏，注册表单紧凑排列，短视口下右侧内容可独立滚动；服务条款与可接受使用政策位于认证面板下方。页脚仅显示于首页、登录页和注册页；首页首屏使用 `apps/server/assets/home-background.png`，其余区块为浅色背景。
 - 防爆破双维度：IP 维度之外增加**账号维度**失败计数（`login_attempts.user_key`），同账号跨 IP 分布式撞库同样触发 PoW 要求。邀请码归属用户唯一索引保证每个账号只有一个专属码；并发注册通过事务锁定邀请码行，使有效注册计数和邀请积分奖励原子生效。
 - OIDC SSO：配置 Issuer/ClientId/Secret 即启用（重启生效）；`OIDC_ADMIN_SUBJECTS` 首登提升管理员；待批准账号重复登录干净回到待批提示（不下发即刻失效的会话）。
@@ -143,7 +147,7 @@ client = OpenAI(base_url="http://<host>:8080/v1", api_key="aapk_…")
 - **卡券码**：批量生成额度码/订阅码（`AAP-XXXX-XXXX-XXXX`），原子兑换防双花，可作废/设有效期；兑换走 `grantTokens`（三触发失效缓存）；批次摘要按批次与类型分组，码列表按创建时间和码值排序，兼容 PostgreSQL。
 - **运营面板**：30 天收入/成本/毛利（成本按路由 `costPer1k`）、余额与消耗排行、应用热度、订单确认；用户额度发放/调减入口与计费设置（`TOPUP_TOKENS_PER_FEN`、`SHOW_TOPUP_PANEL`、`SHOW_ORDERS_PANEL`）也在本页。
 - 订单与卡券码列表分别由 `GET /api/admin/billing/orders` 和 `GET /api/admin/redeem/codes` 提供，响应中的 `orders`、`codes` 均为完整数组。
-- **用户端入口**：个人中心「我的权益」分区展示当前权益详情及可选择权益包，选择后显示账单摘要；支付创建待确认订单，管理员确认到账后生效。支持使用兑换码；「额度充值」和「我的订单」卡片默认隐藏，可分别通过 `SHOW_TOPUP_PANEL` 与 `SHOW_ORDERS_PANEL` 控制显示。
+- **用户端入口**：个人中心「我的权益」卡片先显示有效期，标题组合展示等级徽章、等级和当前订阅计划；其余权益明细不展示权益分组，桌面端按三列均衡排列，数字字号与页面说明文字一致，窄屏响应式适配。「获取权益」展示可选择权益包和兑换码入口。选择后显示账单摘要；支付创建待确认订单，管理员确认到账后生效。「额度充值」和「我的订单」卡片默认隐藏，可分别通过 `SHOW_TOPUP_PANEL` 与 `SHOW_ORDERS_PANEL` 控制显示。
 - **注册与权益**：新普通用户注册后在存在启用权益包时选择套餐；零价包即时激活并加入权益分组，付费包生成待确认订单，管理员确认后生效。无启用权益包时直接以未订阅状态进入个人中心。开放注册不要求存在零价权益包，也不会因此限制停用或删除最后一个零价包；删除仍受套餐正在被订阅等既有约束限制。
 - **初始管理员积分**：首启创建的初始管理员获得 99,999,999 积分；数据迁移也会为已有实例中积分为 0 的首位管理员补齐一次。
 - **个人应用管理**：`GET /api/apps/mine` 返回归属者的 HTML/Python 托管包；选择 AWPK 后，在上传按钮下方左对齐显示不确定进度条，直到校验/依赖安装完成，进行中禁用重复上传；上传成功后刷新列表。已创建应用列表以紧凑列展示安装日期、AWPK 上传大小、版本和平台支持，平台支持用图标标识数据库、大模型、网络白名单与存储能力，默认每页十项；手机屏幕可在表格区域横向滚动查看全部列，不通过点击名称展开详情；设置和删除使用带无障碍名称的图标按钮。删除走 `DELETE /api/apps/:id`，要求归属者并通过步升身份验证，删除时清理包目录、持久进程及应用凭据。

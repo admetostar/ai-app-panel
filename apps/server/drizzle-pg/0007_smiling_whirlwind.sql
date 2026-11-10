@@ -1,0 +1,1 @@
+ALTER TABLE "oidc_states" ADD COLUMN "return_to" text;

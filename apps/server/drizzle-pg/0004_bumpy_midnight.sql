@@ -26,10 +26,10 @@ CREATE TABLE "llm_media_files" (
 );
 --> statement-breakpoint
 ALTER TABLE "llm_routes" ADD COLUMN "media_adapter" text DEFAULT 'image_url' NOT NULL;--> statement-breakpoint
-ALTER TABLE "llm_chat_jobs" ADD CONSTRAINT "llm_chat_jobs_app_id_apps_id_fk" FOREIGN KEY ("app_id") REFERENCES "public"."apps"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "llm_chat_jobs" ADD CONSTRAINT "llm_chat_jobs_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "llm_media_files" ADD CONSTRAINT "llm_media_files_app_id_apps_id_fk" FOREIGN KEY ("app_id") REFERENCES "public"."apps"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "llm_media_files" ADD CONSTRAINT "llm_media_files_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "llm_chat_jobs" ADD CONSTRAINT "llm_chat_jobs_app_id_apps_id_fk" FOREIGN KEY ("app_id") REFERENCES "apps"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "llm_chat_jobs" ADD CONSTRAINT "llm_chat_jobs_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "llm_media_files" ADD CONSTRAINT "llm_media_files_app_id_apps_id_fk" FOREIGN KEY ("app_id") REFERENCES "apps"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "llm_media_files" ADD CONSTRAINT "llm_media_files_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "llm_chat_jobs_app_expiry_idx" ON "llm_chat_jobs" USING btree ("app_id","expires_at");--> statement-breakpoint
 CREATE INDEX "llm_chat_jobs_user_idx" ON "llm_chat_jobs" USING btree ("user_id","created_at");--> statement-breakpoint
 CREATE INDEX "llm_media_app_expiry_idx" ON "llm_media_files" USING btree ("app_id","expires_at");--> statement-breakpoint

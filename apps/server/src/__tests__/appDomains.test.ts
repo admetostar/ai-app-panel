@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appIdFromHostname, isAppHostname } from '../gateway/appDomains.js';
+import { appIdFromHostname, isAppHostname, isValidAppAlias } from '../gateway/appDomains.js';
 import { appCookieHeader, safeAppSetCookies } from '../gateway/appCookies.js';
 
 describe('应用子域名路由', () => {
@@ -13,6 +13,15 @@ describe('应用子域名路由', () => {
     expect(isAppHostname('photo.example.com', 'example.com')).toBe(true);
     expect(isAppHostname('portal.other.com', 'example.com')).toBe(false);
     expect(isAppHostname(undefined, 'example.com')).toBe(false);
+  });
+
+  it('应用别名使用 DNS 主机标签格式', () => {
+    expect(isValidAppAlias('my-app-2')).toBe(true);
+    expect(isValidAppAlias('a')).toBe(true);
+    expect(isValidAppAlias('-invalid')).toBe(false);
+    expect(isValidAppAlias('invalid-')).toBe(false);
+    expect(isValidAppAlias('invalid_name')).toBe(false);
+    expect(isValidAppAlias('a'.repeat(64))).toBe(false);
   });
 
   it('平台会话 Cookie 不转发，应用 Cookie 限定为当前主机', () => {

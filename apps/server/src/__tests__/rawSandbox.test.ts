@@ -94,7 +94,7 @@ describe('用户应用独立子域名', () => {
     expect(html).not.toContain('<iframe sandbox');
     expect(html).toContain('<meta property="og:title" content="用户 &amp; HTML &lt;应用&gt;">');
     expect(html).toContain('<meta property="og:description" content="分享 &quot;预览&quot;">');
-    expect(html).toContain(`property="og:image" content="http://localhost:${gwPort}/api/apps/usrhtml/icon/${iconFilename}"`);
+    expect(html).toContain(`property="og:image" content="http://localhost:${gwPort}/api/apps/usrhtml/share-icon/${iconFilename}"`);
 
     const appApi = await fetchApp('/api/portal/bootstrap');
     expect(appApi.status).toBe(200);

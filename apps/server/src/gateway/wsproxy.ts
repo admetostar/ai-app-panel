@@ -9,7 +9,7 @@ import https from 'node:https';
 import type { Duplex } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { IDENTITY_TTL_MS } from '@aap/shared';
-import { canAccess, findApp, getUrlSecret, requiresOwnerIdentity, type AppRow, type UrlSecret } from './registry.js';
+import { canAccess, findApp, getUrlSecret, hasValidLlmOwner, manifestRouteAccess, requiresOwnerBilling, type AppRow, type UrlSecret } from './registry.js';
 import { signAppIdentity } from './identity.js';
 import { allowRequest } from './limiter.js';
 import { loadSessionByToken } from '../lib/session.js';
@@ -17,7 +17,7 @@ import { ensurePersistent, touchByPort } from '../lib/sandbox.js';
 import { manifestEntry } from './proxy.js';
 import { config } from '../config/index.js';
 import type { SessionUser } from '../types.js';
-import { appIdFromHostname } from './appDomains.js';
+import { resolveAppIdFromHostname } from './appDomains.js';
 import { appCookieHeader, safeAppSetCookies } from './appCookies.js';
 
 const REQ_SKIP = new Set(REQ_SKIP_KEYS());
@@ -91,7 +91,7 @@ export function upgradeClientIp(req: IncomingMessage, trustProxy: boolean = conf
 async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://internal.invalid');
   const host = (req.headers.host ?? '').split(':')[0]?.replace(/^\[|\]$/g, '') ?? '';
-  const hostAppId = appIdFromHostname(host);
+  const hostAppId = await resolveAppIdFromHostname(host);
   const m = url.pathname.match(/^\/app\/((?:[a-z0-9][a-z0-9-]{0,63}|clone_[0-9a-f]{8}))(\/.*)?$/);
   if (!m && hostAppId === null) return reject(socket, 404, 'Not Found');
   if (hostAppId === '') return reject(socket, 404, 'Not Found');
@@ -118,11 +118,13 @@ async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Prom
   if (!app || !app.enabled) return reject(socket, 404, 'Not Found');
 
   const user = await userFromCookieHeader(req.headers.cookie);
-  if (!await canAccess(app, user ?? null)) {
+  const requestedPath = `/${sub.replace(/^raw(?:\/|$)/, '')}`.replace(/\/{2,}/g, '/');
+  const routeAccess = manifestRouteAccess(app, 'WS', requestedPath, true);
+  if (!await canAccess(app, user ?? null, { method: 'WS', path: requestedPath, websocket: true })) {
     return reject(socket, user ? 403 : 401, user ? 'Forbidden' : 'Unauthorized');
   }
 
-  const userKey = requiresOwnerIdentity(app) && app.ownerUserId !== null
+  const userKey = requiresOwnerBilling(app) && app.ownerUserId !== null
     ? `owner:${app.ownerUserId}`
     : user ? `${user.kind}:${user.id}` : null;
   const ip = upgradeClientIp(req);
@@ -187,8 +189,10 @@ async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Prom
     return reject(socket, 404, 'Not Found');
   }
 
-  const identity = await signAppIdentity(app, user);
-  if (requiresOwnerIdentity(app) && !identity) return reject(socket, 503, 'Service Unavailable');
+  const identity = await signAppIdentity(app, user, {
+    force: routeAccess?.access === 'account',
+  });
+  if (requiresOwnerBilling(app) && !await hasValidLlmOwner(app)) return reject(socket, 503, 'Service Unavailable');
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(req.headers)) {
     if (REQ_SKIP.has(k.toLowerCase())) continue;

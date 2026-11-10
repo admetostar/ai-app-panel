@@ -1,14 +1,18 @@
 ﻿---
 name: app-develop-internal
 description: "涉及网关 / LLM 网关 / 沙箱 / 计费 / 账号安全的架构设计或 ADR 复核，或 .awpk 接口面（manifest / aap.*）契约变更时用。常规 bug 修复、UI/文案/测试改动不需要。"
-version: 2.7.0
+version: 2.9.0
 ---
 
 # ai-app-panel 开发指南
 
 > v2.6.4 变更：应用开发规范 v0.3.4 强制 LLM 调用透传成对的平台身份头，补充单线程与后台任务归因规则及 `MODEL` 选型建议。
 >
-> v2.7.0 变更：AWPK 契约升级至 v0.3.5，新增图片/视频分块上传、异步任务状态及媒体路由；`/v1` 网关在上游前读取暂存文件，避免媒体 Base64 经应用平台代理的第二次大 JSON 请求。
+> v2.7.0 变更：AWPK 契约升级至 v0.3.6，新增图片/视频分块上传、异步任务状态及媒体路由；`/v1` 网关在上游前读取暂存文件，避免媒体 Base64 经应用平台代理的第二次大 JSON 请求。
+>
+> v2.8.0 变更：应用可选配置唯一访问别名，HTTP 与 WebSocket 网关按别名解析回稳定应用 ID；别名不参与访问策略和费用归属，且两个主机名的浏览器存储相互隔离。
+>
+> v2.9.0 变更：passUser 改为注入应用属主身份（匿名路由也适用）；account 路由继续要求鉴权并注入实际访问者身份，LLM 计费始终按应用属主归属。
 >
 > v2.6.3 变更：应用开发规范 v0.3.3 要求更新同一 AWPK 应用时递增 `manifest.version`，未知当前版本先询问，不得重置或猜测。
 >
@@ -39,7 +43,7 @@ version: 2.7.0
 
 | # | 决策 |
 |---|---|
-| 1 | **应用独立 origin**：配置 `SITE_DOMAIN` 时应用通过 `<id>.<SITE_DOMAIN>` 路由；未配置时卡片使用同源 `/app/<id>/` 路径与 opaque-origin iframe 沙箱，不向浏览器暴露内部服务端口。子域名入口在门户 `/api`、`/v1` 路由之前处理。 |
+| 1 | **应用独立 origin**：配置 `SITE_DOMAIN` 时应用通过 `<id>.<SITE_DOMAIN>` 路由，也可由属主设置独立别名；HTTP 与 WebSocket 入口都映射到稳定应用 ID。别名只改变入口，不改变权限或费用归属。未配置时卡片使用同源 `/app/<id>/` 路径与 opaque-origin iframe 沙箱，不向浏览器暴露内部服务端口。子域名入口在门户 `/api`、`/v1` 路由之前处理。 |
 | 2 | **WebSocket 透传在 P0**（AI 聊天应用依赖；`upgrade` 事件 → 路径匹配 → 鉴权 → TCP 双向管道） |
 | 3 | **语言 Node.js/TypeScript**（复用参考实现已验证逻辑；ACME 用 acme-client） |
 | 4 | **单组织**，不做多租户/白标 |
@@ -69,7 +73,7 @@ version: 2.7.0
 
 ### 独立应用 origin
 
-- 管理员在「站点设置」配置应用域名根，与 TLS 证书配置分开。配置后每个应用使用 `<appId>.<SITE_DOMAIN>` 独立 origin；未配置时通过门户同源 `/app/<id>/` 路径运行，用户上传应用仍由 opaque-origin iframe 沙箱隔离，浏览器地址不会暴露服务端内部端口。需要验证应用的 localStorage、sessionStorage 或 host-only Cookie 时，必须配置应用域名。
+- 管理员在「站点设置」配置应用域名根，与 TLS 证书配置分开。配置后每个应用默认使用 `<appId>.<SITE_DOMAIN>` 独立 origin；属主可选设置唯一别名作为访问标签，解析后仍使用稳定应用 ID 执行访问控制和归属计费。应用 ID 与别名属于不同 origin，不共享浏览器存储和 host-only Cookie，分发时宜固定一种入口。未配置时通过门户同源 `/app/<id>/` 路径运行，用户上传应用仍由 opaque-origin iframe 沙箱隔离，浏览器地址不会暴露服务端内部端口。需要验证应用的 localStorage、sessionStorage 或 host-only Cookie 时，必须配置应用域名。
 - 生产部署需配置 `*.<SITE_DOMAIN>` DNS 与通配 TLS 证书。当前 ACME HTTP-01 只支持单域名签发，因此通配证书需手动上传。
 - 应用 origin 上的 `/api`、`/v1` 不落入门户路由；平台会话 Cookie 不转发给应用，应用自有 Cookie 去除 Domain、限定当前主机且不能覆盖平台会话 Cookie。应用请求的 `Origin`/`Referer` 透传，保留其自身 CSRF 校验能力。
 - 应用 origin 是普通网站 origin，应用可使用本 origin 的 localStorage/sessionStorage/host-only Cookie 实现自己的账号会话；不得依赖门户 DOM、门户存储或平台登录 Cookie。平台仍在应用入口执行应用可见性/登录门禁。
@@ -91,8 +95,8 @@ version: 2.7.0
 - payload 必含：`aud`（目标工具 id，防身份头转发到其他上游重放）、`jti`（一次性随机串）、`iat/exp`（10 分钟 TTL）、`kind`+`uid`（**本地账号与 OIDC 分表自增，仅按 uid 隔离会同号串号——必须 (kind, uid) 联合或用 subject**）
 - 消费端校验：签名（timingSafeEqual）、exp、aud 与自身 id 一致
 - **验签密钥自动下发（2026-09-22）**：勾选 passUser 的 .aap 包，沙箱 env 自动注入 `AAP_SIGN_SECRET`（全局身份签名密钥；`AAP_` 保留名上传即拒声明，包不可覆盖）。轮换密钥（stopAllPersistent）或切换 passUser 开关（stopPersistentFor）自动停起 persistent 进程，下次访问以新 env 拉起。上游（external）应用无沙箱：管理后台应用表单勾选 passUser 时展示密钥供复制配置
-- passUser 同时是 **LLM 网关用户级计量的归因通道**（身份头随请求链进网关，用户级 token 归因零成本）
-- **LLM 归因契约**：persistent 应用须在 Flask 请求上下文内成对读取 `X-AAP-Identity` 与 `X-AAP-Identity-Sig`，通过 `(payload, sig)` 显式传给每次 `aap.llm.chat` / `chat_stream`。单线程调用也应显式传元组；线程池/后台任务须在请求线程内捕获并逐层传递，不能在 worker 中读取 Flask `request`，不能只传 payload，缺失身份不得匿名重试。签名身份有效期 10 分钟，不进入数据库、持久队列或日志。invoked 模式使用平台注入的 `AAP_IDENTITY_PAYLOAD` / `AAP_IDENTITY_SIG`，后台 worker 可在提交前捕获并作为 `identity=` 参数传递。
+- passUser 是属主对身份注入的单独开关：开启后，普通应用路由（包括获准匿名访问的路由）注入**应用当前属主身份**，不暴露请求访问者身份；关闭时普通路由不注入身份。`account` 路由始终优先要求完整账号会话，并注入**实际访问者身份**。二者均不决定 LLM 费用归属，LLM 网关始终按 appId 解析当前属主并将用量记入属主账户。
+- **LLM 访问身份契约**：manifest 声明 `llm` 仍是调用 LLM 的必要条件。匿名访问权限与应用可见范围独立控制能否访问；`passUser` 不放宽访问控制。应用若需识别当前平台用户，必须将对应路由声明为 `account`。persistent 应用须在 Flask 请求上下文内成对读取 `X-AAP-Identity` 与 `X-AAP-Identity-Sig`，通过 `(payload, sig)` 显式传给每次 `aap.llm.chat` / `chat_stream`。线程池/后台任务须在请求线程内捕获并逐层传递，不能在 worker 中读取 Flask `request`，不能只传 payload。签名身份有效期 10 分钟，不进入数据库、持久队列或日志。invoked 模式通过 `AAP_IDENTITY_PAYLOAD` / `AAP_IDENTITY_SIG` 接收当前路由对应的身份：passUser 路由为属主，account 路由为实际访问者。
 
 ## 四、LLM 网关 + 计费（C/D 域核心设计）
 
@@ -104,7 +108,7 @@ version: 2.7.0
 - 路由：同模型多上游 failover（超时/5xx/限流切换）+ 健康检查 + 轮询/加权；SSE 零缓冲
 - **媒体链路（AWPK v0.3.5）**：`upload_media` 以分块原始字节写入短期 DATA_DIR 文件；单图 ≤5 MiB、单视频 ≤50 MiB、单 chat 合计 ≤50 MiB、最多 20 个引用，媒体/任务 1 小时 TTL。`chat_async` 只将引用与小型 JSON 放入进程内任务队列；内部 `/v1` 请求仍只传引用，网关依据 `appId + userId` 校验归属后，在上游边界加载文件并生成媒体内容块，避免 Base64 大 JSON 在 `/api` 代理与 `/v1` 内部再往返/解析。暂存文件不通过公开 URL 暴露。上游 OpenAI-compatible 请求仍需序列化媒体内容，不能声称全程零拷贝。
 - 媒体路由字段 `llm_routes.media_adapter` 默认 `image_url`；含视频时只匹配 `video_url` 路由。图片使用 `image_url`，视频以 `video_url` + data URI 发送；此视频格式为供应商扩展，只有管理员确认实际上游支持后才可配置，不能因 OpenAI-compatible 名称推定其通用兼容性。
-- 媒体任务状态：`queued → preparing → routing → preparing_media → upstream_processing → settling → completed/failed`；状态接口仅向同应用、同用户开放。默认媒体非流式超时 600 秒（`LLM_MEDIA_TIMEOUT_SECONDS`），独立于文本 `LLM_TOTAL_TIMEOUT_SECONDS`。身份签名 TTL 仍为 10 分钟，队列只在内存；身份过期后模型调用失败并要求重新提交，禁止刷新或匿名回退。原始签名身份仅可在任务 TTL 内查询此前已提交任务；验签仍强制 aud、uid、签名及创建时 exp 有效，该特例不能授权上传、提交或新的 LLM 调用。
+- 媒体任务状态：`queued → preparing → routing → preparing_media → upstream_processing → settling → completed/failed`；状态接口仅向同应用、同用户开放。默认媒体非流式超时 600 秒（`LLM_MEDIA_TIMEOUT_SECONDS`），独立于文本 `LLM_TOTAL_TIMEOUT_SECONDS`。身份签名 TTL 仍为 10 分钟，队列只在内存；任务若需要调用者身份且身份已过期，须要求重新提交，不能匿名继续。匿名调用若本身获准，仍可在没有调用者身份时使用 LLM，费用归属属主。原始签名身份仅可在任务 TTL 内查询此前已提交任务；验签仍强制 aud、uid、签名及创建时 exp 有效，该特例不能授权上传、提交或新的 LLM 调用。
 - 媒体 token 计量优先采用上游 usage；usage 缺失时 fallback 只估算文本，明确排除 Base64 媒体字节（无法跨供应商可靠推断媒体 token，不能按编码长度扣费）。
 - **C/D 边界：账本只有一份**——C 的用量流水（append-only，只记不判）；**余额只有一处**——D 读流水结算。C 在请求路径上（记录者+预检者），D 在请求路径外（结算者）
 - **额度拦截两道闸**：① C 预检缓存（按模型倍率原子递减预估成本，无余额直接 402，请求不出网关）；② D 结算引擎异步消费流水校正余额，打穿 → 欠费态 + **主动失效 C 缓存**。漏账上限 = 并发在途请求预估成本（可控，非账目错误）
@@ -130,7 +134,7 @@ PoW 登录 proof-of-work、登录失败计数、IP 封禁（累犯时长倍增�
 - HTML 包：门户托管静态内容，通过应用独立 origin 访问；可使用本 origin 浏览器存储，不得访问门户会话或 DOM
 - Python 包：沙箱子进程。invoked = 每次调用新进程执行后销毁；persistent = 长驻进程提供网页/HTTP API，经应用独立 origin 反代。默认 invoked 超时 30 秒、全局并发 8/队列 64；persistent 默认最多 12 个进程、空闲 300 秒回收、最多重启 3 次。当前无 per-app CPU/内存硬限额，网络守卫是 Python 层纵深防御而非硬隔离
 - **网络出口 = 平台出站代理**：SDK 通道逐跳核对 manifest 域名白名单及 DNS/IP；默认拒绝私网/保留地址，可由管理员精确 allowlist 放行内网目标（链路本地除外）。runner Python socket guard 只作纵深防御，不是硬安全边界
-- **SDK 接口**：`llm.chat()`（走 LLM 网关；有效平台身份按平台账号归因，应用自有账号不会自动映射为平台计费身份）；`db.*`（每包独立 SQLite，execute/query + `?` 参数；当前无数据库硬配额）；`storage.*`（每包独立配额，默认总量 10 MiB）；`http.fetch()`（仅 GET，经白名单代理）；`log`
+- **SDK 接口**：`llm.chat()`（走 LLM 网关；所有用量按当前应用属主计费；需识别平台用户时按 `account` 路由声明与验签）；`db.*`（每包独立 SQLite，execute/query + `?` 参数；当前无数据库硬配额）；`storage.*`（每包独立配额，默认总量 10 MiB）；`http.fetch()`（仅 GET，经白名单代理）；`log`
 - 上传约束：JSON body ≤15 MiB；ZIP 解压 ≤2,000 项/100 MiB；requirements ≤32 且仅 wheel；env ≤16 项（值 ≤8,192 字符、default ≤4,096、pattern ≤200）；egress GET 15 秒、最多 5 次重定向、响应 ≤500,000 字符、自定义头 ≤16 项
 - 生命周期：用户或管理员上传→校验→立即私有可用→用户可自行发布公开；不要求签名或公钥信任配置；举报/下架/全事件审计
 - 第一版刻意收窄：不做跨包调用、任意 SQL；**pip 依赖 2026-09-22 起走声明制**（manifest.requirements，上传时 `pip install --only-binary=:all: --target .deps` 装入应用数据目录、沙箱 PYTHONPATH 前置、失败=上传被拒；PIP_INDEX_URL 设置支持镜像；native/FPK start.sh 启动自检补装预置 flask，docker 镜像本就预装 py3-flask）
@@ -194,7 +198,7 @@ M1–M4 核心已交付；测试数与实装明细以 `docs/DEVELOPMENT.md` 为�
 - **已实装**：路径反代全套（§二）、WS 双通道、passUser 自动签发/注入、自动 HTTPS（PEM 热替换 + ACME HTTP-01 + 续期）、本地账号+注册（验证码 SMTP/Resend/日志兜底 + 邀请码 + Turnstile 接口）、MFA（TOTP/Passkey/恢复码/步升/状态机）、用户中心四区、管理后台（总览/站点设置/应用管理/用户与注册/安全/通知通道/证书/LLM 网关/运营 九个功能域选项卡 + 左侧竖向首配向导）、Docker/FPK/CI(ghcr 多架构+FPK Release)、OIDC SSO（PKCE）
 - **M2 LLM 网关**：`/v1/chat/completions`（流式透传+末帧 usage 捕获）、`/v1/models` 聚合；凭据 `aapk_*`（SHA-256 存储、可吊销、按凭据限流）；路由 priority+加权 failover；`llm_ledger` append-only 账本 + `llm_balance_cache` 预检（402）+ 事后校正；结算循环每分钟对账；凭据对全部包上传即自动签发（AAP_TOKEN 同时是 egress 出站凭据；tokenEnc 加密保管，`getAppLlmProvision` 供 M4 运行时注入），LLM 花费面由 `appLlmAllowed` 按 manifest.capabilities 在 `/v1` 直连与 `/api/aap/llm/chat` 双侧闸（审计 F1：签发广度与能力闸解耦，勿改回「未声明不签发」——会断非 llm 包出站）；应用删除连带吊销全部网关凭据
 - **M3 计费**：功能订阅套餐（人民币/美元人工确认；积分独立于 Token，事务扣分后立即开通；开通入分组/续费顺延/到期自动降级出组）；注册赠送积分；额度充值与**卡券码**（AAP-XXXX-XXXX-XXXX，原子兑换防双花，可作废/设有效期）；运营面板（套餐 CRUD/订单确认/余额消耗排行/应用热度/成本毛利）；manual 支付渠道首发（adapter 接口可扩）
-- **可见性模型（P）**：public / login（站内共享）/ private（仅归属者，用户自建默认，门户对他人隐藏）；旧受限应用迁移为 login。用户分组用于订阅等级与权益管理，与应用可见范围分开管理。
+- **访问控制模型（P）**：应用 `visibility`（public / login / private）只控制门户发现、克隆及登录用户访问；`anonymous_access`（none / read / write）独立控制匿名请求。新应用默认 none；旧 public 应用迁移时保留旧匿名行为，旧 login/private 迁移为 none。AWPK 的 `manifest.routes` 按路径/方法声明 `anonymous_read`、`anonymous_write` 或 `account`；未声明的路由拒绝匿名，`account` 路由要求完整会话并由网关签发身份。匿名只读仅允许安全 HTTP 方法，WebSocket 作为写操作。非 AWPK 应用不支持新增匿名开放。LLM 用量始终由当前应用属主承担，克隆副本归克隆后的新属主；用户分组用于订阅等级与权益管理，与应用可见范围分开管理。
 - **通知通道**：MAIL_PROVIDER = smtp | resend（Resend 仅需 API Key，from 留空用沙箱发件人）；日志兜底（内网离线）；`SHOW_TOPUP_PANEL` / `SHOW_ORDERS_PANEL` 分别控制用户中心额度充值与订单卡片，默认隐藏
 - **门户页面元素**：兼容路径/门户外壳可显示 portal chrome；新的独立应用 origin 不注入门户脚本或统一悬浮条，应用不得依赖平台导航注入
 - **管理后台体验（P）**：九个功能域选项卡（总览/站点设置/应用管理/用户与注册/安全/通知通道/证书/LLM 网关/运营）+ 左侧竖向首配向导（可收起，完成自动隐藏）；设置项控件化（choiceLabels 下拉/bool 开关/int 数字框/取色器/密码+审计查看）与 `exclusiveOf` 互斥渲染（SMTP vs Resend）；展示降噪（短标签+tooltip 收纳描述与配置键，仅 defaultsWork=false 显示「需配置」）；密钥查看端点 `GET /api/admin/secrets/:key`（记审计）

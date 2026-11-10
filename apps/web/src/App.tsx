@@ -15,6 +15,7 @@ import { TermsPage } from './pages/TermsPage';
 import { AcceptableUsePage } from './pages/AcceptableUsePage';
 import { MyApplicationsPage } from './pages/MyApplications';
 import { MembershipSelectionPage } from './pages/MembershipSelection';
+import { AppLoginReturnPage } from './pages/AppLoginReturn';
 
 export default function App() {
   return (
@@ -24,6 +25,7 @@ export default function App() {
         <Route path="/open/:id" element={<AppFramePage />} />
         <Route path="/run/:id" element={<RunToolPage />} />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/app-login-return" element={<AppLoginReturnPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/membership-selection" element={<MembershipSelectionPage />} />
         <Route path="/forgot" element={<ForgotPage />} />
