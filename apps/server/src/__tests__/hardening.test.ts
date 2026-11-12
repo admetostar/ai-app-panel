@@ -516,6 +516,22 @@ describe('公开可见性与发布', () => {
     expect(((await siteSharedResponse.json()) as { apps: Array<{ id: string }> }).apps.some((item) => item.id === 'rev-app')).toBe(true);
     expect((await getAppHost('rev-app', '/', { cookie: otherCookie })).status).toBe(403);
 
+    const iconBytes = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jf5sAAAAASUVORK5CYII=',
+      'base64',
+    );
+    const iconUpload = await fetch(`${base}/api/apps/rev-app/icon`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, cookie: ownerCookie },
+      body: JSON.stringify({ dataBase64: iconBytes.toString('base64') }),
+    });
+    expect(iconUpload.status).toBe(200);
+    const { icon } = await iconUpload.json() as { icon: string };
+    const siteSharedIcon = await fetch(`${base}${icon}`, { headers: { cookie: otherCookie } });
+    expect(siteSharedIcon.status).toBe(200);
+    expect(Buffer.from(await siteSharedIcon.arrayBuffer())).toEqual(iconBytes);
+    expect((await fetch(`${base}${icon}`)).status).toBe(404);
+
     const privateVisibility = await fetch(`${base}/api/apps/rev-app/publish`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, cookie: ownerCookie },
@@ -523,6 +539,7 @@ describe('公开可见性与发布', () => {
     });
     expect(privateVisibility.status).toBe(200);
     expect(await privateVisibility.json()).toMatchObject({ visibility: 'private' });
+    expect((await fetch(`${base}${icon}`, { headers: { cookie: otherCookie } })).status).toBe(404);
     const sharedPrivateResponse = await fetch(`${base}/api/apps/shared`, { headers: { cookie: otherCookie } });
     expect(((await sharedPrivateResponse.json()) as { apps: Array<{ id: string }> }).apps.some((item) => item.id === 'rev-app')).toBe(false);
 

@@ -1246,23 +1246,6 @@ body {
   color: #344054 !important;
 }
 
-.aap-home-faq__guide .ant-typography {
-  color: #344054;
-}
-
-.aap-home-faq__guide {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: 24px;
-  font-size: 13px;
-}
-
-.aap-home-faq__guide a {
-  color: var(--aap-primary);
-}
-
 .aap-guide-shell,
 .aap-guide-shell .aap-main {
   background: #f5f6f8;

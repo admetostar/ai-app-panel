@@ -129,6 +129,13 @@ appsRunRouter.get(
         isVisibleInPortal(app, req.user ?? null)
         || req.user?.role === 'admin'
         || req.user?.id === app.ownerUserId
+        // 站内共享列表向登录用户展示卡片元数据；读取图标不开放应用内容。
+        || (
+          app.enabled &&
+          !app.clonedFromAppId &&
+          app.visibility === 'login' &&
+          req.user
+        )
       ),
     );
     const filename = String(req.params.filename);

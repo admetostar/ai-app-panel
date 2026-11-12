@@ -31,9 +31,11 @@ test('首页导航定位与登录注册分栏页面', async ({ page }) => {
   expect(plansResponse.ok()).toBe(true);
   expect((await plansResponse.json()).plans).toBeInstanceOf(Array);
   await expect(page.locator('.aap-home-title')).toBeVisible();
-  await expect(page.locator('.aap-home-title')).toContainText('使用ai-app-panel零代码创作个人软件');
-  await expect(page.locator('.aap-home-description')).toContainText('ai-app-panel 是一个个人AI应用的运行工具');
-  await expect(page.locator('.aap-home-description')).toContainText('上传到ai-app-panel向其他人展示您的创作');
+  await expect(page.locator('.aap-home-title')).toHaveText('快速制作 | 一键部署 | 安全访问');
+  await expect(page.locator('.aap-home-description')).toHaveText(
+    '悦乐AI工坊 是一个Web应用软件的托管平台，开发者可借助悦乐AI工坊的技能规范快速制作出自己的awpk应用，即可在悦乐AI工坊一键部署运行，通过悦乐AI工坊的安全受控访问机制向用户提供您的软件服务。',
+  );
+  await expect(page.locator('.aap-home-faq__guide')).toHaveCount(0);
   await expect(page.locator('.aap-home-shell .aap-header')).toHaveCSS('backdrop-filter', 'blur(18px)');
   await expect(page.locator('.aap-home-kicker')).toHaveText('ai-app-panel');
   await expect(page.locator('.aap-home-hero .aap-home-search')).toHaveCount(0);
@@ -135,7 +137,7 @@ test('首页导航定位与登录注册分栏页面', async ({ page }) => {
   await expect(page.locator('#inviteCode')).toHaveValue('E2E-INVITE-CODE');
 });
 
-test('首页标题与介绍中的站点名称跟随品牌设置', async ({ page }) => {
+test('首页页眉品牌跟随站点设置，品牌文案保持固定', async ({ page }) => {
   await page.route('**/api/portal/bootstrap', async (route) => {
     const response = await route.fetch();
     const bootstrap = await response.json() as {
@@ -151,9 +153,8 @@ test('首页标题与介绍中的站点名称跟随品牌设置', async ({ page 
   await expect(page).toHaveTitle('自定义浏览器标题');
   await expect(page.locator('link[data-aap-site-icon]')).toHaveAttribute('href', '/site-logo-from-branding.png');
   await expect(page.locator('.aap-home-kicker')).toHaveText('运营站点名称');
-  await expect(page.locator('.aap-home-title')).toContainText('使用运营站点名称零代码创作个人软件');
-  await expect(page.locator('.aap-home-description')).toContainText('运营站点名称 是一个个人AI应用的运行工具');
-  await expect(page.locator('.aap-home-description')).toContainText('上传到运营站点名称向其他人展示您的创作');
+  await expect(page.locator('.aap-home-title')).toHaveText('快速制作 | 一键部署 | 安全访问');
+  await expect(page.locator('.aap-home-description')).toContainText('悦乐AI工坊 是一个Web应用软件的托管平台');
 });
 
 test('发现应用与我的应用卡片悬浮展示访问二维码', async ({ page }) => {
@@ -233,7 +234,7 @@ test('站内共享只提供克隆入口，不显示无效访问二维码', async
     id: 'site-shared-demo',
     name: '站内共享应用',
     description: '只能克隆后访问',
-    icon: null,
+    icon: '/api/apps/site-shared-demo/icon/icon-0123456789abcdef0123456789abcdef.png',
     category: '测试',
     visibility: 'login',
     accessible: false,
@@ -268,6 +269,11 @@ test('站内共享只提供克隆入口，不显示无效访问二维码', async
   await page.route('**/api/apps/mine', (route) => route.fulfill({ json: { apps: [] } }));
   await page.route('**/api/apps/shared', (route) => route.fulfill({ json: { apps: [] } }));
   await page.route('**/api/apps/site-shared', (route) => route.fulfill({ json: { apps: [siteApp] } }));
+  await page.route('**/api/apps/site-shared-demo/icon/**', (route) => route.fulfill({
+    status: 200,
+    contentType: 'image/png',
+    body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jf5sAAAAASUVORK5CYII=', 'base64'),
+  }));
   await page.route('**/api/user/membership', (route) => route.fulfill({
     json: { membership: { appCloneLimit: 2, appsCloned: 0, remainingCloneApps: 2 } },
   }));
@@ -291,6 +297,7 @@ test('站内共享只提供克隆入口，不显示无效访问二维码', async
   await expect(page.getByRole('heading', { name: '站内共享' })).toBeVisible();
   await expect(page.locator('.aap-home-category').filter({ hasText: '站内共享应用' }).first()).toContainText('只能克隆后访问');
   const card = page.locator('.aap-app-card').filter({ hasText: '站内共享应用' });
+  await expect(card.locator('.aap-app-card__icon img')).toHaveAttribute('src', /\/api\/apps\/site-shared-demo\/icon\//);
   await expect(card.locator('.aap-app-card__qr-drawer')).toHaveCount(0);
   await expect(card.locator('a.aap-app-card-link')).toHaveCount(0);
   const cloneButton = card.getByRole('button', { name: /^克\s*隆$/ });

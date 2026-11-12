@@ -2,7 +2,7 @@
 import { Alert, Button, Card, Collapse, Empty, Input, Space, Spin, Typography } from 'antd';
 import { ArrowRightOutlined, SearchOutlined } from '@ant-design/icons';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import type { AppCard, MembershipPlanSummary, PortalBootstrap } from '@aap/shared';
 import { api } from '../api/client';
@@ -68,7 +68,7 @@ export function HomePage() {
         <div className="aap-home-hero__content">
           <span className="aap-home-kicker">{siteName}</span>
           <Typography.Title className="aap-home-title" level={1}>
-            使用<strong>{siteName}</strong>零代码创作个人软件
+            快速制作 | 一键部署 | 安全访问
           </Typography.Title>
           {boot.data?.needsInit ? (
             <Alert
@@ -80,8 +80,10 @@ export function HomePage() {
             />
           ) : null}
           <Typography.Paragraph className="aap-home-description">
-            <strong>{siteName}</strong> 是一个个人AI应用的运行工具，通过 AI 助手（Agent）自动化生成您自己的awpk应用，即可上传到
-            <strong>{siteName}</strong>向其他人展示您的创作。
+            <strong>悦乐AI工坊</strong> 是一个Web应用软件的托管平台，开发者可借助
+            <strong>悦乐AI工坊</strong>的技能规范快速制作出自己的awpk应用，即可在
+            <strong>悦乐AI工坊</strong>一键部署运行，通过
+            <strong>悦乐AI工坊</strong>的安全受控访问机制向用户提供您的软件服务。
           </Typography.Paragraph>
           <div className="aap-home-hero__actions">
             <Button
@@ -200,10 +202,6 @@ export function HomePage() {
                 children: <Typography.Paragraph>{item.answer}</Typography.Paragraph>,
               }))}
             />
-            <div className="aap-home-faq__guide">
-              <Typography.Text type="secondary">想了解完整的应用制作与发布流程？</Typography.Text>
-              <Link to="/guide">查看操作指南 <ArrowRightOutlined /></Link>
-            </div>
           </div>
         </div>
       </section>
